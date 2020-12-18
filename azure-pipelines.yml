@@ -39,13 +39,12 @@ jobs:
           -DCMAKE_LINKER:FILEPATH=lld-link.exe ^
           -DCMAKE_PREFIX_PATH=C:\Qt\5.15.0\msvc2019_64\lib\cmake ^
           -DBOOST_ROOT=%BOOST_ROOT_1_72_0% ^
-          -DBISON_COMMAND=c:\tools\msys64\usr\bin\bison.exe
+          -DBISON_COMMAND=c:\tools\msys64\usr\bin\bison.exe ^
+          -DBoost_COMPILER=-vc142
 
       type CMakeCache.txt
 
       cmake --build .
-
-      rem -DBoost_COMPILER=-vc142
     displayName: 'Build'
 
   - script: |
