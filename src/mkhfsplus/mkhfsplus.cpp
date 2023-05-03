@@ -61,7 +61,10 @@ public:
     void addCatalogEntry(CatalogEntry e) { catalog.push_back(e); }
 
     template<typename T>
-    HFSPlusForkData writeBTree(const std::vector<T>& entries);
+    HFSPlusForkData writeBTree(
+        UInt16 maxKeyLength,
+        UInt32 attributes,
+        const std::vector<T>& entries);
     void writeCatalog();
 };
 
@@ -101,7 +104,10 @@ HFSPlusForkData VolumeWriter::writeData(const void* data, size_t size)
 }
 
 template<typename T>
-HFSPlusForkData VolumeWriter::writeBTree(const std::vector<T>& entries)
+HFSPlusForkData VolumeWriter::writeBTree(
+    UInt16 maxKeyLength,
+    UInt32 attributes,
+    const std::vector<T>& entries)
 {
     uint32_t totalNodes = 1;
     
@@ -124,9 +130,9 @@ HFSPlusForkData VolumeWriter::writeBTree(const std::vector<T>& entries)
     btheader.nodeSize = nodeSize;
     btheader.clumpSize = 1;
     
-    btheader.maxKeyLength = 10; // ###
+    btheader.maxKeyLength = maxKeyLength;
     btheader.btreeType = 0;
-    btheader.attributes = 2 /*kBTBigKeysMask*/;
+    btheader.attributes = attributes;
 
     auto allocNode = [&]() {
         nodes.push_back({});
@@ -178,14 +184,17 @@ HFSPlusForkData VolumeWriter::writeBTree(const std::vector<T>& entries)
     allocNode(); // header node;
     nodes[0].desc.kind = 1; /* kBTHeaderNode */
 
-    btheader.firstLeafNode = entries.empty() ? 0 : allocNode();
-    btheader.lastLeafNode = btheader.firstLeafNode;
-    nodes[btheader.firstLeafNode].desc.kind = -1;
-    nodes[btheader.firstLeafNode].desc.height = 1;
-    btheader.rootNode = btheader.firstLeafNode;
+    if (!entries.empty())
+    {
+        btheader.firstLeafNode = allocNode();
+        btheader.lastLeafNode = btheader.firstLeafNode;
+        nodes[btheader.firstLeafNode].desc.kind = -1;
+        nodes[btheader.firstLeafNode].desc.height = 1;
+        btheader.rootNode = btheader.firstLeafNode;
+        btheader.treeDepth = 1;
+    }
     btheader.totalNodes = nodes.size();
     btheader.freeNodes = 0;
-    btheader.treeDepth = 1;
 
     for (const auto& e : entries)
     {
@@ -201,9 +210,15 @@ HFSPlusForkData VolumeWriter::writeBTree(const std::vector<T>& entries)
     added = addRecord(0, &userData, sizeof(userData));
     assert(added);
     
-    std::vector<uint8_t> bitmap = {0x80};
+    std::vector<uint8_t> bitmap = {0};
     size_t bitmapRecordSize = maxRecordSize(0);
     bitmap.resize(std::max<size_t>(bitmapRecordSize, nodes.size() / 8 + 1));
+
+    for (int i = 0; i < nodes.size(); i++)
+    {
+        bitmap[i / 8] |= 0x80 >> (i % 8);
+    }
+
     added = addRecord(0, bitmap.data(), bitmapRecordSize);
     assert(added);
     assert(bitmap.size() <= bitmapRecordSize);
@@ -213,16 +228,20 @@ HFSPlusForkData VolumeWriter::writeBTree(const std::vector<T>& entries)
 
 void VolumeWriter::writeCatalog()
 {
-    header.catalogFile = writeBTree(catalog);
+    header.catalogFile = writeBTree(
+        516,
+        6 /*kBTBigKeysMask + kBTVariableIndexKeysMask */,
+        catalog);
 }
 
 void VolumeWriter::finishUp()
 {
-    header.extentsFile = writeBTree(std::vector<CatalogEntry>{});
+    header.extentsFile = writeBTree(
+        10, 2 /*kBTBigKeysMask*/, std::vector<CatalogEntry>{});
     writeCatalog();
 
     header.freeBlocks = 10 * 256;   // 10MB
-    header.totalBlocks = header.nextAllocation + header.freeBlocks;
+    header.totalBlocks = header.nextAllocation + header.freeBlocks + 1;
     
     uint32_t bitmapSize = (header.totalBlocks + (8 * header.blockSize) - 1) / (8 * header.blockSize);
     header.totalBlocks += bitmapSize;
@@ -247,14 +266,75 @@ void VolumeWriter::finishUp()
     out.write((const char*)&header, sizeof(header));
 }
 
+std::vector<std::byte> slurpFile(std::istream& in, const HFSPlusVolumeHeader& header, HFSPlusForkData forkData)
+{
+    std::vector<std::byte> data;
+    size_t offset = 0;
+    data.resize(size_t(header.blockSize) * forkData.totalBlocks);
+    for (int i = 0; i < 8; i++)
+    {
+        if (forkData.extents[i].blockCount == 0)
+            break;
+        in.seekg(size_t(header.blockSize) * forkData.extents[i].startBlock);
+        in.read((char*) &data[offset], size_t(header.blockSize) * forkData.extents[i].blockCount);
+        offset += size_t(header.blockSize) * forkData.extents[i].blockCount;
+    }
+    data.resize(forkData.logicalSize);
+    return data;
+}
+
+void dumpBTreeFile(std::vector<std::byte> data)
+{
+    const BTHeaderRec& header = *(const BTHeaderRec*)&data[14];
+
+    std::cout << "treeDepth: " << header.treeDepth << std::endl;
+    std::cout << "rootNode: " << header.rootNode << std::endl;
+    std::cout << "leafRecords: " << header.leafRecords << std::endl;
+    std::cout << "firstLeafNode: " << header.firstLeafNode << std::endl;
+    std::cout << "lastLeafNode: " << header.lastLeafNode << std::endl;
+    std::cout << "nodeSize: " << header.nodeSize << std::endl;
+    std::cout << "maxKeyLength: " << header.maxKeyLength << std::endl;
+    std::cout << "totalNodes: " << header.totalNodes << std::endl;
+    std::cout << "freeNodes: " << header.freeNodes << std::endl;
+    std::cout << "clumpSize: " << header.clumpSize << std::endl;
+    std::cout << "btreeType: " << header.btreeType << std::endl;
+    std::cout << "attributes: " << header.attributes << std::endl;
+
+    for (int i = 0; i < header.totalNodes; i++)
+    {
+        std::cout << "node " << i << std::endl;
+        const BTNodeDescriptor& desc = *(const BTNodeDescriptor*)&data[i * header.nodeSize];
+        std::cout << "  fLink: " << desc.fLink << std::endl;
+        std::cout << "  bLink: " << desc.bLink << std::endl;
+        std::cout << "  kind: " << (int)desc.kind << std::endl;
+        std::cout << "  height: " << (int)desc.height << std::endl;
+        std::cout << "  numRecords: " << desc.numRecords << std::endl;
+
+    }
+}
+void dumpHfsPlus(fs::path path)
+{
+    std::ifstream in(path.string());
+
+    HFSPlusVolumeHeader header;
+    in.seekg(0x400);
+    in.read((char*)&header, sizeof(header));
+
+    std::cout << "Extents BTree:\n";
+    dumpBTreeFile(slurpFile(in, header, header.extentsFile));
+    std::cout << "Catalog BTree:\n";
+    dumpBTreeFile(slurpFile(in, header, header.catalogFile));
+}
+
 int main(int argc, char* argv[])
 {
     po::options_description desc;
 
-    fs::path output;
+    fs::path output, dumpFile;
 
     desc.add_options()
         ("output,o", po::value(&output)->default_value("./test.img"), "where to put the fs")
+        ("dump,d", po::value(&dumpFile), "file to dump")
     ;
 
     auto parsed = po::command_line_parser(argc, argv)
@@ -265,25 +345,33 @@ int main(int argc, char* argv[])
     po::store(parsed, vm);
     po::notify(vm);
 
+    if (!dumpFile.empty())
+    {
+        dumpHfsPlus(dumpFile);
+        return 0;
+    }
+
     VolumeWriter writer(output);
 
     {
         CatalogEntry e = {};
-        e.key.keyLength = 6;
+        e.key.keyLength = 8;
         e.key.parentID = 1;
-        e.key.nodeName.length = 0;
+        e.key.nodeName.length = 1;
+        e.key.nodeName.unicode[0] = 'a';
         e.folder.recordType = 1;
         e.folder.folderID = 2;
         writer.addCatalogEntry(e);
     }
     {
         CatalogEntry e = {};
-        e.key.keyLength = 6;
+        e.key.keyLength = 8;
         e.key.parentID = 2;
         e.key.nodeName.length = 0;
         e.thread.recordType = 3;
         e.thread.parentID = 1;
-        e.thread.nodeName.length = 0;
+        e.thread.nodeName.length = 1;
+        e.thread.nodeName.unicode[0] = 'a';
 
         writer.addCatalogEntry(e);
     }
