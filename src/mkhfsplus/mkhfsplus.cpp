@@ -232,6 +232,21 @@ void VolumeWriter::writeCatalog()
         516,
         6 /*kBTBigKeysMask + kBTVariableIndexKeysMask */,
         catalog);
+
+    uint32_t maxId = 15;
+
+    for (const auto& c : catalog)
+    {
+        if (c.folder.recordType == 1)
+            header.folderCount++;
+        if (c.file.recordType == 2)
+            header.fileCount++;
+        if (c.key.parentID > maxId)
+            maxId = c.key.parentID;
+    }
+    header.folderCount--;
+    header.nextCatalogID = maxId + 1;
+
 }
 
 void VolumeWriter::finishUp()
@@ -361,6 +376,7 @@ int main(int argc, char* argv[])
         e.key.nodeName.unicode[0] = 'a';
         e.folder.recordType = 1;
         e.folder.folderID = 2;
+        e.folder.valence = 1;
         writer.addCatalogEntry(e);
     }
     {
@@ -372,6 +388,34 @@ int main(int argc, char* argv[])
         e.thread.parentID = 1;
         e.thread.nodeName.length = 1;
         e.thread.nodeName.unicode[0] = 'a';
+
+        writer.addCatalogEntry(e);
+    }
+
+
+    {
+        CatalogEntry e = {};
+        e.key.keyLength = 8;
+        e.key.parentID = 2;
+        e.key.nodeName.length = 1;
+        e.key.nodeName.unicode[0] = 'b';
+        e.file.recordType = 2;
+        e.file.fileID = 16;
+        
+        std::string hello = "Hello, world.\n";
+        e.file.dataFork = writer.writeData(hello.data(), hello.size());
+
+        writer.addCatalogEntry(e);
+    }
+    {
+        CatalogEntry e = {};
+        e.key.keyLength = 8;
+        e.key.parentID = 16;
+        e.key.nodeName.length = 0;
+        e.thread.recordType = 4;
+        e.thread.parentID = 2;
+        e.thread.nodeName.length = 1;
+        e.thread.nodeName.unicode[0] = 'b';
 
         writer.addCatalogEntry(e);
     }
