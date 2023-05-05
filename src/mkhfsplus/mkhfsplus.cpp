@@ -20,8 +20,39 @@ struct MemView
     size_t size;
 };
 
+bool operator<(const HFSPlusCatalogKey& a, const HFSPlusCatalogKey& b)
+{
+    if (a.parentID < b.parentID)
+        return true;
+    else if (a.parentID > b.parentID)
+        return false;
+    else
+        return FastUnicodeCompare(a.nodeName.unicode, a.nodeName.length, b.nodeName.unicode, b.nodeName.length) < 0;
+}
+
+template<typename T>
+struct PointerNode
+{
+    T key;
+    GUEST<uint32_t> node;
+
+    friend bool operator<(const PointerNode<T>& a, const PointerNode<T>& b)
+    {
+        return a.key < b.key;
+    }
+
+    MemView getKey() const
+    {
+        return { &key, size_t(key.keyLength) + 2U };
+    }
+    MemView getValue() const
+    {
+        return { &node, sizeof(node) };
+    }
+};
 struct CatalogEntry
 {
+    using KeyType = HFSPlusCatalogKey;
     HFSPlusCatalogKey key;
     union {
         HFSPlusCatalogFolder folder;
@@ -31,12 +62,7 @@ struct CatalogEntry
 
     friend bool operator<(const CatalogEntry& a, const CatalogEntry& b)
     {
-        if (a.key.parentID < b.key.parentID)
-            return true;
-        else if (a.key.parentID > b.key.parentID)
-            return false;
-        else
-            return FastUnicodeCompare(a.key.nodeName.unicode, a.key.nodeName.length, b.key.nodeName.unicode, b.key.nodeName.length) < 0;
+        return a.key < b.key;
     }
 
     MemView getKey() const
@@ -64,6 +90,8 @@ class VolumeWriter
 
     std::vector<CatalogEntry> catalog;
 
+    CatalogEntry* findEntryByCNID(HFSCatalogNodeID cnid);
+
 public:
     VolumeWriter(fs::path dstFilename);
 
@@ -71,7 +99,7 @@ public:
 
     void finishUp();
 
-    void addCatalogEntry(CatalogEntry e) { catalog.push_back(e); }
+    CatalogEntry& addCatalogEntry(CatalogEntry e) { return catalog.emplace_back(e); }
 
     template<typename T>
     HFSPlusForkData writeBTree(
@@ -79,6 +107,9 @@ public:
         UInt32 attributes,
         const std::vector<T>& entries);
     void writeCatalog();
+
+    CatalogEntry& createFile(HFSCatalogNodeID parent, std::string name);
+    CatalogEntry& createFolder(HFSCatalogNodeID parent, std::string name);
 };
 
 VolumeWriter::VolumeWriter(fs::path dstFilename)
@@ -174,7 +205,6 @@ HFSPlusForkData VolumeWriter::writeBTree(
         uint16_t freeSpace = node.offsets[firstRecordOffsetIndex - node.desc.numRecords];
 
         size_t size = ((key.size + 1) & ~1) + ((value.size + 1) & ~1);
-
         if (freeSpace + size > nodeSize - 2 * (node.desc.numRecords + 2))
             return false;
 
@@ -182,6 +212,7 @@ HFSPlusForkData VolumeWriter::writeBTree(
         node.offsets[firstRecordOffsetIndex - node.desc.numRecords] = freeSpace + size;
         std::memcpy(&node.bytes[freeSpace], key.ptr, key.size);
         std::memcpy(&node.bytes[freeSpace + ((key.size + 1) & ~1)], value.ptr, value.size);
+        assert(freeSpace + size <= 2 * (firstRecordOffsetIndex - node.desc.numRecords));
         return true;
     };
 
@@ -196,24 +227,63 @@ HFSPlusForkData VolumeWriter::writeBTree(
 
     allocNode(); // header node;
     nodes[0].desc.kind = 1; /* kBTHeaderNode */
-
-    if (!entries.empty())
-    {
-        btheader.firstLeafNode = allocNode();
-        btheader.lastLeafNode = btheader.firstLeafNode;
-        nodes[btheader.firstLeafNode].desc.kind = -1;
-        nodes[btheader.firstLeafNode].desc.height = 1;
-        btheader.rootNode = btheader.firstLeafNode;
-        btheader.treeDepth = 1;
-    }
-    btheader.totalNodes = nodes.size();
-    btheader.freeNodes = 0;
+    std::vector<PointerNode<typename T::KeyType>> unlinkedNodes;
 
     for (const auto& e : entries)
     {
-        addKeyedRecord(btheader.lastLeafNode, e.getKey(), e.getValue());
+        if (!btheader.lastLeafNode || !addKeyedRecord(btheader.lastLeafNode, e.getKey(), e.getValue()))
+        {
+            auto newNode = allocNode();
+            unlinkedNodes.push_back({e.key, newNode});
+            if (btheader.lastLeafNode)
+                nodes[btheader.lastLeafNode].desc.fLink = newNode;
+            else
+                btheader.firstLeafNode = newNode;
+            nodes[newNode].desc.bLink = btheader.lastLeafNode;
+            nodes[newNode].desc.kind = -1;
+            nodes[newNode].desc.height = 1;
+            btheader.lastLeafNode = newNode;
+
+            addKeyedRecord(btheader.lastLeafNode, e.getKey(), e.getValue());
+        }
         btheader.leafRecords++;
+        btheader.treeDepth = 1;
     }
+
+    while (unlinkedNodes.size() > 1)
+    {
+        std::vector<PointerNode<typename T::KeyType>> nodesToLink(std::move(unlinkedNodes));
+        unlinkedNodes.clear();
+
+        btheader.treeDepth++;
+
+        for (const auto& e : nodesToLink)
+        {
+            if (unlinkedNodes.empty() 
+                || !addKeyedRecord(unlinkedNodes.back().node, e.getKey(), e.getValue()))
+            {
+                auto newNode = allocNode();
+                if (!unlinkedNodes.empty())
+                {
+                    nodes[unlinkedNodes.back().node].desc.fLink = newNode;
+                    nodes[newNode].desc.bLink = unlinkedNodes.back().node;
+                }
+                unlinkedNodes.push_back({e.key, newNode});
+                nodes[newNode].desc.kind = 0;   /* index node */
+                nodes[newNode].desc.height = btheader.treeDepth;
+                
+                addKeyedRecord(unlinkedNodes.back().node, e.getKey(), e.getValue());
+            }
+        }
+    }
+
+    if (!unlinkedNodes.empty())
+    {
+        btheader.rootNode = unlinkedNodes[0].node;
+    }
+
+    btheader.totalNodes = nodes.size(); // FIXME: needs to be adjusted
+    btheader.freeNodes = 0;
 
     bool added;
     added = addRecord(0, &btheader, sizeof(btheader));
@@ -239,13 +309,29 @@ HFSPlusForkData VolumeWriter::writeBTree(
     return writeData(nodes.data(), nodes.size() * sizeof(Node));
 }
 
+CatalogEntry* VolumeWriter::findEntryByCNID(HFSCatalogNodeID cnid)
+{
+    auto threadIt = std::lower_bound(catalog.begin(), catalog.end(),
+        cnid,
+        [](const CatalogEntry& entry, HFSCatalogNodeID id)
+        { return entry.key.parentID < id; });
+    assert(threadIt < catalog.end());
+    if (threadIt == catalog.end())
+        return nullptr;
+    CatalogEntry searchEntry;
+    searchEntry.key.nodeName = threadIt->thread.nodeName;
+    searchEntry.key.parentID = threadIt->thread.parentID;
+    auto elemIt = std::lower_bound(catalog.begin(), catalog.end(), searchEntry);
+    if (elemIt == catalog.end())
+        return nullptr;
+    if (searchEntry < *elemIt)
+        return nullptr;
+    return &*elemIt;;
+}
+
 void VolumeWriter::writeCatalog()
 {
     std::sort(catalog.begin(), catalog.end());
-    header.catalogFile = writeBTree(
-        516,
-        6 /*kBTBigKeysMask + kBTVariableIndexKeysMask */,
-        catalog);
 
     uint32_t maxId = 15;
 
@@ -253,15 +339,100 @@ void VolumeWriter::writeCatalog()
     {
         if (c.folder.recordType == 1)
             header.folderCount++;
-        if (c.file.recordType == 2)
+        else if (c.file.recordType == 2)
             header.fileCount++;
+        else if (c.thread.recordType == 3 || c.thread.recordType == 4)
+        {
+            if (HFSCatalogNodeID parentID = c.thread.parentID; parentID != 1)
+            {
+                if (CatalogEntry *entry = findEntryByCNID(parentID))
+                {
+                    assert(entry->folder.recordType == 1);
+                    entry->folder.valence++;
+                }
+            }
+            
+        }
         if (c.key.parentID > maxId)
             maxId = c.key.parentID;
     }
     header.folderCount--;
     header.nextCatalogID = maxId + 1;
 
+    header.catalogFile = writeBTree(
+        516,
+        6 /*kBTBigKeysMask + kBTVariableIndexKeysMask */,
+        catalog);
 }
+
+HFSUniStr255 makeUniStr(std::string str)
+{
+    if (str.size() >= 256)
+        str.resize(255);
+    
+    HFSUniStr255 res;
+    res.length = str.size();
+    for (int i = 0; i < str.size(); i++)
+    {
+        char c = str[i];
+        if (c == '/')
+            throw std::logic_error("/ in file name");
+        else if (c == ':')
+            res.unicode[i] = '/';
+        else if (c >= 0 && c <= 127)
+            res.unicode[i] = c;
+        else
+            res.unicode[i] = '?';
+    }
+    return res;
+}
+
+HFSPlusCatalogKey makeCatalogKey(HFSCatalogNodeID cnid, std::string s)
+{
+    HFSPlusCatalogKey key;
+    key.parentID = cnid;
+    key.nodeName = makeUniStr(s);
+    key.keyLength = key.nodeName.length * 2 + 6;
+    return key;
+}
+
+CatalogEntry& VolumeWriter::createFile(HFSCatalogNodeID parent, std::string name)
+{
+    CatalogEntry e = {};
+    e.key = makeCatalogKey(parent, name);
+    e.file.recordType = 2;
+    e.file.fileID = header.nextCatalogID++;;
+    
+
+    CatalogEntry thread = {};
+    thread.key = makeCatalogKey(e.file.fileID, "");
+    thread.thread.recordType = 4;
+    thread.thread.parentID = parent;
+    thread.thread.nodeName = e.key.nodeName;
+
+    addCatalogEntry(thread);
+    return addCatalogEntry(e);
+}
+
+CatalogEntry& VolumeWriter::createFolder(HFSCatalogNodeID parent, std::string name)
+{
+    CatalogEntry e = {};
+    e.key = makeCatalogKey(parent, name);
+    e.folder.recordType = 1;
+    e.folder.folderID = header.nextCatalogID++;;
+    
+
+    CatalogEntry thread = {};
+    thread.key = makeCatalogKey(e.folder.folderID, "");
+    thread.thread.recordType = 3;
+    thread.thread.parentID = parent;
+    thread.thread.nodeName = e.key.nodeName;
+
+    addCatalogEntry(thread);
+    return addCatalogEntry(e);;
+}
+
+
 
 void VolumeWriter::finishUp()
 {
@@ -339,6 +510,15 @@ void dumpBTreeFile(std::vector<std::byte> data)
         std::cout << "  height: " << (int)desc.height << std::endl;
         std::cout << "  numRecords: " << desc.numRecords << std::endl;
 
+        const GUEST<uint16_t> *offsets = (const GUEST<uint16_t>*)&data[i * header.nodeSize];
+        for (int j = 0; j < desc.numRecords; j++)
+        {
+            uint16_t off = offsets[header.nodeSize/2 - 1 - j];
+            std::cout << "    record #" << j << " at " << off
+                << " -- key size: " << offsets[off/2]
+                << "\n";
+        }
+        std::cout << "  free space at " << offsets[header.nodeSize/2 - 1 - desc.numRecords] << "\n";
     }
 }
 void dumpHfsPlus(fs::path path)
@@ -353,37 +533,6 @@ void dumpHfsPlus(fs::path path)
     dumpBTreeFile(slurpFile(in, header, header.extentsFile));
     std::cout << "Catalog BTree:\n";
     dumpBTreeFile(slurpFile(in, header, header.catalogFile));
-}
-
-HFSUniStr255 makeUniStr(std::string str)
-{
-    if (str.size() >= 256)
-        str.resize(255);
-    
-    HFSUniStr255 res;
-    res.length = str.size();
-    for (int i = 0; i < str.size(); i++)
-    {
-        char c = str[i];
-        if (c == '/')
-            throw std::logic_error("/ in file name");
-        else if (c == ':')
-            res.unicode[i] = '/';
-        else if (c >= 0 && c <= 127)
-            res.unicode[i] = c;
-        else
-            res.unicode[i] = '?';
-    }
-    return res;
-}
-
-HFSPlusCatalogKey makeCatalogKey(HFSCatalogNodeID cnid, std::string s)
-{
-    HFSPlusCatalogKey key;
-    key.parentID = cnid;
-    key.nodeName = makeUniStr(s);
-    key.keyLength = key.nodeName.length * 2 + 6;
-    return key;
 }
 
 int main(int argc, char* argv[])
@@ -412,13 +561,12 @@ int main(int argc, char* argv[])
     }
 
     VolumeWriter writer(output);
-
     {
         CatalogEntry e = {};
         e.key = makeCatalogKey(1, "My Volume");
         e.folder.recordType = 1;
         e.folder.folderID = 2;
-        e.folder.valence = 1;
+        //e.folder.valence = 1;
         writer.addCatalogEntry(e);
     }
     {
@@ -431,26 +579,19 @@ int main(int argc, char* argv[])
         writer.addCatalogEntry(e);
     }
 
-
     {
-        CatalogEntry e = {};
-        e.key = makeCatalogKey(2, "My first file");
-        e.file.recordType = 2;
-        e.file.fileID = 16;
-        
+        CatalogEntry& e = writer.createFile(2, "My first file");
         std::string hello = "Hello, world.\n";
         e.file.dataFork = writer.writeData(hello.data(), hello.size());
-
-        writer.addCatalogEntry(e);
     }
-    {
-        CatalogEntry e = {};
-        e.key = makeCatalogKey(16, "");
-        e.thread.recordType = 4;
-        e.thread.parentID = 2;
-        e.thread.nodeName = makeUniStr("My first file");
 
-        writer.addCatalogEntry(e);
+    HFSCatalogNodeID myFolderCNID = writer.createFolder(2, "Folder").folder.folderID;
+    for (int i = 0; i < 1000; i++)
+    {
+        std::string content = std::to_string(i);
+        std::string name = "File #" + std::to_string(i);
+        CatalogEntry& e = writer.createFile(myFolderCNID, name);
+        e.file.dataFork = writer.writeData(content.data(), content.size());
     }
 
     writer.finishUp();
