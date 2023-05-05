@@ -11,6 +11,9 @@ namespace fs = boost::filesystem;
 
 using namespace Executor;
 
+SInt32 FastUnicodeCompare ( const GUEST<UniChar>* str1, int length1,
+                            const GUEST<UniChar>* str2, int length2);
+
 struct MemView
 {
     const void *ptr;
@@ -25,6 +28,16 @@ struct CatalogEntry
         HFSPlusCatalogFile file;
         HFSPlusCatalogThread thread;
     };
+
+    friend bool operator<(const CatalogEntry& a, const CatalogEntry& b)
+    {
+        if (a.key.parentID < b.key.parentID)
+            return true;
+        else if (a.key.parentID > b.key.parentID)
+            return false;
+        else
+            return FastUnicodeCompare(a.key.nodeName.unicode, a.key.nodeName.length, b.key.nodeName.unicode, b.key.nodeName.length) < 0;
+    }
 
     MemView getKey() const
     {
@@ -228,6 +241,7 @@ HFSPlusForkData VolumeWriter::writeBTree(
 
 void VolumeWriter::writeCatalog()
 {
+    std::sort(catalog.begin(), catalog.end());
     header.catalogFile = writeBTree(
         516,
         6 /*kBTBigKeysMask + kBTVariableIndexKeysMask */,
@@ -341,6 +355,37 @@ void dumpHfsPlus(fs::path path)
     dumpBTreeFile(slurpFile(in, header, header.catalogFile));
 }
 
+HFSUniStr255 makeUniStr(std::string str)
+{
+    if (str.size() >= 256)
+        str.resize(255);
+    
+    HFSUniStr255 res;
+    res.length = str.size();
+    for (int i = 0; i < str.size(); i++)
+    {
+        char c = str[i];
+        if (c == '/')
+            throw std::logic_error("/ in file name");
+        else if (c == ':')
+            res.unicode[i] = '/';
+        else if (c >= 0 && c <= 127)
+            res.unicode[i] = c;
+        else
+            res.unicode[i] = '?';
+    }
+    return res;
+}
+
+HFSPlusCatalogKey makeCatalogKey(HFSCatalogNodeID cnid, std::string s)
+{
+    HFSPlusCatalogKey key;
+    key.parentID = cnid;
+    key.nodeName = makeUniStr(s);
+    key.keyLength = key.nodeName.length * 2 + 6;
+    return key;
+}
+
 int main(int argc, char* argv[])
 {
     po::options_description desc;
@@ -370,10 +415,7 @@ int main(int argc, char* argv[])
 
     {
         CatalogEntry e = {};
-        e.key.keyLength = 8;
-        e.key.parentID = 1;
-        e.key.nodeName.length = 1;
-        e.key.nodeName.unicode[0] = 'a';
+        e.key = makeCatalogKey(1, "My Volume");
         e.folder.recordType = 1;
         e.folder.folderID = 2;
         e.folder.valence = 1;
@@ -381,13 +423,10 @@ int main(int argc, char* argv[])
     }
     {
         CatalogEntry e = {};
-        e.key.keyLength = 8;
-        e.key.parentID = 2;
-        e.key.nodeName.length = 0;
+        e.key = makeCatalogKey(2, "");
         e.thread.recordType = 3;
         e.thread.parentID = 1;
-        e.thread.nodeName.length = 1;
-        e.thread.nodeName.unicode[0] = 'a';
+        e.thread.nodeName = makeUniStr("My Volume");
 
         writer.addCatalogEntry(e);
     }
@@ -395,10 +434,7 @@ int main(int argc, char* argv[])
 
     {
         CatalogEntry e = {};
-        e.key.keyLength = 8;
-        e.key.parentID = 2;
-        e.key.nodeName.length = 1;
-        e.key.nodeName.unicode[0] = 'b';
+        e.key = makeCatalogKey(2, "My first file");
         e.file.recordType = 2;
         e.file.fileID = 16;
         
@@ -409,13 +445,10 @@ int main(int argc, char* argv[])
     }
     {
         CatalogEntry e = {};
-        e.key.keyLength = 8;
-        e.key.parentID = 16;
-        e.key.nodeName.length = 0;
+        e.key = makeCatalogKey(16, "");
         e.thread.recordType = 4;
         e.thread.parentID = 2;
-        e.thread.nodeName.length = 1;
-        e.thread.nodeName.unicode[0] = 'b';
+        e.thread.nodeName = makeUniStr("My first file");
 
         writer.addCatalogEntry(e);
     }
