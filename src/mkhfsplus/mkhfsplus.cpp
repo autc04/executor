@@ -125,7 +125,7 @@ VolumeWriter::VolumeWriter(fs::path dstFilename)
     header.nextAllocation = 1;
     header.rsrcClumpSize = 0x10000;
     header.dataClumpSize = 0x10000;
-    header.nextCatalogID = 0x10;  // ???
+    header.nextCatalogID = 0x10;
     header.writeCount = 1;
     header.encodingsBitmap = 1;
 }
@@ -282,9 +282,6 @@ HFSPlusForkData VolumeWriter::writeBTree(
         btheader.rootNode = unlinkedNodes[0].node;
     }
 
-    btheader.totalNodes = nodes.size(); // FIXME: needs to be adjusted
-    btheader.freeNodes = 0;
-
     bool added;
     added = addRecord(0, &btheader, sizeof(btheader));
     assert(added);
@@ -304,7 +301,29 @@ HFSPlusForkData VolumeWriter::writeBTree(
 
     added = addRecord(0, bitmap.data(), bitmapRecordSize);
     assert(added);
-    assert(bitmap.size() <= bitmapRecordSize);
+    size_t writtenBitmapSize = bitmapRecordSize;
+
+    uint32_t lastMapNode = 0;
+    while (writtenBitmapSize < bitmap.size())
+    {
+        bitmap[nodes.size() / 8] |= 0x80 >> (nodes.size() % 8);
+
+        auto newNode = allocNode();
+        nodes[newNode].desc.kind = 2;
+        nodes[lastMapNode].desc.fLink = newNode;
+        lastMapNode = newNode;
+
+        bitmapRecordSize = maxRecordSize(newNode);
+        bitmap.resize(std::max<size_t>(writtenBitmapSize + bitmapRecordSize, bitmap.size()));
+        added = addRecord(newNode, bitmap.data() + writtenBitmapSize, bitmapRecordSize);
+        writtenBitmapSize += bitmapRecordSize;
+    }
+    //assert(bitmap.size() <= bitmapRecordSize);
+    {
+        BTHeaderRec& newHeader = *(BTHeaderRec*)&nodes[0].bytes[14];
+        newHeader.totalNodes = nodes.size();
+        newHeader.freeNodes = 0;
+    }
 
     return writeData(nodes.data(), nodes.size() * sizeof(Node));
 }
@@ -586,12 +605,14 @@ int main(int argc, char* argv[])
     }
 
     HFSCatalogNodeID myFolderCNID = writer.createFolder(2, "Folder").folder.folderID;
-    for (int i = 0; i < 1000; i++)
+    for (int i = 0; i < 200; i++)
     {
-        std::string content = std::to_string(i);
+        std::string content = std::to_string(i) + "\n";
         std::string name = "File #" + std::to_string(i);
         CatalogEntry& e = writer.createFile(myFolderCNID, name);
         e.file.dataFork = writer.writeData(content.data(), content.size());
+        e.file.userInfo.fdType = "TEXT"_4;
+        e.file.userInfo.fdCreator = "ttxt"_4;
     }
 
     writer.finishUp();
