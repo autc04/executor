@@ -92,6 +92,7 @@ Requirements:
 * perl
 * ruby 2.0 or later
 * bison
+* boost
 
 Optional (for additional front-ends):
 * SDL 2
@@ -147,6 +148,19 @@ applications to run.
 When this is active, you can start executor with the `-logtraps` option to get logging
 output for every MacOS function (trap) called by the running program.
 
+### NO_STATIC_BOOST - Look for dynamically linked boost libraries (e.g. from MacPorts)
+
+    cmake . -DNO_STATIC_BOOST=TRUE
+
+Without this, you will get the following error when trying to find dynamically linked boost libraries, such as from MacPorts:
+
+    CMake Error at /opt/local/share/cmake-3.24/Modules/FindPackageHandleStandardArgs.cmake:230 (message):
+      Could NOT find Boost (missing: filesystem system program_options) (found
+      version "1.76.0")
+    Call Stack (most recent call first):
+      /opt/local/share/cmake-3.24/Modules/FindPackageHandleStandardArgs.cmake:594 (_FPHSA_FAILURE_MESSAGE)
+      /opt/local/share/cmake-3.24/Modules/FindBoost.cmake:2376 (find_package_handle_standard_args)
+      src/CMakeLists.txt:16 (find_package)
 
 Overview
 --------
