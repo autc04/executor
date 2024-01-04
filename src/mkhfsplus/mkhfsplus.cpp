@@ -318,7 +318,7 @@ HFSPlusForkData VolumeWriter::writeBTree(
         added = addRecord(newNode, bitmap.data() + writtenBitmapSize, bitmapRecordSize);
         writtenBitmapSize += bitmapRecordSize;
     }
-    //assert(bitmap.size() <= bitmapRecordSize);
+
     {
         BTHeaderRec& newHeader = *(BTHeaderRec*)&nodes[0].bytes[14];
         newHeader.totalNodes = nodes.size();
