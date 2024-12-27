@@ -126,6 +126,21 @@ files written by Basilisk or SheepShaver (`foo`, `.rsrc/foo` and `.finf/foo`).
 It should be possible to build Executor 2000 for Microsoft Windows;
 see [here](docs/building-on-windows.md) for some only slightly outdated instructions.
 
+Nix Package Manager
+-------------------
+
+The source distribution contains a `flake.nix` file for the [Nix Package Manager](https://www.nixos.org).
+If you are not a Nix user, skip this section.
+
+As Executor uses submodules, a regular `nix build` will not work; instead, you have to use `nix build .#submodules=1`.
+A development shell (`nix develop` or via direnv) should work as usual.
+
+To use executor using nix without checking out the source code, use `git+ssh://www.github.com/autc04/executor?submodules=1#` as the URL, e.g.:
+```
+nix shell 'git+ssh://www.github.com/autc04/executor?submodules=1'
+nix shell 'git+ssh://www.github.com/autc04/executor?submodules=1' -c executor
+nix shell 'git+ssh://www.github.com/autc04/executor?submodules=1' -c executor-wayland
+```
 
 Build-time Options
 ------------------
