@@ -4,7 +4,9 @@
 #include <util/macstrings.h>
 #include <memory>
 #include <chrono>
+#include <list>
 #include <unordered_map>
+#include <stdint.h>
 
 namespace Executor
 {
