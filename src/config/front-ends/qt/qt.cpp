@@ -167,6 +167,7 @@ QtVideoDriver::QtVideoDriver(Executor::IEventListener *eventListener, int& argc,
     : VideoDriver(eventListener)
 {
     qapp = new QGuiApplication(argc, argv);
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::Round);
 }
 
 QtVideoDriver::~QtVideoDriver()
@@ -175,7 +176,11 @@ QtVideoDriver::~QtVideoDriver()
 
 void QtVideoDriver::endEventLoop()
 {
-    QMetaObject::invokeMethod(qapp, &QGuiApplication::quit);
+    QMetaObject::invokeMethod(qapp, [this]{
+        delete window;
+        window = nullptr;
+        qapp->quit();
+    },Qt::QueuedConnection);
 }
 
 void QtVideoDriver::runEventLoop()
