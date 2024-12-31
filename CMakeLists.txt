@@ -98,7 +98,7 @@ macro(install_qt5_plugin _qt_plugin_name _qt_plugins_var _prefix)
     endif()
 endmacro()
 
-find_package(Qt5 COMPONENTS Gui)
+find_package(Qt6 COMPONENTS Gui)
 find_package(Boost)
 
 set(DIRS)
@@ -106,7 +106,7 @@ list(APPEND DIRS ${CMAKE_BINARY_DIR})
 list(APPEND DIRS ${Boost_LIBRARY_DIRS})
 
 if(TARGET front-end-qt)
-    get_target_property(QT_GUI_LOCATION Qt5::Gui LOCATION)
+    get_target_property(QT_GUI_LOCATION Qt6::Gui LOCATION)
     get_filename_component(QT_GUI_LOCATION "${QT_GUI_LOCATION}" PATH)
     list(APPEND DIRS ${QT_GUI_LOCATION})
 endif()

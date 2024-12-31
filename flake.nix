@@ -16,7 +16,7 @@
             perl
             ruby
             pkg-config
-            qt5.wrapQtAppsHook
+            qt6.wrapQtAppsHook
           ];
           buildInputs =
             let
@@ -29,7 +29,7 @@
               });
             in
             with pkgs;
-            [ qt5.qtbase boost readline SDL2 ]
+            [ qt6.qtbase boost readline SDL2 ]
             ++ lib.optionals stdenv.isLinux [ SDL wayland patchedWaylandPP ]
             ++ lib.optionals stdenv.isDarwin
               (with darwin.apple_sdk.frameworks; [ Carbon Cocoa ]);

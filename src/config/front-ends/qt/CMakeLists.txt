@@ -1,7 +1,7 @@
 cmake_policy(SET CMP0020 NEW) # Automatically link Qt executables to qtmain target on Windows.
-find_package(Qt5 COMPONENTS Gui)
+find_package(Qt6 COMPONENTS Gui)
 
-if(TARGET Qt5::Gui)
+if(TARGET Qt6::Gui)
     add_library(front-end-qt
             default_vdriver.h
             qt.h
@@ -35,6 +35,6 @@ if(TARGET Qt5::Gui)
             -lfreetype_too -lglib-2.0 -lshlwapi -lpcre -lintl -liconv -lmpr -lnetapi32 -luserenv -lversion
             -lws2_32 -lkernel32 -luser32 -lshell32 -luuid -lole32 -ladvapi32 -lwinmm -lz -lpcre2-16 )
     else()
-         target_link_libraries(front-end-qt Qt5::Gui)
+         target_link_libraries(front-end-qt Qt6::Gui)
     endif()
 endif()
