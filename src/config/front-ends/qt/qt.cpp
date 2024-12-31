@@ -73,7 +73,7 @@ public:
         backingStore_->resize(resizeEvent->size());
     }
 
-    void exposeEvent(QExposeEvent *e) override
+    void paintEvent(QPaintEvent *e) override
     {
         if (!isExposed())
             return;
@@ -83,7 +83,7 @@ public:
 
     void mousePressRelease(QMouseEvent *ev)
     {
-        drv_->callbacks_->mouseButtonEvent(!!(ev->buttons() & Qt::LeftButton), ev->x(), ev->y() - windowTopPadding);
+        drv_->callbacks_->mouseButtonEvent(!!(ev->buttons() & Qt::LeftButton), qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding);
     }
     void mousePressEvent(QMouseEvent *ev) override
     {
@@ -97,9 +97,9 @@ public:
     void mouseMoveEvent(QMouseEvent *ev) override
     {
 #ifdef __APPLE__
-        macosx_hide_menu_bar(ev->x(), ev->y() - windowTopPadding, width(), height());
+        macosx_hide_menu_bar(qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding, width(), height());
 #endif
-        drv_->callbacks_->mouseMoved(ev->x(), ev->y() - windowTopPadding);
+        drv_->callbacks_->mouseMoved(qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding);
     }
 
     void keyEvent(QKeyEvent *ev, bool down_p)
