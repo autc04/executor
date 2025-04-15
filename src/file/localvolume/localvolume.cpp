@@ -4,8 +4,6 @@
 #include <MemoryMgr.h>
 #include <file/file.h>
 #include <hfs/hfs.h>
-#include <map>
-#include <iostream>
 #include "item.h"
 
 #include "plain.h"
@@ -16,6 +14,10 @@
 #include "simplecnidmapper.h"
 #include "lmdbcnidmapper.h"
 #include "itemcache.h"
+
+#include <algorithm>
+#include <map>
+#include <iostream>
 
 #ifdef _WIN32
 #define NOMINMAX 1

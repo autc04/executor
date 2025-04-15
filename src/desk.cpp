@@ -25,6 +25,8 @@
 #include <base/cpu.h>
 #include <util/macstrings.h>
 
+#include <algorithm>
+
 using namespace Executor;
 
 AppleMenuEntry::AppleMenuEntry(const char32_t* n, void (*f)())

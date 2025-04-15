@@ -17,6 +17,8 @@
 #include <quickdraw/picture.h>
 #include <util/handle_vector.h>
 
+#include <algorithm>
+
 using namespace Executor;
 
 void Executor::C_InitGraf(GUEST<GrafPtr> *gp)
