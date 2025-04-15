@@ -117,7 +117,7 @@ void AppleDoubleFileItem::moveItem(const fs::path& newPath, mac_string_view newN
 ItemPtr AppleSingleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
     const fs::directory_entry& e, mac_string_view macname)
 {
-    if(!fs::is_regular(e.path()))
+    if(!fs::is_regular_file(e.path()))
         return nullptr;
     GUEST<uint64_t> magic = 0;
     fs::ifstream(e.path(), std::ios::binary).read((char*)&magic, 8);
