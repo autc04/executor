@@ -15,7 +15,7 @@ if(NOT RUBY_EXECUTABLE)
     message(FATAL_ERROR "Cannot find command: 'ruby' (needed for building!)")
 endif()
 
-find_package(Boost REQUIRED COMPONENTS filesystem system program_options)
+find_package(Boost REQUIRED CONFIG COMPONENTS filesystem system program_options)
 
 find_package(Threads REQUIRED)
 

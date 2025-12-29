@@ -99,7 +99,7 @@ macro(install_qt5_plugin _qt_plugin_name _qt_plugins_var _prefix)
 endmacro()
 
 find_package(Qt6 COMPONENTS Gui)
-find_package(Boost)
+find_package(Boost CONFIG)
 
 set(DIRS)
 list(APPEND DIRS ${CMAKE_BINARY_DIR})
