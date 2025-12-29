@@ -16,12 +16,12 @@
 /* System dependent variables */
 #if defined(__unix__)
 /* * */
-extern Display *SDL_Display;
-extern Window SDL_Window;
+extern Display *gSDLDisplay;
+extern Window gSDLWindow;
 
 #elif defined(_WIN32)
 /* * */
-extern HWND SDL_Window;
+extern HWND gSDLWindow;
 
 #endif /* OS */
 

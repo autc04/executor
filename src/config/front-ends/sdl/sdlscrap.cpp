@@ -269,7 +269,7 @@ convert_format(int type)
 
 #if defined(X11_SCRAP)
             /* * */
-            return XInternAtom(SDL_Display, format, False);
+            return XInternAtom(gSDLDisplay, format, False);
 
 #elif defined(WIN_SCRAP)
             /* * */
@@ -429,11 +429,11 @@ we_lost_clipboard(void)
 {
 #if defined(X11_SCRAP)
     /* * */
-    return (XGetSelectionOwner(SDL_Display, XA_PRIMARY) != SDL_Window);
+    return (XGetSelectionOwner(gSDLDisplay, XA_PRIMARY) != gSDLWindow);
 
 #elif defined(WIN_SCRAP)
     /* * */
-    return (GetClipboardOwner() != SDL_Window);
+    return (GetClipboardOwner() != gSDLWindow);
 
 #endif /* scrap type */
 }
@@ -454,16 +454,16 @@ put_scrap(int type, int srclen, char *src)
     if(dst != nullptr)
     {
         convert_data(type, dst, src, srclen);
-        XChangeProperty(SDL_Display, DefaultRootWindow(SDL_Display),
+        XChangeProperty(gSDLDisplay, DefaultRootWindow(gSDLDisplay),
                         XA_CUT_BUFFER0, format, 8, PropModeReplace,
                         (unsigned char *)dst, dstlen);
         if(we_lost_clipboard())
-            XSetSelectionOwner(SDL_Display, XA_PRIMARY, SDL_Window, CurrentTime);
+            XSetSelectionOwner(gSDLDisplay, XA_PRIMARY, gSDLWindow, CurrentTime);
     }
 
 #elif defined(WIN_SCRAP)
     /* * */
-    if(OpenClipboard(SDL_Window))
+    if(OpenClipboard(gSDLWindow))
     {
         HANDLE hMem;
 
@@ -501,10 +501,10 @@ get_scrap(int type, int *dstlen, Handle dst)
         unsigned long overflow;
         char *src;
 
-        owner = XGetSelectionOwner(SDL_Display, XA_PRIMARY);
-        if((owner == None) || (owner == SDL_Window))
+        owner = XGetSelectionOwner(gSDLDisplay, XA_PRIMARY);
+        if((owner == None) || (owner == gSDLWindow))
         {
-            owner = DefaultRootWindow(SDL_Display);
+            owner = DefaultRootWindow(gSDLDisplay);
             selection = XA_CUT_BUFFER0;
         }
         else
@@ -512,9 +512,9 @@ get_scrap(int type, int *dstlen, Handle dst)
             int selection_response = 0;
             SDL_Event event;
 
-            owner = SDL_Window;
-            selection = XInternAtom(SDL_Display, "SDL_SELECTION", False);
-            XConvertSelection(SDL_Display, XA_PRIMARY, format,
+            owner = gSDLWindow;
+            selection = XInternAtom(gSDLDisplay, "SDL_SELECTION", False);
+            XConvertSelection(gSDLDisplay, XA_PRIMARY, format,
                               selection, owner, CurrentTime);
             while(!selection_response)
             {
@@ -535,7 +535,7 @@ get_scrap(int type, int *dstlen, Handle dst)
                 }
             }
         }
-        if(XGetWindowProperty(SDL_Display, owner, selection, 0, INT_MAX / 4,
+        if(XGetWindowProperty(gSDLDisplay, owner, selection, 0, INT_MAX / 4,
                               False, format, &seln_type, &seln_format,
                               &nbytes, &overflow, (unsigned char **)&src)
            == Success)
@@ -556,7 +556,7 @@ get_scrap(int type, int *dstlen, Handle dst)
 
 #elif defined(WIN_SCRAP)
     /* * */
-    if(IsClipboardFormatAvailable(format) && OpenClipboard(SDL_Window))
+    if(IsClipboardFormatAvailable(format) && OpenClipboard(gSDLWindow))
     {
         HANDLE hMem;
         char *src;
@@ -603,7 +603,7 @@ void export_scrap(const SDL_Event *event)
     sevent.xselection.property = None;
     sevent.xselection.requestor = req->requestor;
     sevent.xselection.time = req->time;
-    if(XGetWindowProperty(SDL_Display, DefaultRootWindow(SDL_Display),
+    if(XGetWindowProperty(gSDLDisplay, DefaultRootWindow(gSDLDisplay),
                           XA_CUT_BUFFER0, 0, INT_MAX / 4, False, req->target,
                           &sevent.xselection.target, &seln_format,
                           &nbytes, &overflow, &seln_data)
@@ -616,15 +616,15 @@ void export_scrap(const SDL_Event *event)
                 if(seln_data[nbytes - 1] == '\0')
                     --nbytes;
             }
-            XChangeProperty(SDL_Display, req->requestor, req->property,
+            XChangeProperty(gSDLDisplay, req->requestor, req->property,
                             sevent.xselection.target, seln_format, PropModeReplace,
                             seln_data, nbytes);
             sevent.xselection.property = req->property;
         }
         XFree(seln_data);
     }
-    XSendEvent(SDL_Display, req->requestor, False, 0, &sevent);
-    XSync(SDL_Display, False);
+    XSendEvent(gSDLDisplay, req->requestor, False, 0, &sevent);
+    XSync(gSDLDisplay, False);
 
 #endif /* X11_SCRAP */
 }

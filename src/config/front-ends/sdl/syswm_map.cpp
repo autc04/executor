@@ -17,8 +17,8 @@
 /* System dependent variables */
 #if defined(__unix__)
 /* * */
-Display *SDL_Display;
-Window SDL_Window;
+Display *gSDLDisplay;
+Window gSDLWindow;
 
 static int screen_width;
 static int screen_height;
@@ -37,7 +37,7 @@ int os_current_screen_height(void)
 
 #include "win_screen.h"
 
-HWND SDL_Window;
+HWND gSDLWindow;
 
 #endif /* OS */
 
@@ -55,23 +55,23 @@ sdl_syswm_init(void)
 #if defined(__unix__)
 /* * */
 #if SDL_MAJOR_VERSION == 0 && SDL_MINOR_VERSION < 9
-        SDL_Display = info.display;
-        SDL_Window = info.window;
+        gSDLDisplay = info.display;
+        gSDLWindow = info.window;
 #else
-        SDL_Display = info.info.x11.display;
-        SDL_Window = info.info.x11.window;
+        gSDLDisplay = info.info.x11.display;
+        gSDLWindow = info.info.x11.window;
 #endif
         {
             Screen *screen;
 
-            screen = DefaultScreenOfDisplay(SDL_Display);
+            screen = DefaultScreenOfDisplay(gSDLDisplay);
             screen_width = WidthOfScreen(screen);
             screen_height = HeightOfScreen(screen);
         }
 
 #elif defined(_WIN32)
         /* * */
-        SDL_Window = info.window;
+        gSDLWindow = info.window;
 
 #endif /* OS */
         retval = 0;
