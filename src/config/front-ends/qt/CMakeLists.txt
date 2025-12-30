@@ -24,12 +24,12 @@ if(TARGET Qt6::Gui)
         target_compile_definitions(front-end-qt PRIVATE STATIC_WINDOWS_QT)
 
         target_link_libraries(front-end-qt
-            Qt5::QWindowsIntegrationPlugin 
-            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt5/lib/libQt5ThemeSupport.a 
-            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt5/lib/libQt5EventDispatcherSupport.a  
-            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt5/lib/libQt5WindowsUIAutomationSupport.a 
-            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt5/lib/libQt5FontDatabaseSupport.a
-            Qt5::Gui
+            Qt6::QWindowsIntegrationPlugin 
+            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt6/lib/libQt6ThemeSupport.a 
+            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt6/lib/libQt6EventDispatcherSupport.a  
+            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt6/lib/libQt6WindowsUIAutomationSupport.a 
+            /opt/mxe/usr/x86_64-w64-mingw32.static.posix/qt6/lib/libQt6FontDatabaseSupport.a
+            Qt6::Gui
             -ldwmapi -lcomdlg32 -loleaut32 -limm32 -lopengl32 -lharfbuzz -lcairo -lgobject-2.0 -lfontconfig
             -lfreetype -lm -lusp10 -lmsimg32 -lgdi32 -lpixman-1 -lffi -lexpat -lbz2 -lpng16 -lharfbuzz_too
             -lfreetype_too -lglib-2.0 -lshlwapi -lpcre -lintl -liconv -lmpr -lnetapi32 -luserenv -lversion
