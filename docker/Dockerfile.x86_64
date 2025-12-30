@@ -1,9 +1,9 @@
-FROM ubuntu:22.04 AS executor64
+FROM ubuntu:24.04 AS executor64
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y gcc g++ cmake \
         libboost-all-dev bison \
-        qtbase5-dev qt5-qmake qtbase5-dev-tools \
+        qt6-base-dev \
         libsdl1.2-dev libsdl2-dev \
         ninja-build ruby \
         waylandpp-dev
