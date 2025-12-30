@@ -15,7 +15,7 @@ jobs:
       pip install aqtinstall
       C:
       cd \
-      python -m aqt install -O C:\Qt 5.15.2 windows desktop win64_msvc2019_64
+      python -m aqt install-qt -O C:\Qt windows desktop 6.5.2 win64_msvc2019_64
     displayName: 'install qt'
   - powershell: |
       $Url = "https://sourceforge.net/projects/boost/files/boost-binaries/1.77.0/boost_1_77_0-msvc-14.2-64.exe/download"
@@ -39,7 +39,7 @@ jobs:
           -DCMAKE_C_COMPILER:FILEPATH=clang-cl.exe  ^
           -DCMAKE_CXX_COMPILER:FILEPATH=clang-cl.exe ^
           -DCMAKE_LINKER:FILEPATH=lld-link.exe ^
-          -DCMAKE_PREFIX_PATH=C:\Qt\5.15.2\msvc2019_64\lib\cmake ^
+          -DCMAKE_PREFIX_PATH=C:\Qt\6.5.2\msvc2019_64\lib\cmake ^
           -DBOOST_INCLUDEDIR=C:\hostedtoolcache\windows\Boost\1.77.0\x86_64 ^
           -DBOOST_LIBRARYDIR=C:\hostedtoolcache\windows\Boost\1.77.0\x86_64\lib64-msvc-14.2 ^
           -DBISON_COMMAND=c:\msys64\usr\bin\bison.exe ^
@@ -84,14 +84,14 @@ jobs:
 - job: WindowsMingw
   condition: true
   pool:
-    vmImage: 'windows-2019'
+    vmImage: 'windows-latest'
 
   steps:
   - script: |
       set MSYSTEM=MINGW64
       C:\msys64\usr\bin\bash --login -c "pacman -S --noconfirm bison perl ruby"
       C:\msys64\usr\bin\bash --login -c "pacman -S --noconfirm mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-cmake"
-      C:\msys64\usr\bin\bash --login -c "pacman -S --noconfirm mingw-w64-x86_64-qt5 mingw-w64-x86_64-boost"
+      C:\msys64\usr\bin\bash --login -c "pacman -S --noconfirm mingw-w64-x86_64-qt6 mingw-w64-x86_64-boost"
     displayName: 'install msys packages'
 
   - checkout: self
@@ -134,17 +134,17 @@ jobs:
 - job: macOS
   condition: true
   pool:
-    vmImage: 'macOS-12'
+    vmImage: 'macOS-latest'
   steps:
   - checkout: self
     submodules: true
   - script: |
-      brew install boost qt@5 ninja ruby
+      brew install boost qt@6 ninja ruby
     displayName: 'Brew prerequisites'
   - script: |
       mkdir build
       cd build
-      cmake .. -G Ninja -DCMAKE_PREFIX_PATH=/usr/local/opt/qt@5/lib/cmake
+      cmake .. -G Ninja -DCMAKE_PREFIX_PATH=/usr/local/opt/qt@6/lib/cmake
       cmake --build .
     displayName: Build
   - script: |
@@ -161,7 +161,7 @@ jobs:
       # hack: for some reason homebrew write-locks this framework.
       # it is then copied by the fixup_bundle command, preserving the write-lock
       # ... and that causes it to fail.
-      chmod +w /usr/local/Cellar/qt@5/*/Frameworks/QtPrintSupport.framework/Versions/5/QtPrintSupport
+      chmod +w /usr/local/Cellar/qt@6/*/Frameworks/QtPrintSupport.framework/Versions/6/QtPrintSupport
       cpack
   - task: PublishBuildArtifacts@1
     inputs:
