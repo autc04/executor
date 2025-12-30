@@ -18,7 +18,7 @@ jobs:
       python -m aqt install-qt -O C:\Qt windows desktop 6.5.2 win64_msvc2019_64
     displayName: 'install qt'
   - powershell: |
-      $Url = "https://sourceforge.net/projects/boost/files/boost-binaries/1.77.0/boost_1_77_0-msvc-14.2-64.exe/download"
+      $Url = "https://archives.boost.io/release/1.90.0/binaries/boost_1_90_0-msvc-14.3-64.exe"
       (New-Object System.Net.WebClient).DownloadFile($Url, "$env:TEMP\boost.exe")
       Start-Process -Wait -FilePath "$env:TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\hostedtoolcache\windows\Boost\1.77.0\x86_64"
     displayName: 'install boost'
@@ -30,7 +30,7 @@ jobs:
 
       set STUDIO=C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise
       call "%STUDIO%\VC\Auxiliary\Build\vcvars64.bat"
-      set PATH=C:\hostedtoolcache\windows\Boost\1.72.0\x86_64\lib64-msvc-14.2;%PATH%
+      set PATH=C:\hostedtoolcache\windows\Boost\1.90.0\x86_64\lib64-msvc-14.3;%PATH%
 
       cmake ^
           ..  ^
@@ -40,10 +40,10 @@ jobs:
           -DCMAKE_CXX_COMPILER:FILEPATH=clang-cl.exe ^
           -DCMAKE_LINKER:FILEPATH=lld-link.exe ^
           -DCMAKE_PREFIX_PATH=C:\Qt\6.5.2\msvc2019_64\lib\cmake ^
-          -DBOOST_INCLUDEDIR=C:\hostedtoolcache\windows\Boost\1.77.0\x86_64 ^
-          -DBOOST_LIBRARYDIR=C:\hostedtoolcache\windows\Boost\1.77.0\x86_64\lib64-msvc-14.2 ^
+          -DBOOST_INCLUDEDIR=C:\hostedtoolcache\windows\Boost\1.90.0\x86_64 ^
+          -DBOOST_LIBRARYDIR=C:\hostedtoolcache\windows\Boost\1.90.0\x86_64\lib64-msvc-14.3 ^
           -DBISON_COMMAND=c:\msys64\usr\bin\bison.exe ^
-          -DBoost_COMPILER=-vc142
+          -DBoost_COMPILER=-vc143
 
       type CMakeCache.txt
 
