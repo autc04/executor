@@ -1,6 +1,7 @@
 #define _block_h_
 #include <Cocoa/Cocoa.h>
 #include <algorithm>
+#include <functional>
 
 static bool inited = false;
 static bool dock = false;
