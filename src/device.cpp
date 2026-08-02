@@ -16,6 +16,7 @@
 #include <rsys/device.h>
 #include <file/file.h>
 #include <rsys/serial.h>
+#include <base/cpu.h>
 #include <base/functions.impl.h>
 
 using namespace Executor;
@@ -256,6 +257,16 @@ static std::vector<driverinfo> knowndrivers;
 void Executor::RegisterDriver(const driverinfo& di)
 {
     knowndrivers.push_back(di);
+}
+
+/* Re-enter emulated code to run a driver call's completion routine.
+ * A0 = param block, A1 = the routine, D0 = result. */
+void Executor::callcomp(ParmBlkPtr pbp, ProcPtr comp, OSErr err)
+{
+    EM_A0 = US_TO_SYN68K(pbp);
+    EM_A1 = US_TO_SYN68K(comp);
+    EM_D0 = (unsigned short)err; /* TODO: unsigned short ? */
+    execute68K((syn68k_addr_t)(uintptr_t)comp);
 }
 
 static void InitBuiltinDrivers()

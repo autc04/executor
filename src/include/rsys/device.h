@@ -17,4 +17,10 @@ struct driverinfo
 };
 
 void RegisterDriver(const driverinfo& di);
+
+/* Re-enter emulated code to run a driver call's completion routine.
+ * A0 = param block, A1 = the routine, D0 = result -- the completion
+ * routine ABI.  Any native driver implementing asynchronous calls
+ * needs this, so it lives here rather than in one driver's .cpp. */
+void callcomp(ParmBlkPtr pbp, ProcPtr comp, OSErr err);
 }
