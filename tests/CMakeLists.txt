@@ -47,6 +47,12 @@ set(NATIVE_TEST_SOURCES
 
 set(TEST_SOURCES
         files.cpp quickdraw.cpp listmgr.cpp resources.cpp events.cpp
+        # Dual-mode on purpose: natively this checks the generated
+        # headers against defs/MacTCP.yaml, and under Retro68 -- built
+        # against Apple's Universal Interfaces rather than generated
+        # CIncludes -- it checks the documented ABI against Apple's.
+        # Compiles to nothing where there is no MacTCP.h.
+        mactcp_abi.cpp
     )
 if(CMAKE_SYSTEM_NAME STREQUAL Retro68)
     list(APPEND TEST_SOURCES
