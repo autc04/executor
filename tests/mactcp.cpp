@@ -25,6 +25,9 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <cstdlib>
+#include <memory>
+#include <string>
 
 using namespace Executor;
 
@@ -104,8 +107,10 @@ private:
     uint16_t port_ = 0;
 };
 
-/* Open a stream and connect it to the listener.  Returns the refnum;
- * the stream cookie is left in pb.tcpStream. */
+/* Open a stream and connect it.  MacTCP has no resolver of its own --
+ * names go through the DNR, a separate code resource and phase 3 work
+ * -- so every connect here is by numeric address, exactly as an
+ * application of the era would have done it. */
 void createAndConnect(INTEGER refnum, TCPiopb& pb, Ptr rcvBuff,
                       uint32_t rcvBuffLen, uint16_t port)
 {
@@ -361,5 +366,193 @@ TEST(MacTCP, PeerCloseIsReportedAsConnectionClosing)
     EXPECT_EQ(noErr, control(refnum, pb, TCPAbort));
 
     DisposePtr(appBuff);
+    DisposePtr(rcvBuff);
+}
+
+/* ---- a real HTTP/1.0 fetch ----------------------------------------
+ * The phase 1 exit criterion was "a hand-rolled port-80 fetch works".
+ * This is that exchange, driven entirely through the .IPP driver:
+ * a genuine HTTP request goes out, a genuine response with headers and
+ * a body larger than the application's receive buffer comes back, and
+ * the server closes the connection to signal the end of the entity --
+ * HTTP/1.0 semantics, which is what a 90s Mac client would have spoken.
+ *
+ * It talks to a server inside the test process rather than out to the
+ * internet, for three reasons.  MacTCP has no resolver yet, so a real
+ * host would have to be a hardcoded IP address that rots.  A test that
+ * needs egress cannot run in CI or on a developer's laptop offline.
+ * And the driver cannot tell the difference: the same socket calls run
+ * either way, and the parts that would differ -- routing, DNS -- are
+ * not in the driver.  Set EXECUTOR_MACTCP_TEST_ADDR (dotted quad) and
+ * optionally EXECUTOR_MACTCP_TEST_PORT to point the same exchange at a
+ * real server.
+ */
+
+namespace
+{
+
+/* Read from a stream until the peer hangs up, appending to `out`.
+ * Returns the OSErr that ended the loop. */
+OSErr drainStream(INTEGER refnum, TCPiopb& pb, GUEST<StreamPtr> stream,
+                  Ptr appBuff, uint16_t appBuffLen, std::string& out)
+{
+    for(;;)
+    {
+        std::memset(&pb.csParam, 0, sizeof(pb.csParam));
+        pb.tcpStream = stream;
+        pb.csParam.receive.rcvBuff = appBuff;
+        pb.csParam.receive.rcvBuffLen = appBuffLen;
+        pb.csParam.receive.commandTimeoutValue = 10;
+
+        OSErr err = control(refnum, pb, TCPRcv);
+        if(err != noErr)
+            return err;
+
+        uint16_t got = pb.csParam.receive.rcvBuffLen;
+        if(got == 0)
+            return noErr;
+        out.append((const char *)appBuff, got);
+    }
+}
+
+} /* namespace */
+
+TEST(MacTCP, HttpFetch)
+{
+    INTEGER refnum = openIPP();
+
+    /* A body deliberately larger than the receive buffer below, so the
+     * response cannot arrive in one TCPRcv.
+     *
+     * Keep it comfortably inside the socket buffers.  Driver calls here
+     * are synchronous and the server side is the same thread, so the
+     * server writes its whole response before the driver reads any of
+     * it; a response too large to sit in the kernel buffers would block
+     * the send and deadlock the test.  Growing this much beyond a few
+     * tens of KB needs a thread or a poll loop on the server side. */
+    std::string body;
+    for(int i = 0; body.size() < 10000; ++i)
+        body += "line " + std::to_string(i) + " of the response body\n";
+
+    std::string response =
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "\r\n" + body;
+
+    uint32_t host = 0x7F000001;
+    uint16_t port = 0;
+    std::unique_ptr<LoopbackListener> listener;
+
+    if(const char *addr = getenv("EXECUTOR_MACTCP_TEST_ADDR"))
+    {
+        struct in_addr in;
+        ASSERT_EQ(1, inet_pton(AF_INET, addr, &in)) << "bad test address";
+        host = ntohl(in.s_addr);
+        port = 80;
+        if(const char *p = getenv("EXECUTOR_MACTCP_TEST_PORT"))
+            port = (uint16_t)atoi(p);
+    }
+    else
+    {
+        listener = std::make_unique<LoopbackListener>();
+        port = listener->port();
+    }
+
+    const uint32_t kRcvBuffLen = 8192;
+    Ptr rcvBuff = guestBuffer(kRcvBuffLen);
+
+    TCPiopb pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.csParam.create.rcvBuff = rcvBuff;
+    pb.csParam.create.rcvBuffLen = kRcvBuffLen;
+    ASSERT_EQ(noErr, control(refnum, pb, TCPCreate));
+    auto stream = pb.tcpStream;
+
+    std::memset(&pb.csParam, 0, sizeof(pb.csParam));
+    pb.tcpStream = stream;
+    pb.csParam.open.remoteHost = host;
+    pb.csParam.open.remotePort = port;
+    pb.csParam.open.ulpTimeoutValue = 10;
+    ASSERT_EQ(noErr, control(refnum, pb, TCPActiveOpen))
+        << "TCPActiveOpen failed";
+
+    /* --- send the request --------------------------------------- */
+    const char request[] =
+        "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+
+    Ptr reqBuff = guestBuffer(sizeof(request));
+    std::memcpy(reqBuff, request, sizeof(request) - 1);
+    Ptr wdsMem = guestBuffer(sizeof(wdsEntry) * 2);
+    auto *wds = (wdsEntry *)wdsMem;
+    wds[0].length = sizeof(request) - 1;
+    wds[0].ptr = reqBuff;
+    wds[1].length = 0;
+    wds[1].ptr = nullptr;
+
+    std::memset(&pb.csParam, 0, sizeof(pb.csParam));
+    pb.tcpStream = stream;
+    pb.csParam.send.wdsPtr = wdsMem;
+    pb.csParam.send.pushFlag = 1;
+    pb.csParam.send.ulpTimeoutValue = 10;
+    ASSERT_EQ(noErr, control(refnum, pb, TCPSend));
+
+    /* --- the server side ----------------------------------------- */
+    if(listener)
+    {
+        int peer = listener->accepted();
+        ASSERT_GE(peer, 0);
+
+        char req[512] = {};
+        ssize_t n = recv(peer, req, sizeof(req) - 1, 0);
+        ASSERT_GT(n, 0);
+        EXPECT_NE(nullptr, std::strstr(req, "GET / HTTP/1.0"))
+            << "server did not receive a well-formed request";
+
+        ASSERT_EQ((ssize_t)response.size(),
+                  send(peer, response.data(), response.size(), 0));
+        shutdown(peer, SHUT_WR); /* HTTP/1.0: close ends the entity */
+    }
+
+    /* --- read the response --------------------------------------- */
+    Ptr appBuff = guestBuffer(1024);
+    std::string got;
+    OSErr err = drainStream(refnum, pb, stream, appBuff, 1024, got);
+
+    /* A clean server hangup surfaces as connectionClosing, which is
+     * the normal end of an HTTP/1.0 response, not a failure. */
+    EXPECT_TRUE(err == noErr || err == connectionClosing)
+        << "unexpected error draining response: " << err;
+
+    ASSERT_FALSE(got.empty()) << "no response received";
+    EXPECT_EQ(0u, got.rfind("HTTP/1.", 0)) << "not an HTTP response";
+
+    size_t hdrEnd = got.find("\r\n\r\n");
+    ASSERT_NE(std::string::npos, hdrEnd) << "no header terminator";
+
+    std::string gotBody = got.substr(hdrEnd + 4);
+    if(!listener)
+    {
+        /* Against a real server we cannot predict the body, so just
+         * insist we got a plausible amount of it. */
+        EXPECT_GT(got.size(), 16u);
+    }
+    else
+    {
+        EXPECT_EQ(body.size(), gotBody.size())
+            << "body truncated: needed several TCPRcv calls";
+        EXPECT_EQ(body, gotBody);
+    }
+
+    std::memset(&pb.csParam, 0, sizeof(pb.csParam));
+    pb.tcpStream = stream;
+    control(refnum, pb, TCPClose);
+    std::memset(&pb.csParam, 0, sizeof(pb.csParam));
+    pb.tcpStream = stream;
+    ASSERT_EQ(noErr, control(refnum, pb, TCPRelease));
+
+    DisposePtr(appBuff);
+    DisposePtr(wdsMem);
+    DisposePtr(reqBuff);
     DisposePtr(rcvBuff);
 }
