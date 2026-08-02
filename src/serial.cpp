@@ -12,13 +12,16 @@
 
 #if defined(__APPLE__)
 // FIXME: #warning bad serial support right now
-//TODO: this seems to use sgtty functions instead of termios.
+// TODO: macOS is not in the USE_TERMIOS set below, so it still takes the
+// BSD sgtty path.  Linux and alpha were moved to POSIX termios; macOS has
+// perfectly good termios too, so the sgtty branch could most likely be
+// deleted outright -- it just needs testing on a Mac.
 #include <sgtty.h>
 #include <sys/errno.h>
 #include <sys/types.h>
 #include <sys/param.h>
 #include <stdio.h>
-#endif /* !defined (__APPLE__) */
+#endif /* defined (__APPLE__) */
 
 #include <Serial.h>
 #include <DeviceMgr.h>
@@ -49,8 +52,17 @@
 
 using namespace Executor;
 
+/* Use the POSIX termios API rather than the ancient BSD sgtty one.
+ * This used to be spelled TERMIO and used the System V <termio.h>
+ * interface (struct termio, TCGETA/TCSETAW/TCSBRK/TCXONC), which glibc
+ * dropped in 2.42.
+ *
+ * Everything guarded by USE_TERMIOS is plain POSIX.1-2001; the platform
+ * list is narrow only because the sgtty fallback has never been retested,
+ * not because anything here is Linux-specific.  See the __APPLE__ block
+ * at the top of the file. */
 #if defined(__alpha) || defined(__linux__)
-#define TERMIO
+#define USE_TERMIOS
 #endif
 
 /*
@@ -184,12 +196,12 @@ OSErr Executor::SerStatus(INTEGER rn, SerStaRec *serstap) /* IMII-253 */
 #define OPENBIT (1 << 0)
 
 #if !defined(_WIN32)
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
 
 typedef struct
 {
     LONGINT fd; /* will be the same for both In and Out */
-    struct termio state;
+    struct termios state;
 } hidden, *hiddenp;
 
 #else
@@ -405,8 +417,8 @@ static OSErr C_ROMlib_serialopen(ParmBlkPtr pbp, DCtlPtr dcp) /* INTERNAL */
                     err = ROMlib_maperrno();
                 else
                 {
-#if defined(TERMIO)
-                    err = ioctl((*h)->fd, TCGETA, &(*h)->state) < 0 ? ROMlib_maperrno() : noErr;
+#if defined(USE_TERMIOS)
+                    err = tcgetattr((*h)->fd, &(*h)->state) < 0 ? ROMlib_maperrno() : noErr;
 #else
                     if(ioctl((*h)->fd, TIOCGETP, &(*h)->sgttyb) < 0 || ioctl((*h)->fd, TIOCGETC, &(*h)->tchars) < 0 || ioctl((*h)->fd, TIOCLGET, &(*h)->lclmode) < 0)
                         err = ROMlib_maperrno();
@@ -504,12 +516,19 @@ static OSErr C_ROMlib_serialprime(ParmBlkPtr pbp, DCtlPtr dcp) /* INTERNAL */
     DOCOMPLETION(pbp, err);
 }
 
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
 
 #define OURCS7 (CS7)
 #define OURCS8 (CS8)
 #define OURODDP (PARENB | PARODD)
 #define OUREVENP (PARENB)
+
+/* EXTA/EXTB are legacy BSD aliases, exposed by glibc only under
+ * _DEFAULT_SOURCE and not part of POSIX; B19200/B38400 are.  The sgtty
+ * branch below still needs the EXT* spellings, where they are sgtty
+ * speed codes rather than termios ones. */
+#define OURB19200 (B19200)
+#define OURB38400 (B38400)
 
 #else
 
@@ -524,6 +543,9 @@ static OSErr C_ROMlib_serialprime(ParmBlkPtr pbp, DCtlPtr dcp) /* INTERNAL */
 #define OURODDP (ODDP)
 #define OUREVENP (EVENP)
 
+#define OURB19200 (EXTA)
+#define OURB38400 (EXTB)
+
 #endif
 
 static OSErr serset(LONGINT fd, INTEGER param)
@@ -535,8 +557,8 @@ static OSErr serset(LONGINT fd, INTEGER param)
     return retval;
 #else
 
-#if defined(TERMIO)
-    struct termio settings;
+#if defined(USE_TERMIOS)
+    struct termios settings;
 #else
     struct sgttyb sgttyb;
     struct tchars tchars;
@@ -578,10 +600,10 @@ static OSErr serset(LONGINT fd, INTEGER param)
             baud = B9600;
             break;
         case baud19200:
-            baud = EXTA;
+            baud = OURB19200;
             break;
         case 1: /* really 38400 according to Terminal 2.2 source */
-            baud = EXTB;
+            baud = OURB38400;
             break;
         case baud3600: /* these case labels aren't necessary since they */
         case baud7200: /* fall into default anyway, just thought you */
@@ -639,7 +661,7 @@ static OSErr serset(LONGINT fd, INTEGER param)
             stopbits = 0;
             break;
         case 3:
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
             stopbits = CSTOPB;
             break;
 #endif
@@ -651,13 +673,26 @@ static OSErr serset(LONGINT fd, INTEGER param)
 
     if(err == noErr)
     {
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
+        /* Build the line settings from scratch.  Zero first: the old
+         * System V version left c_cc[] uninitialized, which meant VMIN
+         * and VTIME were garbage.  VMIN = VTIME = 0 gives a polling
+         * read(), which is what the Prime routine wants -- it checks
+         * FIONREAD before reading. */
+        memset(&settings, 0, sizeof settings);
         settings.c_iflag = IGNPAR | IXON | IXOFF;
         settings.c_oflag = 0;
-        settings.c_cflag = baud | csize | stopbits | parity;
+        /* CREAD was missing here; without it the receiver stays off and
+         * no input ever arrives.  CLOCAL keeps us from blocking on
+         * modem control lines we don't emulate. */
+        settings.c_cflag = csize | stopbits | parity | CREAD | CLOCAL;
         settings.c_lflag = 0;
-        settings.c_line = 0; /* TODO: find out real value here */
-        err = ioctl(fd, TCSETAW, &settings) < 0 ? ROMlib_maperrno() : noErr;
+        settings.c_cc[VMIN] = 0;
+        settings.c_cc[VTIME] = 0;
+        if(cfsetispeed(&settings, baud) < 0 || cfsetospeed(&settings, baud) < 0)
+            err = ROMlib_maperrno();
+        else
+            err = tcsetattr(fd, TCSADRAIN, &settings) < 0 ? ROMlib_maperrno() : noErr;
 #else
         sgttyb.sg_ispeed = sgttyb.sg_ospeed = baud;
         sgttyb.sg_erase = -1;
@@ -698,8 +733,8 @@ static OSErr serxhshake(LONGINT fd, SerShk *sershkp)
     return retval;
 #else
 
-#if defined(TERMIO)
-    struct termio settings;
+#if defined(USE_TERMIOS)
+    struct termios settings;
 #else
     struct sgttyb sgttyb;
     struct tchars tchars;
@@ -707,8 +742,8 @@ static OSErr serxhshake(LONGINT fd, SerShk *sershkp)
     OSErr err;
 
     err = noErr;
-#if defined(TERMIO)
-    if(ioctl(fd, TCGETA, &settings) < 0)
+#if defined(USE_TERMIOS)
+    if(tcgetattr(fd, &settings) < 0)
         err = ROMlib_maperrno();
 #else
     if(ioctl(fd, TIOCGETP, &sgttyb) < 0 || ioctl(fd, TIOCGETC, &tchars) < 0)
@@ -718,7 +753,7 @@ static OSErr serxhshake(LONGINT fd, SerShk *sershkp)
     {
         if(sershkp->fXOn)
         {
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
             settings.c_iflag |= IXON;
         }
         else
@@ -736,12 +771,12 @@ static OSErr serxhshake(LONGINT fd, SerShk *sershkp)
 #endif
         if(sershkp->fInX)
         {
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
             settings.c_iflag |= IXOFF;
         }
         else
             settings.c_iflag &= ~IXOFF;
-        err = ioctl(fd, TCSETAW, &settings) < 0 ? ROMlib_maperrno() : noErr;
+        err = tcsetattr(fd, TCSADRAIN, &settings) < 0 ? ROMlib_maperrno() : noErr;
 #else
             /* Can't enable TANDEM without setting startc & stopc. If I
 	     * do that, input flow control is also enabled. This is what
@@ -771,8 +806,8 @@ static OSErr setbaud(LONGINT fd, INTEGER baud)
     return retval;
 #else
 
-#if defined(TERMIO)
-    struct termio settings;
+#if defined(USE_TERMIOS)
+    struct termios settings;
 #else
     struct sgttyb sgttyb;
 #endif
@@ -782,24 +817,39 @@ static OSErr setbaud(LONGINT fd, INTEGER baud)
         (INTEGER)38400, (INTEGER)32767,
     },
                    *ip;
+#if defined(USE_TERMIOS)
+    /* Parallel to rates[], minus the 32767 sentinel.  The old code
+     * relied on the B* constants being numerically equal to the index
+     * plus one, which is true on Linux but is not portable. */
+    static const speed_t speeds[] = {
+        B50, B75, B110, B134, B150, B200, B300,
+        B600, B1200, B1800, B2400, B4800, B9600, B19200,
+        B38400,
+    };
+#endif
     OSErr err;
 
     for(ip = rates; *ip < baud; ip++)
         ;
-    if(*ip == 32767 || ip[0] - baud > baud - ip[-1])
+    /* ip != rates guards the ip[-1] read below; the original walked off
+     * the front of the array for any requested rate <= 50. */
+    if(*ip == 32767 || (ip != rates && ip[0] - baud > baud - ip[-1]))
         --ip;
-#if defined(TERMIO)
-    if(ioctl(fd, TCGETA, &settings) < 0)
+#if defined(USE_TERMIOS)
+    if(tcgetattr(fd, &settings) < 0)
 #else
     if(ioctl(fd, TIOCGETP, &sgttyb) < 0)
 #endif
         err = ROMlib_maperrno();
     else
     {
-#if defined(TERMIO)
-        settings.c_cflag &= ~CBAUD;
-        settings.c_cflag |= ip - rates + 1;
-        err = ioctl(fd, TCSETAW, &settings) < 0 ? ROMlib_maperrno() : noErr;
+#if defined(USE_TERMIOS)
+        speed_t speed = speeds[ip - rates];
+
+        if(cfsetispeed(&settings, speed) < 0 || cfsetospeed(&settings, speed) < 0)
+            err = ROMlib_maperrno();
+        else
+            err = tcsetattr(fd, TCSADRAIN, &settings) < 0 ? ROMlib_maperrno() : noErr;
 #else
         sgttyb.sg_ispeed = sgttyb.sg_ospeed = ip - rates + 1;
         err = ioctl(fd, TIOCGETP, &sgttyb) < 0 ? ROMlib_maperrno() : noErr;
@@ -819,11 +869,11 @@ static OSErr ctlbrk(LONGINT fd, INTEGER flag)
 #else
     OSErr err;
 
-#if defined(TERMIO)
+#if defined(USE_TERMIOS)
     if(flag == SER_START)
     {
         /* NOTE:  This will send a break for 1/4 sec */
-        err = ioctl(fd, TCSBRK, 0);
+        err = tcsendbreak(fd, 0);
     }
     else
         err = noErr;
@@ -844,12 +894,9 @@ static OSErr flow(LONGINT fd, LONGINT flag)
 #else
     OSErr err;
 
-#if defined(TERMIO)
-#if !defined(__alpha)
-    err = ioctl(fd, TCXONC, flag == SER_STOP ? 0 : 1);
-#else
-    err = ioctl(fd, TCXONC, (void *)(flag == SER_STOP ? 0L : 1L));
-#endif
+#if defined(USE_TERMIOS)
+    /* TCXONC's 0/1 arguments were TCOOFF/TCOON. */
+    err = tcflow(fd, flag == SER_STOP ? TCOOFF : TCOON);
 #else
     err = ioctl(fd, flag == SER_STOP ? TIOCSTOP : TIOCSTART, 0);
 #endif
@@ -1031,8 +1078,8 @@ static OSErr C_ROMlib_serialstatus(ParmBlkPtr pbp, DCtlPtr dcp) /* INTERNAL */
 static void restorecloseanddispose(hiddenh h)
 {
 #if defined(__linux__) || defined(__APPLE__)
-#if defined(TERMIO)
-    ioctl((*h)->fd, TCSETAW, &(*h)->state);
+#if defined(USE_TERMIOS)
+    tcsetattr((*h)->fd, TCSADRAIN, &(*h)->state);
 #else
     ioctl((*h)->fd, TIOCSETP, &(*h)->sgttyb);
     ioctl((*h)->fd, TIOCSETC, &(*h)->tchars);

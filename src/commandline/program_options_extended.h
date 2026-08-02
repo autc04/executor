@@ -2,9 +2,19 @@
 
 #include <boost/any.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/version.hpp>
 
 #include <optional>
 
+/* Boost 1.90 grew its own validate() overload for std::optional (guarded
+ * by BOOST_NO_CXX17_HDR_OPTIONAL in program_options/detail/value_semantic.hpp).
+ * Defining ours as well is a redefinition error, so only supply it for
+ * older Boost.  1.89 and earlier do not have it. */
+#if BOOST_VERSION < 109000
+#define EXECUTOR_NEEDS_STD_OPTIONAL_VALIDATE 1
+#endif
+
+#if defined(EXECUTOR_NEEDS_STD_OPTIONAL_VALIDATE)
 namespace boost::program_options
 {
     template<class T, class charT>
@@ -13,6 +23,7 @@ namespace boost::program_options
                     std::optional<T>*,
                     int);
 }
+#endif
 #include <boost/program_options.hpp>
 
 namespace boost::filesystem
@@ -20,6 +31,7 @@ namespace boost::filesystem
     void validate(boost::any& v, const std::vector<std::string>& s, boost::filesystem::path*, int);
 }
 
+#if defined(EXECUTOR_NEEDS_STD_OPTIONAL_VALIDATE)
 /** Validates optional arguments. */
 template<class T, class charT>
 void boost::program_options::validate(boost::any& v,
@@ -33,6 +45,7 @@ void boost::program_options::validate(boost::any& v,
     validate(a, s, (T*)0, 0);
     v = boost::any(std::optional<T>(boost::any_cast<T>(a)));
 }
+#endif
 
 namespace program_options_extended
 {
