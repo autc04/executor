@@ -12,9 +12,16 @@
  *       can slip through.  These per-field offsets catch that.
  *
  *   Retro68, against Apple's Universal Interfaces MacTCP.h:
- *       are the numbers we took from the MacTCP Programmer's Guide
- *       actually correct?  This is the ground truth, and it is the
- *       half that settles the VERIFY markers in the YAML.
+ *       are those numbers actually correct?  This is the ground truth.
+ *
+ * The expected values below have been confirmed field by field against
+ * Universal Interfaces 3.4.2, by compiling Apple's MacTCP.h for a
+ * 4-byte-pointer target with 2-byte packing (which is what mac68k
+ * alignment amounts to for these types) and reading back the offsets
+ * the compiler computed.  Two blocks did *not* match the MacTCP
+ * Programmer's Guide, and both are called out where they appear below:
+ * TCPReceivePB's field order, and TCPStatusPB's connStatPtr, whose
+ * omission also made TCPiopb 98 bytes instead of 102.
  *
  * IMPORTANT: the Retro68 half only means something when it compiles
  * against *Apple's* headers.  Retro68 generates its CIncludes from the
@@ -32,7 +39,7 @@
  * that way, and every parameter block field it touches agrees with the
  * names used here.
  *
- * To settle the VERIFY markers:
+ * To re-confirm after a change:
  *
  *     ./tests --gtest_filter=MacTCPABI.DumpLayout   # native, ours
  *     ... same test built as the Retro68 application, run under
@@ -42,9 +49,9 @@
  * A compile failure on the Retro68 side is itself a result: it means a
  * field name in defs/MacTCP.yaml does not match Apple's.
  *
- * The expected values below come from the MacTCP Programmer's Guide,
- * not from the YAML, so that a transcription error in the YAML shows
- * up as a failure here rather than being quietly mirrored.
+ * The expected values are written out here rather than derived from
+ * the YAML, so that a transcription error in the YAML shows up as a
+ * failure instead of being quietly mirrored.
  */
 
 #include "gtest/gtest.h"
@@ -113,7 +120,7 @@ using namespace Executor;
     X(csParam.open.optionCnt, 53)          \
     X(csParam.open.options, 54)            \
     X(csParam.open.userDataPtr, 94)        \
-    /* TCPSend -- VERIFY: position of the filler at 37 */ \
+    /* TCPSend -- filler at 37, confirmed against Apple */ \
     X(csParam.send.ulpTimeoutValue, 32)    \
     X(csParam.send.ulpTimeoutAction, 33)   \
     X(csParam.send.validityFlags, 34)      \
@@ -123,16 +130,17 @@ using namespace Executor;
     X(csParam.send.sendFree, 42)           \
     X(csParam.send.sendLength, 46)         \
     X(csParam.send.userDataPtr, 48)        \
-    /* TCPRcv / TCPNoCopyRcv / TCPRcvBfrReturn                        \
-     * VERIFY: relative order of urgentFlag and markFlag at 48/49 */  \
+    /* TCPRcv / TCPNoCopyRcv / TCPRcvBfrReturn.  markFlag and         \
+     * urgentFlag are at the front, not the tail: the Programmer's     \
+     * Guide is wrong about this block and Apple's header says so. */  \
     X(csParam.receive.commandTimeoutValue, 32) \
-    X(csParam.receive.rcvBuff, 34)         \
-    X(csParam.receive.rcvBuffLen, 38)      \
-    X(csParam.receive.rdsPtr, 40)          \
-    X(csParam.receive.rdsLength, 44)       \
-    X(csParam.receive.secondTimeStamp, 46) \
-    X(csParam.receive.urgentFlag, 48)      \
-    X(csParam.receive.markFlag, 49)        \
+    X(csParam.receive.markFlag, 33)        \
+    X(csParam.receive.urgentFlag, 34)      \
+    X(csParam.receive.rcvBuff, 36)         \
+    X(csParam.receive.rcvBuffLen, 40)      \
+    X(csParam.receive.rdsPtr, 42)          \
+    X(csParam.receive.rdsLength, 46)       \
+    X(csParam.receive.secondTimeStamp, 48) \
     X(csParam.receive.userDataPtr, 50)     \
     /* TCPClose */                         \
     X(csParam.close.ulpTimeoutValue, 32)   \
@@ -141,7 +149,9 @@ using namespace Executor;
     X(csParam.close.userDataPtr, 36)       \
     /* TCPAbort */                         \
     X(csParam.abort.userDataPtr, 32)       \
-    /* TCPStatus -- VERIFY: the tail from srtt at 82 onwards */ \
+    /* TCPStatus.  connStatPtr at 94 is absent from the Guide's        \
+     * parameter table; leaving it out shortens the block to 66 and     \
+     * TCPiopb to 98. */                                                \
     X(csParam.status.ulpTimeoutValue, 32)  \
     X(csParam.status.ulpTimeoutAction, 33) \
     X(csParam.status.remoteHost, 38)       \
@@ -161,9 +171,10 @@ using namespace Executor;
     X(csParam.status.congestionWindow, 74) \
     X(csParam.status.rcvNext, 78)          \
     X(csParam.status.srtt, 82)             \
-    X(csParam.status.lastRtt, 86)          \
+    X(csParam.status.lastRTT, 86)          \
     X(csParam.status.sendMaxSegSize, 90)   \
-    X(csParam.status.userDataPtr, 94)
+    X(csParam.status.connStatPtr, 94)      \
+    X(csParam.status.userDataPtr, 98)
 
 #define MACTCP_GETADDR_FIELDS(X) \
     X(ourAddress, 28)            \
@@ -182,7 +193,7 @@ MACTCP_IOPB_FIELDS(ASSERT_IOPB_OFFSET)
 MACTCP_GETADDR_FIELDS(ASSERT_GETADDR_OFFSET)
 #undef ASSERT_GETADDR_OFFSET
 
-static_assert(sizeof(TCPiopb) == 98, "TCPiopb size");
+static_assert(sizeof(TCPiopb) == 102, "TCPiopb size");
 static_assert(sizeof(GetAddrParamBlock) == 36, "GetAddrParamBlock size");
 static_assert(sizeof(wdsEntry) == 6, "wdsEntry size");
 static_assert(sizeof(rdsEntry) == 6, "rdsEntry size");
@@ -211,15 +222,15 @@ TEST(MacTCPABI, GetAddrParamBlockFieldOffsets)
 
 TEST(MacTCPABI, StructSizes)
 {
-    EXPECT_EQ(98u, (unsigned)sizeof(TCPiopb));
+    EXPECT_EQ(102u, (unsigned)sizeof(TCPiopb));
     EXPECT_EQ(36u, (unsigned)sizeof(GetAddrParamBlock));
     EXPECT_EQ(6u, (unsigned)sizeof(wdsEntry));
     EXPECT_EQ(6u, (unsigned)sizeof(rdsEntry));
     EXPECT_EQ(24u, (unsigned)sizeof(ICMPReport));
 
-    /* csParam has to cover the largest member; open and status are
-     * tied at 66 bytes, which is what makes TCPiopb 98. */
-    EXPECT_EQ(66u, (unsigned)(sizeof(TCPiopb) - 32));
+    /* csParam covers its largest member, TCPStatusPB at 70 bytes,
+     * which is what makes TCPiopb 102.  TCPOpenPB is 66. */
+    EXPECT_EQ(70u, (unsigned)(sizeof(TCPiopb) - 32));
 }
 
 /* Result codes are as much a part of the ABI as the layouts: an

@@ -80,7 +80,11 @@ static_assert(offsetof(TCPiopb, csParam) == 32, "TCPiopb ABI");
 static_assert(offsetof(TCPOpenPB, remoteHost) == 4, "TCPOpenPB ABI");
 static_assert(offsetof(TCPOpenPB, localHost) == 10, "TCPOpenPB ABI");
 static_assert(offsetof(TCPSendPB, wdsPtr) == 6, "TCPSendPB ABI");
-static_assert(offsetof(TCPReceivePB, rcvBuff) == 2, "TCPReceivePB ABI");
+static_assert(offsetof(TCPReceivePB, rcvBuff) == 4, "TCPReceivePB ABI");
+static_assert(offsetof(TCPReceivePB, markFlag) == 1, "TCPReceivePB ABI");
+static_assert(offsetof(TCPReceivePB, urgentFlag) == 2, "TCPReceivePB ABI");
+static_assert(sizeof(TCPStatusPB) == 70, "TCPStatusPB ABI");
+static_assert(sizeof(TCPiopb) == 102, "TCPiopb ABI");
 static_assert(offsetof(GetAddrParamBlock, ourAddress) == 28,
               "GetAddrParamBlock ABI");
 static_assert(sizeof(wdsEntry) == 6, "wdsEntry ABI");
