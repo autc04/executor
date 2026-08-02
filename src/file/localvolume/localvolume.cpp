@@ -425,11 +425,17 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
         itemCache->cacheDirectory(dirItem);
         pb->dirInfo.ioDrNmFls = dirItem->countItems();
 
+        // Directories have dates just as files do, and Item::getInfo
+        // already reads them off the underlying filesystem.  Reporting
+        // zero made every directory look older than the files it
+        // contains, which is not a state HFS can be in.
+        auto info = dirItem->getInfo();
+        pb->dirInfo.ioDrCrDat = info.creationTime;
+        pb->dirInfo.ioDrMdDat = info.modTime;
+
         // TODO:
         pb->dirInfo.ioACUser = 0;
         pb->dirInfo.ioDrUsrWds = {};
-        pb->dirInfo.ioDrCrDat = 0;
-        pb->dirInfo.ioDrMdDat = 0;
         pb->dirInfo.ioDrBkDat = 0;
         pb->dirInfo.ioDrFndrInfo = {};
 
