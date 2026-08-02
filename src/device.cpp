@@ -16,6 +16,7 @@
 #include <rsys/device.h>
 #include <file/file.h>
 #include <rsys/serial.h>
+#include <rsys/mactcp.h>
 #include <base/cpu.h>
 #include <base/functions.impl.h>
 
@@ -272,6 +273,7 @@ void Executor::callcomp(ParmBlkPtr pbp, ProcPtr comp, OSErr err)
 static void InitBuiltinDrivers()
 {
     InitSerialDriver();
+    InitMacTCPDriver();
 }
 
 /*
