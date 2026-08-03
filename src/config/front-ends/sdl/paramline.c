@@ -6,11 +6,13 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+/* C23 makes bool/true/false keywords, so the old hand-rolled
+ * `typedef enum { false, true } bool;` is now a syntax error.
+ * <stdbool.h> is correct on both sides of that line: it defines the
+ * macros pre-C23 and is a harmless no-op from C23 onwards. */
+#include <stdbool.h>
 
 #include "paramline.h"
-
-typedef enum { false,
-               true } bool;
 
 int count_params(const char *p, int n)
 {

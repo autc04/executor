@@ -43,10 +43,9 @@ typedef short int INTEGER;
 
 typedef int LONGINT;
 
-#ifndef true
-typedef enum { false,
-               true } bool;
-#endif
+/* bool/true/false are keywords in C++ (and, since C23, in C too); the
+ * old `#ifndef true` guard never suppressed anything because they are
+ * keywords rather than macros. */
 
 using namespace Executor;
 
