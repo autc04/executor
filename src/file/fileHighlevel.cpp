@@ -118,7 +118,14 @@ OSErr Executor::C_FSMakeFSSpec(int16_t vRefNum, int32_t dir_id,
                 if(cpb.hFileInfo.ioFlAttrib & ATTRIB_ISADIR)
                 {
                     spec->vRefNum = hpb.volumeParam.ioVRefNum;
-                    spec->parID = dir_id;
+                    /* Report the directory ID that PBGetCatInfo
+                     * resolved rather than the one we were handed:
+                     * dir_id is 0 whenever the caller means "the
+                     * default directory", and echoing that back leaves
+                     * the spec pointing at no directory at all.
+                     * Callers depend on the spec being usable after
+                     * fnfErr -- that is how a new file gets created. */
+                    spec->parID = cpb.dirInfo.ioDrDirID;
                     extract_name((StringPtr)spec->name, file_name);
                 }
                 else
