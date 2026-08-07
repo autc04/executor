@@ -635,7 +635,7 @@ static void setdefaults()
     LM(SPATalkB) = LM(SPATalkA) = LM(SPConfig) = 0;
     LM(SPPortB) = LM(SPPortA) = baud9600 | stop10 | data8 | noParity;
     LM(SPPrint) = 0;
-    LM(SPFont) = geneva - 1;
+    LM(SPFont) = kFontIDGeneva - 1;
     LM(SPKbd) = 0x63;
     LM(SPVolCtl) = 3;
     LM(SPClikCaret) = 0x88;

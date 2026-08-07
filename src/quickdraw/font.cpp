@@ -428,7 +428,7 @@ static void buildtable(INTEGER extra)
  *	 right now.  The trouble that the new sizes cause is in the Word 5.1
  *	 ribbon control labels.
  */
-    else if(WIDTHPTR->aFID != geneva && (fondwidthtable = findfondwidths()))
+    else if(WIDTHPTR->aFID != kFontIDGeneva && (fondwidthtable = findfondwidths()))
     {
         howtobuild = FondFract;
         extra = 0;
