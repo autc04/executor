@@ -466,6 +466,12 @@ set(prefs_sources
 
 source_group(Prefs FILES ${prefs_sources})
 
+set(mactcp_sources
+    mactcp/mactcp.cpp
+)
+
+source_group(MacTCP FILES ${mactcp_sources})
+
 set(util_sources
     util/macstrings.h
     util/macstrings.cpp
@@ -536,6 +542,7 @@ set(include_sources
                   include/rsys/icon.h
                   include/rsys/keyboard.h
                   include/rsys/launch.h
+                  include/rsys/mactcp.h
                   include/rsys/macros.h
                   include/rsys/noreturn.h
                   include/rsys/osutil.h
@@ -567,6 +574,7 @@ set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${sound_sources} ${num_sources} ${misc_sources}
     ${file_sources} ${hfs_sources} ${time_sources} ${osevent_sources}
     ${error_sources} ${commandline_sources} ${prefs_sources}
+    ${mactcp_sources}
     ${util_sources} ${debug_sources}
     ${api_headers} ${trap_instance_sources} ${host_os_sources}
     ${mpw_sources}

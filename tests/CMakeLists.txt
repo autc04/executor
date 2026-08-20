@@ -39,10 +39,20 @@ endfunction()
 set(NATIVE_TEST_SOURCES
         files_internal.cpp guestvalues.cpp cpu.cpp
         sane.cpp
+        # Native-only: drives the .IPP driver through the Device Manager.
+        # The dual-mode ABI comparison against Apple's headers belongs in
+        # TEST_SOURCES later, once the Retro68 side has MacTCP.h.
+        mactcp.cpp
     )
 
 set(TEST_SOURCES
         files.cpp quickdraw.cpp listmgr.cpp resources.cpp events.cpp
+        # Dual-mode on purpose: natively this checks the generated
+        # headers against defs/MacTCP.yaml, and under Retro68 -- built
+        # against Apple's Universal Interfaces rather than generated
+        # CIncludes -- it checks the documented ABI against Apple's.
+        # Compiles to nothing where there is no MacTCP.h.
+        mactcp_abi.cpp
     )
 if(CMAKE_SYSTEM_NAME STREQUAL Retro68)
     list(APPEND TEST_SOURCES

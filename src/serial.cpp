@@ -286,16 +286,10 @@ static const char *specialname(ParmBlkPtr pbp)
 
 typedef void (*compfuncp)(void);
 
+/* callcomp() now lives in device.cpp and is declared in rsys/device.h,
+ * so that other native drivers can complete asynchronous calls too. */
 
-void callcomp(ParmBlkPtr pbp, ProcPtr comp, OSErr err)
-{
-    EM_A0 = US_TO_SYN68K(pbp);
-    EM_A1 = US_TO_SYN68K(comp);
-    EM_D0 = (unsigned short)err; /* TODO: unsigned short ? */
-    execute68K((syn68k_addr_t)(uintptr_t)comp);
-}
-
-#define DOCOMPLETION(pbp, err)                                                   \
+#define DOCOMPLETION(pbp, err)                                                \
     (pbp)->ioParam.ioResult = err;                                           \
     if(((pbp)->ioParam.ioTrap & asyncTrpBit) && (pbp)->ioParam.ioCompletion) \
         callcomp(pbp, (pbp)->ioParam.ioCompletion, err);                     \

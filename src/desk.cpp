@@ -164,6 +164,17 @@ void Executor::C_SystemTask()
     for(i = 0; i < LM(UnitNtryCnt); ++i)
     {
         dctlh = LM(UTableBase)[i];
+        /* The unit table is sparse: native drivers install themselves at
+         * fixed unit numbers (serial at 5..8) and leave the slots in
+         * between empty.  Skip empty slots rather than dereference them.
+         *
+         * NOTE: LM(UnitNtryCnt) is set to 0 in init.cpp and never
+         * updated, so this loop never actually runs -- meaning accRun is
+         * never delivered to any driver.  Fixing that is a Device
+         * Manager design question; this guard is what makes raising
+         * UnitNtryCnt safe when someone does. */
+        if(!dctlh || !*dctlh)
+            continue;
         if(((*dctlh)->dCtlFlags & NEEDTIMEBIT) && TickCount() >= (*dctlh)->dCtlCurTicks)
         {
             Control(itorn(i), accRun, (Ptr)0);
@@ -241,6 +252,8 @@ void Executor::C_SystemMenu(LONGINT menu)
     for(i = 0; i < LM(UnitNtryCnt); ++i)
     {
         dctlh = LM(UTableBase)[i];
+        if(!dctlh || !*dctlh) /* sparse unit table -- see C_SystemTask */
+            continue;
         if((*dctlh)->dCtlMenu == LM(MBarEnable))
         {
             menu_s = menu;
