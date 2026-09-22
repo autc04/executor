@@ -30,6 +30,18 @@ Executor 2000 feature highlights:
 You can reach the maintainer of this fork at wolfgang.thaller@gmx.net or via
 the github issues page at https://github.com/autc4/executor/issues.
 
+Purpose
+-------
+
+The purpose of this program can be summarized by this limmerick:
+
+    There once was a system called Mac
+    which ran programs that now we all lack.
+    This open-source tool
+    brings back the old-school,
+    and gives us our old programs back.
+
+
 License
 -------
 
