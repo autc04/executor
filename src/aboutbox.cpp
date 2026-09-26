@@ -498,7 +498,7 @@ event_loop()
                 ForeColor(blackColor);
                 BackColor(whiteColor);
                 EraseRect(&about_box->portRect);
-                TextFont(helvetica);
+                TextFont(kFontIDHelvetica);
                 TextSize(24);
                 MoveTo(TE_LEFT, 30);
                 DrawText_c_string(ROMlib_executor_full_name);

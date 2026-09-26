@@ -1991,7 +1991,7 @@ void Executor::NeXTPrText(LONGINT n, Ptr textbufp, Point num, Point den,
     int n_leading_spaces;
     int run_start, run_stop;
 
-    if(thePortp->txFont != symbol)
+    if(thePortp->txFont != kFontIDSymbol)
     {
         find_run_of_symbol_chars(n, textbufp, &run_start, &run_stop);
         if(run_start >= 0)
@@ -2001,7 +2001,7 @@ void Executor::NeXTPrText(LONGINT n, Ptr textbufp, Point num, Point den,
             if(run_start > 0)
                 NeXTPrText(run_start, textbufp, num, den, thePortp);
             save_font = thePortp->txFont;
-            thePortp->txFont = symbol;
+            thePortp->txFont = kFontIDSymbol;
             NeXTPrText(run_stop - run_start, textbufp + run_start, num, den,
                        thePortp);
             thePortp->txFont = save_font;
@@ -2051,7 +2051,7 @@ void Executor::NeXTPrText(LONGINT n, Ptr textbufp, Point num, Point den,
             translated[n] = 0;
             if(n)
             {
-                if(thePortp->txFont == symbol)
+                if(thePortp->txFont == kFontIDSymbol)
                 {
                     int i;
 
@@ -2063,7 +2063,7 @@ void Executor::NeXTPrText(LONGINT n, Ptr textbufp, Point num, Point den,
 #if 0
 		PSxshow(translated, fwidths, n);
 #else
-                if(ROMlib_fontsubstitution && (thePortp->txFont == geneva))
+                if(ROMlib_fontsubstitution && (thePortp->txFont == kFontIDGeneva))
                     doshow(translated, n);
                 else if((i = numspacesin(translated)))
                     dowidthshow(translated, n, i, total);
@@ -2073,7 +2073,7 @@ void Executor::NeXTPrText(LONGINT n, Ptr textbufp, Point num, Point den,
                 if(thePortp->txFace & underline)
                     dopsunderline(thePortp, total,
                                   ROMlib_fontsubstitution
-                                      && (thePortp->txFont == geneva),
+                                      && (thePortp->txFont == kFontIDGeneva),
                                   translated, n);
                 thePortp->pnLoc.h = thePortp->pnLoc.h + total;
                 printport.pnLoc.h = thePortp->pnLoc.h;
