@@ -17,6 +17,7 @@
             ruby
             pkg-config
             qt6.wrapQtAppsHook
+            ninja
           ];
           buildInputs =
             let
@@ -30,19 +31,16 @@
             in
             with pkgs;
             [ qt6.qtbase boost readline SDL2 ]
-            ++ lib.optionals stdenv.isLinux [ SDL wayland patchedWaylandPP ]
-            ++ lib.optionals stdenv.isDarwin
-              (with darwin.apple_sdk.frameworks; [ Carbon Cocoa ]);
+            ++ lib.optionals stdenv.isLinux [ SDL wayland patchedWaylandPP ];
           src = ./.;
           hardeningDisable = [ "all" ];
           cmakeFlags = [ "-DRUN_FIXUP_BUNDLE=NO" "-DNO_STATIC_BOOST=YES" ];
         };
         packages.headless = pkgs.stdenv.mkDerivation {
           name = "executor2000";
-          nativeBuildInputs = with pkgs; [ cmake bison perl ruby pkg-config ];
+          nativeBuildInputs = with pkgs; [ cmake bison perl ruby pkg-config ninja ];
           buildInputs = with pkgs;
-            [ boost readline ] ++ lib.optionals stdenv.isDarwin
-              (with darwin.apple_sdk.frameworks; [ Carbon Cocoa ]);
+            [ boost readline ];
           src = ./.;
           cmakeFlags = [ "-DFRONT_ENDS=headless" "-DNO_STATIC_BOOST=YES" ];
           hardeningDisable = [ "all" ];
