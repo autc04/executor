@@ -6,6 +6,7 @@ namespace Executor
 {
     CPUMode currentCPUMode = CPUMode::none;
     syn68k_addr_t currentM68KPC = 0;
+    uint32_t currentTrapPC = 0;
 }
 
 namespace

@@ -235,6 +235,10 @@ syn68k_addr_t Executor::alinehandler(syn68k_addr_t pc, void *ignored)
     mostrecenttrap = trapword = READUW(pc);
     retval = pc + 2;
 
+    // Record the exact guest address of the trapping instruction so that the
+    // debugger can report a real call site (see Debugger::trapBreak68K).
+    currentTrapPC = pc;
+
 #if !defined(NDEBUG)
     if(check_trap_watchpoints_p)
         check_trap_watchpoints("entering `alinehandler ()'\n");

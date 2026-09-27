@@ -83,27 +83,32 @@ uint32_t Debugger::trapBreak68K(uint32_t addr, const char *name)
         return ~0;
     }
 
-        // figure out whether this was invoked via a trap
-        // (as opposed to function pointer)
-    uint32_t retaddr = *ptr_from_longint<GUEST<uint32_t>*>(EM_A7);
-
-    uint16_t potentialTrap = *ptr_from_longint<GUEST<uint16_t>*>(retaddr-2);
-    uint32_t trapaddr = 0;
-    if((potentialTrap & 0xF000) == 0xA000)
+        // Work out the guest address of the trapping instruction.  A trap
+        // callback is entered through execute68K() with
+        // MAGIC_EXIT_EMULATOR_ADDRESS on top of the stack, so the word at
+        // EM_A7 is not a return address; the A-line dispatcher records the
+        // real call site in currentTrapPC.  Only fall back to the stack-walk
+        // (for a direct jsr to a trap-table entry) if that is unavailable.
+    uint32_t trapaddr = currentTrapPC;
+    if(trapaddr == 0)
     {
-        if(potentialTrap & TOOLBIT)
-            trapaddr = tooltraptable[potentialTrap & 0x3FF];
-        else
-            trapaddr = ostraptable[potentialTrap & 0xFF];
+        uint32_t retaddr = *ptr_from_longint<GUEST<uint32_t>*>(EM_A7);
+        uint16_t potentialTrap = *ptr_from_longint<GUEST<uint16_t>*>(retaddr - 2);
+        if((potentialTrap & 0xF000) == 0xA000)
+        {
+            uint32_t entry;
+            if(potentialTrap & TOOLBIT)
+                entry = tooltraptable[potentialTrap & 0x3FF];
+            else
+                entry = ostraptable[potentialTrap & 0xFF];
+            if(entry == addr)
+                trapaddr = retaddr - 2;
+        }
     }
 
-        // if it's a trap call, pop stuff from the stack
-    if(trapaddr == addr)
-    {
-        addr = retaddr - 2;
-        EM_A7 += 4;
-    }
-    
+    if(trapaddr != 0)
+        addr = trapaddr;
+
     uint32_t newAddr = interact1({ Reason::entrypoint, name, CPUMode::m68k, addr });
 
     if(addr == newAddr)
