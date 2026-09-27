@@ -158,9 +158,10 @@ uint32_t Debugger::getNextBreakpoint(uint32_t addr, uint32_t nextOffset)
 
 void Debugger::initProcess(uint32_t entrypoint)
 {
-    // Keep breakpoints armed by startup debugger commands (e.g. 'ba'); only add
-    // the process-entry breakpoint here.  Clearing them here would silently drop
-    // code breakpoints configured via --debug-cmd / EXECUTOR_DBG_INIT.
+    // A new process means new code at new addresses, so the live breakpoint set
+    // is rebuilt for it.  The derived debugger may add its own (see
+    // MonDebugger::initProcess).
+    breakpoints.clear();
     if(breakOnProcessEntry)
         breakpoints.insert(entrypoint);
 }

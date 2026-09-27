@@ -72,8 +72,8 @@ bool parseCountSpec(const char *name, mon_addr_t *out)
 class MonDebugger : public base::Debugger
 {
     // Behaviour at a stop (a trap entrypoint or a code breakpoint) is configured
-    // with commands, normally supplied at startup via EXECUTOR_DBG_INIT (an
-    // env var holding ';'/newline-separated commands) or --debug-cmd:
+    // with commands supplied at startup via EXECUTOR_DBG_INIT (an env var holding
+    // ';'/newline-separated commands) or --debug-cmd (both may be combined):
     //
     //   on * "command"   run `command` at every stop (repeatable)
     //   skip * n         ignore the first n stops
@@ -95,6 +95,13 @@ class MonDebugger : public base::Debugger
     int stepCount = 0;              // instructions to single-step per stop
     bool specConfigured = false;    // any of the commands above was used
 
+    // Commands supplied at startup (EXECUTOR_DBG_INIT + --debug-cmd).  They are
+    // not run immediately: they run once, when the first process is initialized
+    // (see initProcess), so that 'ba' breakpoints are armed into the fresh
+    // breakpoint set rather than being cleared by it.
+    std::vector<std::string> startupCommands;
+    bool startupRan = false;
+
     int stopsSeen = 0;
     int stopsProcessed = 0;
     int stepRemaining = 0;
@@ -105,15 +112,17 @@ public:
 
     virtual bool interruptRequested() override;
     virtual DebuggerExit interact(DebuggerEntry e) override;
+    virtual void initProcess(uint32_t entrypoint) override;
 
     void addStopCommand(const std::string& command);
+    void addStartupCommands(const std::vector<std::string>& commands);
     void setSkip(int n) { skipHits = n; specConfigured = true; }
     void setLimit(int n) { limitHits = n; specConfigured = true; }
     void setSteps(int n) { stepCount = n; specConfigured = true; }
 
     // Run a list of debugger commands non-interactively (used for the startup
     // script and, at each stop, for the accumulated `on *` commands).
-    void runScript(const std::vector<std::string>& commands);
+    void runCommands(const std::vector<std::string>& commands);
 
 private:
     DebuggerExit stopExit(const DebuggerEntry& entry, bool singlestep) const;
@@ -262,7 +271,7 @@ MonDebugger::MonDebugger()
                 break;
             pos = end + 1;
         }
-        runScript(commands);
+        addStartupCommands(commands);
     }
 }
 
@@ -291,7 +300,28 @@ void MonDebugger::addStopCommand(const std::string& command)
         stopCommands.push_back(command);
 }
 
-void MonDebugger::runScript(const std::vector<std::string>& commands)
+void MonDebugger::addStartupCommands(const std::vector<std::string>& commands)
+{
+    startupCommands.insert(startupCommands.end(), commands.begin(), commands.end());
+}
+
+void MonDebugger::initProcess(uint32_t entrypoint)
+{
+    // Base clears the live breakpoint set and inserts the process-entry
+    // breakpoint.  Run the startup script *after* that, so 'ba' breakpoints
+    // land in the fresh set, then merge cxmon's breakpoints in; the union keeps
+    // the process-entry breakpoint (it lives outside active_break_points).
+    base::Debugger::initProcess(entrypoint);
+
+    if(!startupRan)
+    {
+        startupRan = true;
+        runCommands(startupCommands);
+        breakpoints.insert(active_break_points.begin(), active_break_points.end());
+    }
+}
+
+void MonDebugger::runCommands(const std::vector<std::string>& commands)
 {
     if(commands.empty())
         return;
@@ -302,9 +332,6 @@ void MonDebugger::runScript(const std::vector<std::string>& commands)
     mon((int)args.size(), args.data());
     if(monout)
         fflush(monout);
-
-    // Pick up any breakpoints added or removed by 'ba'/'br'.
-    breakpoints = active_break_points;
 }
 
 auto MonDebugger::stopExit(const DebuggerEntry& entry, bool singlestep) const -> DebuggerExit
@@ -346,7 +373,8 @@ auto MonDebugger::interact(DebuggerEntry entry) -> DebuggerExit
             return stopExit(entry, false);
         ++stopsProcessed;
 
-        runScript(stopCommands);
+        runCommands(stopCommands);
+        breakpoints = active_break_points;
 
         if(stepCount > 0)
         {
@@ -406,5 +434,5 @@ void Executor::InitMonDebugger()
 void Executor::RunDebuggerCommands(const std::vector<std::string>& commands)
 {
     if(g_debugger)
-        g_debugger->runScript(commands);
+        g_debugger->addStartupCommands(commands);
 }

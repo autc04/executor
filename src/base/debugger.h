@@ -24,7 +24,11 @@ namespace Executor
 
             virtual bool interruptRequested() { return false; }
 
-            void initProcess(uint32_t entrypoint);
+            // Called when a new process starts executing, before its first
+            // instruction.  Rebuilds the live breakpoint set (a new process
+            // means new code, so old addresses are invalidated).  Derived
+            // debuggers may override to re-arm their own breakpoints.
+            virtual void initProcess(uint32_t entrypoint);
 
             void setBreakOnProcessEntry(bool dobreak) { breakOnProcessEntry = dobreak; }
             
