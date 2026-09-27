@@ -90,6 +90,7 @@ namespace pox = program_options_extended;
 static bool use_native_code_p = true;
 static bool breakOnProcessStart = false;
 static bool logtraps = false;
+static std::vector<std::string> debugCommands;
 static std::string keyboard;
 static bool list_keyboards_p = false;
 
@@ -223,6 +224,7 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
     debugging.add_options()
         ("logtraps", po::bool_switch(&logtraps), "print all operating system and toolbox calls and their arguments")
         ("break", po::bool_switch(&breakOnProcessStart), "break into debugger at program start")
+        ("debug-cmd", po::value(&debugCommands), "run a debugger command at startup (e.g. \"atb \\\"PBGetFInfo/PBHGetFInfo\\\"\"); may be repeated")
         ("debug", po::value<std::string>()->notifier([](const std::string& s) {
             if (!error_parse_option_string(s.c_str()))
                 throw SilentBadArgException();
@@ -492,6 +494,7 @@ int main(int argc, char **argv)
 
             InitMonDebugger();
             base::Debugger::instance->setBreakOnProcessEntry(breakOnProcessStart);
+            RunDebuggerCommands(debugCommands);
 
             executor_main();
             ExitToShell();   
