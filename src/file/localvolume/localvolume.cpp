@@ -27,6 +27,17 @@
 using namespace Executor;
 
 
+// Record a file's name in an open FCB, as the HFS backend does in
+// PBOpenHelper.  PBGetFCBInfo returns it, and the rest of the File Manager
+// depends on it (e.g. launch.cpp uses it to decide which FCBs to close at
+// process teardown).
+static void setFCBName(filecontrolblock *fcb, const mac_string& name)
+{
+    size_t n = std::min(name.size(), (size_t)31);
+    memcpy(&fcb->fcbCName[1], name.data(), n);
+    fcb->fcbCName[0] = (uint8_t)n;
+}
+
 ItemPtr ExtensionItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
     const fs::directory_entry& e, mac_string_view macname)
 {
@@ -363,6 +374,7 @@ void LocalVolume::openCommon(GUEST<short>& refNum, ItemPtr item, Fork fork, int8
         fcbx.file = fileItem;
         refNum = fcbx.refNum;
         fcbx.fcb->fcbDirID = item->parID();
+        setFCBName(fcbx.fcb, fileItem->name());
 
         if(permission != fsRdPerm)
         {
@@ -606,6 +618,12 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(dupFNErr);
     
     itemCache->renameItem(item, newName);
+
+    // Keep the name in any open FCBs current, as the HFS backend does.
+    if(auto fileItem = std::dynamic_pointer_cast<FileItem>(item))
+        for(auto& fcbx : fcbExtensions)
+            if(fcbx.file == fileItem)
+                setFCBName(fcbx.fcb, fileItem->name());
 }
 
 

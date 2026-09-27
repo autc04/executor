@@ -1531,6 +1531,30 @@ TEST_F(FileTest, GetInfoOpenFile)
     EXPECT_EQ(expectedBits, hpb.fileParam.ioFlAttrib & expectedMask);
 }
 
+TEST_F(FileTest, GetFCBInfoReportsName)
+{
+    open(fsRdPerm);
+
+    Str255 name;
+    name[0] = 0;
+
+    FCBPBRec fpb;
+    memset(&fpb, 42, sizeof(fpb));
+    fpb.ioCompletion = nullptr;
+    fpb.ioRefNum = refNum;
+    fpb.ioFCBIndx = 0;
+    fpb.ioNamePtr = name;
+
+    PBGetFCBInfoSync(&fpb);
+    EXPECT_EQ(noErr, fpb.ioResult);
+    EXPECT_EQ(refNum, fpb.ioRefNum);
+
+    // PBGetFCBInfo returns the name the FCB was opened with.  LocalVolume used
+    // to leave fcbCName zeroed, so this came back empty.
+    std::string got((char *)name + 1, name[0]);
+    EXPECT_EQ("temp-test", got);
+}
+
 TEST_F(FileTest, GetInfoOpenResFile)
 {
     openRF(fsRdPerm);
