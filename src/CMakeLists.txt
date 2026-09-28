@@ -387,6 +387,9 @@ set(base_sources
         base/debugger.h
         base/debugger.cpp
 
+        base/fault_handler.h
+        base/fault_handler.cpp
+
         base/patches.cpp
     )
 source_group(Base FILES ${base_sources})

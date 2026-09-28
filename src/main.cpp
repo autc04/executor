@@ -52,6 +52,8 @@
 #include <hfs/hfs_plus.h>
 #include <base/cpu.h>
 #include <base/debugger.h>
+#include <base/fault_handler.h>
+#include <error/error.h>
 #include <debug/mon_debugger.h>
 #include <PowerCore.h>
 #include <vdriver/eventrecorder.h>
@@ -245,7 +247,9 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
             "\"trapfailure\" enables warnings when traps return error codes, "
             "\"errno\" enables some C library-related warnings, "
             "\"unexpected\" enables warnings for unexpected events, "
-            "\"unimplemented\" enables warnings for unimplemented traps.  "
+            "\"unimplemented\" enables warnings for unimplemented traps, "
+            "\"segvfault\" reports the guest address (and, with instruction "
+            "tracking, the guest PC) when emulated code faults.  "
             "Example: \"executor -debug unimp,trace\""
         )
         ;
@@ -426,6 +430,15 @@ int main(int argc, char **argv)
     auto executorThread = std::thread([&] {
         try
         {
+            if(ERROR_ENABLED_P(ERROR_SEGV_FAULT))
+            {
+                // Report guest memory faults (and, with tracking, the faulting
+                // guest PC) instead of dying with a bare SIGSEGV.  Tracking must
+                // be enabled before any guest code is translated.
+                syn68k_track_pc = 1;
+                installFaultHandler();
+            }
+
             char thingOnStack; /* used to determine an approximation of the stack base address */
             InitMemory(&thingOnStack);
 

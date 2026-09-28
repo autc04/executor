@@ -17,6 +17,7 @@ These tools observe the emulated (guest) side. Build and run basics are in
 | Registers, memory, or disassembly at a stop | the debugger (`r`, `m`, `d68`) |
 | What the guest does after a given trap | trap breakpoint (`atb`) + `steps` |
 | What happens at an arbitrary app code address | code breakpoint (`ba $addr`) |
+| A guest access that crashes the host with SIGSEGV | `--debug segvfault` |
 
 ## Trap logging
 
@@ -84,6 +85,23 @@ Notes:
   automated runs always pass `--headless` and bound the run — a GUI run blocks
   waiting for the window server.
 - `steps` follows branches, because it uses the emulator's own single-step.
+
+## Guest memory faults (host SIGSEGV)
+
+Invalid addresses accessed by guest code fault on the host. The `segvfault`
+debug option catches that: it installs a `SIGSEGV`/`SIGBUS` handler that maps the
+faulting host address back to a guest address and reports the guest PC,
+registers, and last trap, then exits.
+
+```
+--debug segvfault ... --headless
+```
+
+The guest PC is only meaningful if instruction tracking was on before guest code
+was translated; `segvfault` enables it. Without the option a guest fault is an
+ordinary host crash (and a macOS crash report). If the fault is far from a known
+address, the handler's guest address plus the last trap are usually enough to
+pick a trap breakpoint and `steps` from there.
 
 ## Adding instrumentation
 

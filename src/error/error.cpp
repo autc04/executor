@@ -46,6 +46,7 @@ static const struct
     { "unimplemented", ERROR_BIT_MASK(ERROR_UNIMPLEMENTED) },
     { "sound", ERROR_BIT_MASK(ERROR_SOUND_LOG) },
     { "float", ERROR_BIT_MASK(ERROR_FLOATING_POINT) },
+    { "segvfault", ERROR_BIT_MASK(ERROR_SEGV_FAULT) },
 };
 
 /* An option string is a sequence of comma-separated identifiers that
