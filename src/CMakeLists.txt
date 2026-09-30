@@ -41,7 +41,7 @@ file(GLOB multiversal_ruby_sources
 
 set(trap_instance_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_instances/ReferenceAllTraps.cpp)
 set(api_headers)
-set(structdump_sources)
+set(structdump_sources ${CMAKE_CURRENT_BINARY_DIR}/structdump/ReferenceAllStructDumps.cpp)
 foreach(interfaceModule ${api_yaml_files})
     get_filename_component(base ${interfaceModule} NAME_WE)
 
@@ -382,6 +382,8 @@ set(base_sources
         base/dispatcher.cpp
         base/emustubs.cpp
         base/logging.cpp
+        base/structdump.h
+        base/structdump.cpp
     
         base/builtinlibs.h
         base/builtinlibs.cpp

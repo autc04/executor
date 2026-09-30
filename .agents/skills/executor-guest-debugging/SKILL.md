@@ -55,12 +55,28 @@ in time.
 | `limit * n` | process at most `n` stops, then keep going |
 | `steps * n` | single-step (and disassemble) `n` instructions per stop |
 | `r` / `d68` / `m` | registers / disassemble / hex dump |
+| `p "Type" addr [count]` | dump a struct by type name at a guest address (generated introspection; see below) |
 | `o "file"` | redirect debugger output |
 | `s` / `x` | single-step / resume |
 | `es` | ExitToShell |
 
 Trap entrypoint names are the trap wrapper names (e.g. `PBGetFInfo/PBHGetFInfo`,
 `PBHOpen`); the same names appear in `--logtraps` output.
+
+### Dumping structs with `p`
+
+Every yaml-defined struct/union is described by generated `describeStruct`
+functions (`src/base/structdump.*`, registration generated into `structdump/*.cpp`).
+The `p` command dumps one by name and guest address, e.g.
+
+```
+p "HFileParam" $40b4e62
+p "CInfoPBRec" $40b4e62 3
+```
+
+Type names are the generated names (`HFileParam`, `ParamBlockRec`, `FSSpec`, …).
+Pointer-to-struct fields print as an address (never expanded). The registry is
+populated from all modules regardless of `--logtraps`.
 
 At a stop, `x` means *resume*. So `on * "x"` resumes at every stop — that is the
 unattended/batch mode (there is no separate flag). Without any

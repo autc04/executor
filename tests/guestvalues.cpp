@@ -2,6 +2,7 @@
 #include <base/mactype.h>
 #include <base/byteswap.h>
 #include <base/logging.h>
+#include <base/structdump.h>
 #include <FileMgr.h>
 #include <cstring>
 #include <sstream>
@@ -111,4 +112,29 @@ TEST(structdump, logValueDescribesUnion)
     const std::string out = captured.str();
     EXPECT_NE(out.find("fileParam=FileParam{"), std::string::npos) << "got: " << out;
     EXPECT_NE(out.find("ioParam=IOParam{"), std::string::npos) << "got: " << out;
+}
+
+// The type registry is populated from every generated module (through the
+// ReferenceAllStructDumps translation unit), independent of logValue use.
+TEST(structdump, registryFindType)
+{
+    const structdump::TypeDesc* t = structdump::findType("HFileParam");
+    ASSERT_NE(t, nullptr);
+    EXPECT_STREQ(t->name, "HFileParam");
+    EXPECT_EQ(t->size, sizeof(HFileParam));
+    EXPECT_EQ(structdump::findType("NoSuchType"), nullptr);
+}
+
+TEST(structdump, registryPrints)
+{
+    const structdump::TypeDesc* t = structdump::findType("HFileParam");
+    ASSERT_NE(t, nullptr);
+
+    HFileParam pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.ioFRefNum = 7;
+
+    std::ostringstream os;
+    t->print(os, &pb);
+    EXPECT_NE(os.str().find("ioFRefNum=7"), std::string::npos) << "got: " << os.str();
 }
