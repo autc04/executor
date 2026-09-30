@@ -1,6 +1,10 @@
 #include "gtest/gtest.h"
 #include <base/mactype.h>
 #include <base/byteswap.h>
+#include <base/logging.h>
+#include <FileMgr.h>
+#include <cstring>
+#include <sstream>
 using namespace Executor;
 
 TEST(guestvalues, andUL)
@@ -68,4 +72,43 @@ TEST(guestvalues, rawHostOrder)
 
     p.raw_host_order(0xBEEFCAFE);
     EXPECT_EQ((Point{(int16_t)0xBEEF, (int16_t)0xCAFE}), p);
+}
+
+// The generic logValue fallback should find the generated Executor::describeStruct
+// via ADL and print decoded fields instead of "?".
+TEST(structdump, logValueDescribesGeneratedStruct)
+{
+    HFileParam pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.ioFRefNum = 7;
+    pb.ioFDirIndex = 3;
+    pb.ioFlFndrInfo.fdType = 0x54455854; // 'TEXT'
+
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(pb);
+    std::clog.rdbuf(old);
+
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("ioFRefNum=7"), std::string::npos) << "got: " << out;
+    EXPECT_NE(out.find("ioFDirIndex=3"), std::string::npos) << "got: " << out;
+    // Nested by-value struct is described recursively.
+    EXPECT_NE(out.find("ioFlFndrInfo=FInfo{"), std::string::npos) << "got: " << out;
+}
+
+// A union (param block) prints each arm labelled.
+TEST(structdump, logValueDescribesUnion)
+{
+    ParamBlockRec pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.fileParam.ioFRefNum = 5;
+
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(pb);
+    std::clog.rdbuf(old);
+
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("fileParam=FileParam{"), std::string::npos) << "got: " << out;
+    EXPECT_NE(out.find("ioParam=IOParam{"), std::string::npos) << "got: " << out;
 }

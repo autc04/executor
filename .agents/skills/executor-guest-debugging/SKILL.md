@@ -22,10 +22,15 @@ These tools observe the emulated (guest) side. Build and run basics are in
 ## Trap logging
 
 `--logtraps` prints every OS/toolbox call and return. It requires a build with
-`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose. Caveats: pointer arguments
-are dereferenced one level, so **parameter-block arguments print as `=> ?`** and
-`ConstStringPtr` names print as `=> <length byte>`. For decoded fields, use the
-debugger.
+`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose. Pointer arguments are
+dereferenced one level, so a **pointer-to-struct argument (parameter block)
+prints its address followed by the decoded struct** — the generated
+`describeStruct` functions in `api/*.h` / `structdump/*.cpp` decode every
+yaml-defined struct/union field (see
+`docs/ai/2026-09-29-struct-dump-generator-plan.md`). Pointer-to-struct *fields*
+inside a struct print as an address (never expanded). Remaining caveat:
+`ConstStringPtr` names passed as trap *arguments* still print as
+`=> <length byte>`; only `StringPtr` (non-const) arguments print as `"\pName"`.
 
 `--debug <list>` enables targeted diagnostics (comma-separated; `all` for
 everything). Useful categories: `trapfailure` (every file trap returning
@@ -107,10 +112,12 @@ pick a trap breakpoint and `steps` from there.
 
 Check whether an existing tool already answers the question (table above) before
 adding prints. If you do add logging, extend the central facility rather than
-scattering env-gated output: for example, add a `logValue` overload in
-`src/base/logging.{h,cpp}` so `--logtraps` decodes a struct type (such as the
-File Manager parameter blocks) instead of printing `?`. Keep any new
-instrumentation opt-in, and remove it once the investigation is done.
+scattering env-gated output: `--logtraps` already decodes the yaml-defined
+structs/unions via the generated `describeStruct` functions, so usually no new
+per-site code is needed. To improve how a particular field/type is shown, adjust
+`logValueTo`/`logField` in `src/base/logging.{h,cpp}` (or the generator in
+`multiversal/executor.rb`), not the call site. Keep any ad-hoc instrumentation
+opt-in, and remove it once the investigation is done.
 
 ## Docs
 
