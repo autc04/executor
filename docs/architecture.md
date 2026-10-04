@@ -158,15 +158,21 @@ Some Mac traps (e.g., `_OSDispatch`, file manager traps) multiplex many function
 
 ### Declaration macros
 
-Traps are declared in module headers using macros (`src/base/traps.h`):
+Traps are declared (with macros from `src/base/traps.h`) in the **generated**
+API headers under `build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), produced by
+`make-multiverse.rb` from `multiversal/defs/*.yaml` (see §12); do not hand-edit
+them. Representative generated declarations:
 
 ```cpp
-PASCAL_TRAP(GetHandle, 0xA9A0)
-REGISTER_TRAP(DisposeHandle, 0xA023, D0 (A0))
-PASCAL_SUBTRAP(HLock, 0xA029, 0x0020, "MemoryMgr")
+REGISTER_TRAP2(DisposeHandle, 0xA023, void(A0), ReturnMemErr<D0>);
+REGISTER_2FLAG_TRAP(_NewHandle_flags, NewHandle, NewHandleClear, NewHandleSys,
+                    NewHandleSysClear, 0xA122, Handle(Size), …);
+PASCAL_SUBTRAP(TempDisposeHandle, 0xA88F, 0x0020, OSDispatch);
 ```
 
-These macros expand differently depending on whether `INSTANTIATE_TRAPS_<MODULE_NAME>` is defined in the current translation unit (see §6).
+The `TRAPNAME` of a sub-trap is an identifier, not a string. The macros expand
+differently depending on whether `INSTANTIATE_TRAPS_<MODULE_NAME>` is defined in
+the current translation unit (see §6).
 
 ---
 
@@ -180,18 +186,20 @@ Each subsystem follows the same convention (`src/base/api-module.h`):
 
 2. The **`.cpp`** defines `INSTANTIATE_TRAPS_<MODULE_NAME> 1` before including the header. `api-module.h` switches to `DEFINE` mode, causing the macros to produce actual variable definitions with explicit template instantiations. This makes every trap self-registering with zero manual glue code.
 
-Implementation functions are named `C_TrapName` by convention:
+Implementation functions are named `C_TrapName` by convention. The module
+pattern is emitted by the header generator rather than written out by hand:
 
 ```cpp
-// In mman.h (header):
-#define MODULE_NAME base_mman
+// build/src/api/MemoryMgr.h (generated):
+#define MODULE_NAME MemoryMgr
 #include <base/api-module.h>
-PASCAL_TRAP(NewHandle, 0xA122)
+// ... generated trap declarations ...
 
-// In mman.cpp (implementation):
-#define INSTANTIATE_TRAPS_base_mman 1
-#include <mman/mman.h>
+// build/src/trap_instances/MemoryMgr.cpp (generated):
+#define INSTANTIATE_TRAPS_MemoryMgr 1
+#include <MemoryMgr.h>
 
+// Hand-written implementation (src/mman/...):
 Handle Executor::C_NewHandle(Size logicalSize)
 {
     // ... implementation ...
@@ -274,15 +282,15 @@ Events flow inward through `IEventListener` / `EventSink`. The front-end calls m
 
 | Directory | Front-end |
 |-----------|-----------|
-| `qt/` | Qt 5/6 (default) |
+| `qt/` | Qt 6 (default) |
 | `sdl2/` | SDL 2 |
 | `sdl/` | SDL 1.2 |
 | `wayland/` | Native Wayland (via waylandpp) |
 | `x/` | X11 |
-| `win32/` | Win32 |
+| `win32/` | Win32 sources (not currently wired into the build; Windows builds use the Qt/SDL front-ends) |
 | `headless/` | Headless (for testing) |
 
-The build system selects the default front-end based on available libraries; the binary is named `executor`, `executor-wayland`, `executor-sdl2`, etc.
+`FRONT_ENDS` (default `qt x sdl sdl2 wayland`) lists the front-ends to build; the first one built is renamed to `executor` (on macOS: `Executor 2000`), and the others are named `executor-<front-end>` (e.g. `executor-wayland`). The headless front-end is only built when requested explicitly via `-DFRONT_ENDS=headless`.
 
 `VideoDriver` also provides clipboard integration via `putScrap` / `getScrap`, and cursor management (`setCursor`, `hideCursor`).
 
@@ -320,7 +328,7 @@ The build system selects the default front-end based on available libraries; the
 
 ## 11. Debugger — cxmon Integration
 
-`cxmon/` is a git submodule containing a command-line monitor/debugger originally from the Basilisk II emulator, licensed under GPL v2+. This makes the combined binary GPL-licensed. Excluding cxmon from the build produces a non-copyleft binary.
+`cxmon/` is a git submodule containing a command-line monitor/debugger originally from the Basilisk II emulator, licensed under GPL v2+. This makes the combined binary GPL-licensed. There is currently no configure-time switch to exclude it: `add_subdirectory(cxmon)` in the top-level `CMakeLists.txt` is unconditional, so producing a non-copyleft binary requires editing the build.
 
 The debugger (`src/debug/mon_debugger.cpp`) implements the `base::Debugger` interface. It is invoked when:
 - a trap's `breakpoint` flag is set (via `Entrypoint::breakpoint`),
@@ -341,10 +349,10 @@ The top-level `CMakeLists.txt` enforces out-of-source builds (in-source builds a
 |--------|----------|
 | `syn68k` | 68K recompiler (submodule) |
 | `PowerCore` | PPC interpreter (submodule) |
-| `cxmon` | Debugger (submodule) |
-| `lmdb` | LMDB storage engine (submodule) |
-| `resources` | CMakeRC resource bundle |
-| `executor` (and variants) | Main emulator binary |
+| `cxmon` | Debugger (submodule, GPL v2+) |
+| `lmdb` / `lmdbxx` | LMDB storage engine and its C++ wrapper (submodules) |
+| `cmrc` (`resources`) | CMakeRC resource bundle |
+| `executor`, `executor-<front-end>` | Emulator binaries |
 
 `src/CMakeLists.txt` builds the emulator core and selects front-end sources based on `find_package` results for Qt, SDL2, SDL, Wayland, and X11.
 
@@ -356,13 +364,13 @@ System resources (the built-in `System` file, `Browser`, `Printer`, and related 
 
 Several parts of the build run scripts before compilation:
 
-- `multiversal/`: a Ruby script processes Apple's Universal Headers (included as-is) to generate the `<ExMacTypes.h>` and related headers used throughout the source. Do not hand-edit these files.
-- Bison generates parser code used in the command-line option handling.
-- Perl scripts assist with trap name tables.
+- `multiversal/`: `make-multiverse.rb` turns the YAML API descriptions in `multiversal/defs/*.yaml` into the generated C++ headers (`build/src/api/`, notably `ExMacTypes.h`) and the trap-instance translation units. Do not hand-edit the generated files — edit the YAML definitions instead.
+- Bison generates the parser for the preferences file (`src/prefs/parse.ypp`).
+- Perl generates QuickDraw blitter code (`src/quickdraw/makerawblt.pl`).
 
 ### Submodule initialisation
 
-All four submodules (`syn68k`, `PowerCore`, `cxmon`, `lmdb`) must be initialised before CMake will succeed:
+All eight submodules (`syn68k`, `PowerCore`, `cxmon`, `lmdb`, `lmdbxx`, `cmrc`, `multiversal`, `tests/googletest`) must be initialised before CMake will succeed:
 
 ```bash
 git submodule update --init --recursive
@@ -380,6 +388,6 @@ The VS Code task `test-executor` builds both the emulator and the test binary, r
 
 | Flag | Effect |
 |------|--------|
-| `-DEXECUTOR_ENABLE_LOGGING=ON` | Enables the `-logtraps` runtime option for trap call logging |
+| `-DEXECUTOR_ENABLE_LOGGING=ON` | Enables the `--logtraps` runtime option for trap call logging |
 | `-DTWENTYFOUR=YES` | Compile-time 24-bit addressing mode |
 | `-DNO_STATIC_BOOST=ON` | Force dynamic Boost linkage |

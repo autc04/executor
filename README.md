@@ -14,7 +14,7 @@ re-implement the classic Mac OS APIs, just as WINE does for Windows.
 
 Executor 2000 feature highlights:
 
-  - Builds and runs on modern 64-bit Linux and macOS (Windows support is planned).
+  - Builds and runs on Linux (64- and 32-bit), macOS, and 64-bit Windows.
   - Rootless - emulated windows are part of your desktop.
   - PowerPC support (well, not many Apps will run, but it's there)
   - 24-bit addressing support (compile-time option: `-DTWENTYFOUR=YES`)
@@ -28,7 +28,7 @@ Executor 2000 feature highlights:
   - I probably broke lots of other things that used to work.
 
 You can reach the maintainer of this fork at wolfgang.thaller@gmx.net or via
-the github issues page at https://github.com/autc4/executor/issues.
+the github issues page at https://github.com/autc04/executor/issues.
 
 License
 -------
@@ -87,8 +87,9 @@ Building and Running
 
 Requirements:
 * a modern C++17 compiler
-* CMake 3.10 or later
-* Qt 5.12 or later
+* CMake 3.12 or later
+* Qt 6
+* Boost
 * perl
 * ruby 2.0 or later
 * bison
@@ -101,8 +102,7 @@ Optional (for additional front-ends):
 
 Building:
 ```
-git submodule init
-git submodule update
+git submodule update --init --recursive
 mkdir build
 cd build
 cmake ..
@@ -113,7 +113,7 @@ If you want to build executor with 24-bit addressing, use
 `cmake .. -DTWENTYFOUR=YES` instead of the regular `cmake ..` command. Note that
 this will limit you to about 4MB of emulated RAM and break PowerPC support.
 
-When `./build/src/executor` is first invoked, it will automatically install its
+When `./build/executor` is first invoked, it will automatically install its
 fake Mac system file and the `Browser` finder replacement to `~/.executor/`, so
 no further setup should be needed.
 
@@ -123,8 +123,9 @@ Executor 2000 should be able to use native Mac files on macOS, AppleDouble
 file pairs (`foo` and `%foo`) as used by older executor verions, as well as
 files written by Basilisk or SheepShaver (`foo`, `.rsrc/foo` and `.finf/foo`).
 
-It should be possible to build Executor 2000 for Microsoft Windows;
-see [here](docs/building-on-windows.md) for some only slightly outdated instructions.
+Executor 2000 also builds for 64-bit Windows (MSVC or MinGW); see
+[docs/building-on-windows.md](docs/building-on-windows.md) for instructions
+(note that that page still describes an older 32-bit Visual Studio setup).
 
 Nix Package Manager
 -------------------
@@ -159,7 +160,7 @@ applications to run.
 
     cmake . -DEXECUTOR_ENABLE_LOGGING=TRUE
 
-When this is active, you can start executor with the `-logtraps` option to get logging
+When this is active, you can start executor with the `--logtraps` option to get logging
 output for every MacOS function (trap) called by the running program.
 
 
