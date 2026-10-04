@@ -186,6 +186,8 @@ set(file_sources
     file/localvolume/basilisk.cpp
     file/localvolume/appledouble.h
     file/localvolume/appledouble.cpp
+    file/localvolume/macbinary.h
+    file/localvolume/macbinary.cpp
     file/localvolume/plain.h
     file/localvolume/plain.cpp
     file/localvolume/mac.h

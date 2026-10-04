@@ -37,6 +37,9 @@ fallback used when LMDB is unavailable.
   `._filename` companion file (macOS-compatible).
 - **AppleSingle**: both forks plus metadata in a single file (`.ad` extension).
 - **Basilisk**: resource fork stored in a `.rsrc/` subdirectory (Basilisk II format).
+- **MacBinary**: both forks plus Finder metadata in a single `.bin` file with a
+  128-byte header. Detected last (just before the plain fallback), so a sidecar
+  pair describing a file named `foo.bin` wins over the MacBinary interpretation.
 
 **`ItemCache`**: caches `Item` objects and manages CNID assignment. Cache misses scan
 the parent directory and call `createItemForDirEntry` on each registered `ItemFactory`.
@@ -55,6 +58,7 @@ reference number.
 | `src/file/localvolume/itemcache.h` / `.cpp` | `ItemCache` — CNID-to-Item mapping |
 | `src/file/localvolume/plain.h` / `.cpp` | Plain Unix file item |
 | `src/file/localvolume/appledouble.h` / `.cpp` | AppleDouble / AppleSingle items |
+| `src/file/localvolume/macbinary.h` / `.cpp` | MacBinary items |
 | `src/file/localvolume/basilisk.h` / `.cpp` | Basilisk II fork layout |
 | `src/file/localvolume/lmdbcnidmapper.h` / `.cpp` | Persistent CNID mapper (LMDB) |
 | `src/file/localvolume/simplecnidmapper.h` / `.cpp` | In-memory CNID mapper |
@@ -81,6 +85,11 @@ reference number.
   reassigned and any saved FSSpec values stored by applications become stale.
 - **Hidden files**: `ItemFactory::isHidden()` suppresses sidecar files (like `._foo`)
   from appearing as Mac files. Always override this in new `ItemFactory` subclasses.
+- **Factory order matters**: `itemFactories` is tried in order and the first match
+  wins. MacBinary is a single-file format, so it is registered *after* the
+  sidecar/xattr backends (AppleDouble, Basilisk, Mac) and just before the plain
+  fallback; otherwise a `._foo.bin` companion would never be seen. See
+  `docs/ai/2026-10-04-macbinary-localvolume-backend.md`.
 - **`upgradeItem`**: when a plain item's sidecar is discovered to contain valid
   AppleDouble data, the item is upgraded to an `AppleDoubleFileItem` in place so
   subsequent opens use the richer format.

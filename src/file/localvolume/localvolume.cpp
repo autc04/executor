@@ -10,6 +10,7 @@
 #include "basilisk.h"
 #include "mac.h"
 #include "appledouble.h"
+#include "macbinary.h"
 
 #include "simplecnidmapper.h"
 #include "lmdbcnidmapper.h"
@@ -73,6 +74,11 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     itemFactories.push_back(std::make_unique<MacItemFactory>());
     upgradedItemFactory = itemFactories.back().get();
 #endif
+    // MacBinary is a single-file format, so it must come after the backends
+    // that combine a file with a sidecar (AppleDouble, Basilisk, ...): a
+    // "foo.bin" with an AppleDouble companion is an AppleDouble file, not
+    // MacBinary.
+    itemFactories.push_back(std::make_unique<MacBinaryItemFactory>());
     itemFactories.push_back(std::make_unique<ExtensionItemFactory>());
     defaultItemFactory = itemFactories.back().get();
 }

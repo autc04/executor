@@ -39,6 +39,7 @@ endfunction()
 set(NATIVE_TEST_SOURCES
         files_internal.cpp guestvalues.cpp cpu.cpp
         sane.cpp
+        localvolume_macbinary.cpp
         # Native-only: drives the .IPP driver through the Device Manager.
         # The dual-mode ABI comparison against Apple's headers belongs in
         # TEST_SOURCES later, once the Retro68 side has MacTCP.h.
@@ -89,6 +90,7 @@ else()
     
     target_link_libraries(tests gtest romlib)
     target_compile_definitions(tests PRIVATE -DEXECUTOR)
+    target_compile_definitions(tests PRIVATE EXECUTOR_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
     if(CMAKE_COMPILER_IS_GNUCXX)
         target_compile_options(tests PRIVATE -Wno-multichar)
     endif()
