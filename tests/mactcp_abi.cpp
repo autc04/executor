@@ -84,13 +84,19 @@ using namespace Executor;
  * keeps this independent of what the sub-structs are named, and
  * absolute offsets are what the ABI actually constrains.
  *
+ * Offsets 0-11 are deliberately not checked.  multiversal names those
+ * bytes qLink/qType/ioTrap/ioCmdAddr, names it took from the MacTCP
+ * Programmer's Guide and Inside Macintosh: Networking (see
+ * multiversal/defs/MacTCP.yaml); Apple's Universal Interfaces does not
+ * define them -- its TCPiopb covers the same twelve bytes with an
+ * opaque `SInt8 fill12[12]` -- so there is nothing to compare against
+ * and the prefix is not checked here on either side.  X(ioCompletion,
+ * 12) and the sizeof(TCPiopb) assertion still pin those bytes
+ * indirectly.
+ *
  * X(field-expression, expected-offset)
  */
 #define MACTCP_IOPB_FIELDS(X)              \
-    X(qLink, 0)                            \
-    X(qType, 4)                            \
-    X(ioTrap, 6)                           \
-    X(ioCmdAddr, 8)                        \
     X(ioCompletion, 12)                    \
     X(ioResult, 16)                        \
     X(ioNamePtr, 18)                       \
@@ -284,21 +290,13 @@ TEST(MacTCPABI, CsCodes)
     EXPECT_EQ(43, (int)TCPGlobalInfo);
 }
 
-TEST(MacTCPABI, ConnectionStates)
-{
-    /* All even; the odd values were never used. */
-    EXPECT_EQ(0, (int)TCPSClosed);
-    EXPECT_EQ(2, (int)TCPSListen);
-    EXPECT_EQ(4, (int)TCPSSynReceived);
-    EXPECT_EQ(6, (int)TCPSSynSent);
-    EXPECT_EQ(8, (int)TCPSEstablished);
-    EXPECT_EQ(10, (int)TCPSFinWait1);
-    EXPECT_EQ(12, (int)TCPSFinWait2);
-    EXPECT_EQ(14, (int)TCPSCloseWait);
-    EXPECT_EQ(16, (int)TCPSClosing);
-    EXPECT_EQ(18, (int)TCPSLastAck);
-    EXPECT_EQ(20, (int)TCPSTimeWait);
-}
+/* The TCPStatus connectionState constants (TCPSClosed, TCPSListen,
+ * TCPSSynReceived, TCPSFinWait1, ... TCPSTimeWait) are not checked.
+ * multiversal defines them from the MacTCP Programmer's Guide
+ * (multiversal/defs/MacTCP.yaml), but Apple's Universal Interfaces
+ * MacTCP.h declares no such constants, so there is nothing to compare
+ * against and they are not checked here.
+ */
 
 /* A diffable dump.  Run this on both sides -- natively, and as the
  * Retro68 application against Apple's headers -- and diff the two
