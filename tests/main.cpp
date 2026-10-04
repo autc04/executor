@@ -20,15 +20,23 @@ char *getcwd(char *buf, size_t size)
 
 int main(int argc, char **argv)
 {
+#ifdef USE_CONSOLE
+    std::cout << "Running Executor 2000 test suite..." << std::endl;
+    // side effect: initialized Toolbox,
+#else
     freopen("out", "w", stdout);
     InitGraf(&qd.thePort);
     InitFonts();
     InitWindows();
     TEInit();
     InitDialogs(nullptr);
+#endif
 
     testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
-    //fgetc(stdin);
+#ifdef USE_CONSOLE
+    std::cout << "Press a key to exit - Test suite result: " << result << std::endl;
+    getchar();
+#endif
     return result;
 }

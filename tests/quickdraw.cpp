@@ -16,9 +16,11 @@ struct OffscreenPort
 {
     GrafPort port;
     Rect r;
+    GUEST<GrafPtr> savedPort;
 
     OffscreenPort(int width = 2, int height = 2)
     {
+        GetPort(&savedPort);
         OpenPort(&port);
 
         short rowBytes = (width + 31) / 31 * 4;
@@ -32,6 +34,9 @@ struct OffscreenPort
 
     ~OffscreenPort()
     {
+        // ClosePort does not change the current port, so put the previous one
+        // back first; otherwise we leave a closed port current.
+        SetPort(savedPort);
         ClosePort(&port);
     }
 
@@ -51,9 +56,12 @@ struct OffscreenWorld
 {
     GWorldPtr world = nullptr;
     Rect r;
-    
+    GUEST<CGrafPtr> savedPort;
+    GUEST<GDHandle> savedGDevice;
+
     OffscreenWorld(int depth, int height = 2, int width = 2)
     {
+        GetGWorld(&savedPort, &savedGDevice);
         SetRect(&r,0,0,2,2);
         NewGWorld(PTR(world), depth, &r, nullptr, nullptr, 0);
         LockPixels(world->portPixMap);
@@ -62,8 +70,9 @@ struct OffscreenWorld
 
     ~OffscreenWorld()
     {
-        if((GrafPtr)world == qd.thePort)
-            SetGDevice(GetMainDevice());
+        // SetGWorld changed the current port and device; restore them before
+        // disposing the world so we don't leave the disposed world current.
+        SetGWorld(savedPort, savedGDevice);
         DisposeGWorld(world);
     }
 

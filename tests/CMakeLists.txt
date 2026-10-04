@@ -74,6 +74,14 @@ if(CMAKE_SYSTEM_NAME MATCHES Retro.*)
         ${TEST_SOURCES} 
         main.cpp googletest/googletest/src/gtest-all.cc size.r)
     set_target_properties(tests PROPERTIES LINK_FLAGS "-Wl,-gc-sections")
+
+    # Second application from the same sources, built against RetroConsole so
+    # that output goes to the text console instead of being redirected to "out".
+    add_application(tests_console CONSOLE
+        ${TEST_SOURCES}
+        main.cpp googletest/googletest/src/gtest-all.cc size.r)
+    target_compile_definitions(tests_console PRIVATE -DUSE_CONSOLE)
+    set_target_properties(tests_console PROPERTIES LINK_FLAGS "-Wl,-gc-sections")
 else()
     set(INSTALL_GTEST FALSE CACHE BOOL "" FORCE)
 	set( gtest_force_shared_crt ON CACHE BOOL "Always use msvcrt.dll" FORCE)
