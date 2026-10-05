@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <iosfwd>
 #include <string>
+#include <stdint.h>
 
 namespace Executor
 {
