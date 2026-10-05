@@ -1,5 +1,6 @@
 #include <debug/mon_debugger.h>
 #include <base/debugger.h>
+#include <base/structdump.h>
 #include <OSUtil.h>
 
 #include <mon.h>
@@ -14,6 +15,7 @@
 #endif
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -209,6 +211,40 @@ MonDebugger::MonDebugger()
                 fprintf(monout, "No such entrypoint: %s\n", str.c_str());
         }
     }, "atc \"entrypoint\"         clear on entry point breakpoint\n");
+
+    mon_add_command("p", [] {
+        if(mon_token != T_STRING)
+        {
+            fprintf(monout, "Usage: p \"TypeName\" <addr> [count]\n");
+            return;
+        }
+        std::string name = mon_string;
+        if(mon_get_token() != T_NUMBER)
+        {
+            fprintf(monout, "Usage: p \"TypeName\" <addr> [count]\n");
+            return;
+        }
+        uint32_t addr = (uint32_t)mon_number;
+        int count = 1;
+        mon_get_token();
+        if(mon_token == T_NUMBER)
+        {
+            count = (int)mon_number;
+            mon_get_token();
+        }
+        if(mon_token != T_END)
+        {
+            fprintf(monout, "Usage: p \"TypeName\" <addr> [count]\n");
+            return;
+        }
+
+        std::ostringstream os;
+        if(!structdump::dumpType(os, name, addr, count))
+            fprintf(monout, "Unknown type: %s\n", name.c_str());
+        else
+            fputs(os.str().c_str(), monout);
+        fflush(monout);
+    }, "p \"Type\" addr [count]       dump a struct by type name\n");
 
     mon_add_command("s", [] {
         mon_exit_requested = true;

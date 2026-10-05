@@ -599,6 +599,14 @@ Executor::FSReadAll(INTEGER rn, GUEST<LONGINT> *countp, Ptr buffp)
     OSErr retval;
 
     GUEST<LONGINT> orig_count = *countp;
+
+    /* A zero-length read is a no-op and always succeeds.  Some volumes report
+     * a short read for a zero-byte request (leaving ioActCount != 0), which
+     * would otherwise be turned into eofErr below; among other things that made
+     * zero-length resources (e.g. THINK Pascal's 'DREL') fail to load. */
+    if(orig_count == 0)
+        return noErr;
+
     retval = FSRead(rn, countp, buffp);
     if(retval == noErr && *countp != orig_count)
         retval = eofErr;

@@ -17,14 +17,24 @@ These tools observe the emulated (guest) side. Build and run basics are in
 | Registers, memory, or disassembly at a stop | the debugger (`r`, `m`, `d68`) |
 | What the guest does after a given trap | trap breakpoint (`atb`) + `steps` |
 | What happens at an arbitrary app code address | code breakpoint (`ba $addr`) |
+| A guest access that crashes the host with SIGSEGV | `--debug segvfault` |
 
 ## Trap logging
 
 `--logtraps` prints every OS/toolbox call and return. It requires a build with
-`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose. Caveats: pointer arguments
-are dereferenced one level, so **parameter-block arguments print as `=> ?`** and
-`ConstStringPtr` names print as `=> <length byte>`. For decoded fields, use the
-debugger.
+`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose (tens of thousands of lines);
+restrict it to matching trap names with
+the comma-separated wildcard filter `--logtraps-filter "PB*,FS*,HOpen*"`
+(`*`/`?` wildcards; matches the trap name, e.g. `PBGetFInfo/PBHGetFInfo`).
+Pointer arguments are
+dereferenced one level, so a **pointer-to-struct argument (parameter block)
+prints its address followed by the decoded struct** — the generated
+`describeStruct` functions in `api/*.h` / `structdump/*.cpp` decode every
+yaml-defined struct/union field (see
+`docs/ai/2026-09-29-struct-dump-generator-plan.md`). Pointer-to-struct *fields*
+inside a struct print as an address (never expanded). Remaining caveat:
+`ConstStringPtr` names passed as trap *arguments* still print as
+`=> <length byte>`; only `StringPtr` (non-const) arguments print as `"\pName"`.
 
 `--debug <list>` enables targeted diagnostics (comma-separated; `all` for
 everything). Useful categories: `trapfailure` (every file trap returning
@@ -49,12 +59,28 @@ in time.
 | `limit * n` | process at most `n` stops, then keep going |
 | `steps * n` | single-step (and disassemble) `n` instructions per stop |
 | `r` / `d68` / `m` | registers / disassemble / hex dump |
+| `p "Type" addr [count]` | dump a struct by type name at a guest address (generated introspection; see below) |
 | `o "file"` | redirect debugger output |
 | `s` / `x` | single-step / resume |
 | `es` | ExitToShell |
 
 Trap entrypoint names are the trap wrapper names (e.g. `PBGetFInfo/PBHGetFInfo`,
 `PBHOpen`); the same names appear in `--logtraps` output.
+
+### Dumping structs with `p`
+
+Every yaml-defined struct/union is described by generated `describeStruct`
+functions (`src/base/structdump.*`, registration generated into `structdump/*.cpp`).
+The `p` command dumps one by name and guest address, e.g.
+
+```
+p "HFileParam" $40b4e62
+p "CInfoPBRec" $40b4e62 3
+```
+
+Type names are the generated names (`HFileParam`, `ParamBlockRec`, `FSSpec`, …).
+Pointer-to-struct fields print as an address (never expanded). The registry is
+populated from all modules regardless of `--logtraps`.
 
 At a stop, `x` means *resume*. So `on * "x"` resumes at every stop — that is the
 unattended/batch mode (there is no separate flag). Without any
@@ -85,14 +111,33 @@ Notes:
   waiting for the window server.
 - `steps` follows branches, because it uses the emulator's own single-step.
 
+## Guest memory faults (host SIGSEGV)
+
+Invalid addresses accessed by guest code fault on the host. The `segvfault`
+debug option catches that: it installs a `SIGSEGV`/`SIGBUS` handler that maps the
+faulting host address back to a guest address and reports the guest PC,
+registers, and last trap, then exits.
+
+```
+--debug segvfault ... --headless
+```
+
+The guest PC is only meaningful if instruction tracking was on before guest code
+was translated; `segvfault` enables it. Without the option a guest fault is an
+ordinary host crash (and a macOS crash report). If the fault is far from a known
+address, the handler's guest address plus the last trap are usually enough to
+pick a trap breakpoint and `steps` from there.
+
 ## Adding instrumentation
 
 Check whether an existing tool already answers the question (table above) before
 adding prints. If you do add logging, extend the central facility rather than
-scattering env-gated output: for example, add a `logValue` overload in
-`src/base/logging.{h,cpp}` so `--logtraps` decodes a struct type (such as the
-File Manager parameter blocks) instead of printing `?`. Keep any new
-instrumentation opt-in, and remove it once the investigation is done.
+scattering env-gated output: `--logtraps` already decodes the yaml-defined
+structs/unions via the generated `describeStruct` functions, so usually no new
+per-site code is needed. To improve how a particular field/type is shown, adjust
+`logValueTo`/`logField` in `src/base/logging.{h,cpp}` (or the generator in
+`multiversal/executor.rb`), not the call site. Keep any ad-hoc instrumentation
+opt-in, and remove it once the investigation is done.
 
 ## Docs
 

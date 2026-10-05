@@ -41,6 +41,7 @@ file(GLOB multiversal_ruby_sources
 
 set(trap_instance_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_instances/ReferenceAllTraps.cpp)
 set(api_headers)
+set(structdump_sources ${CMAKE_CURRENT_BINARY_DIR}/structdump/ReferenceAllStructDumps.cpp)
 foreach(interfaceModule ${api_yaml_files})
     get_filename_component(base ${interfaceModule} NAME_WE)
 
@@ -51,10 +52,11 @@ foreach(interfaceModule ${api_yaml_files})
     endif()
     list(APPEND trap_instance_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_instances/${base}.cpp)
     list(APPEND api_headers ${CMAKE_CURRENT_BINARY_DIR}/api/${base}.h)
+    list(APPEND structdump_sources ${CMAKE_CURRENT_BINARY_DIR}/structdump/${base}.cpp)
 endforeach()
 
 add_custom_command(
-    OUTPUT ${api_headers} ${trap_instance_sources}
+    OUTPUT ${api_headers} ${trap_instance_sources} ${structdump_sources}
     DEPENDS
         ${api_yaml_files}
         ${multiversal_ruby_sources}
@@ -382,12 +384,17 @@ set(base_sources
         base/dispatcher.cpp
         base/emustubs.cpp
         base/logging.cpp
+        base/structdump.h
+        base/structdump.cpp
     
         base/builtinlibs.h
         base/builtinlibs.cpp
 
         base/debugger.h
         base/debugger.cpp
+
+        base/fault_handler.h
+        base/fault_handler.cpp
 
         base/patches.cpp
     )
@@ -567,6 +574,7 @@ set(include_sources
 
 source_group(APIHeaders FILES ${api_headers})
 source_group(TrapInstances FILES ${trap_instance_sources})
+source_group(StructDump FILES ${structdump_sources})
 
 set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${ctl_sources} ${dial_sources} 
@@ -578,7 +586,7 @@ set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${error_sources} ${commandline_sources} ${prefs_sources}
     ${mactcp_sources}
     ${util_sources} ${debug_sources}
-    ${api_headers} ${trap_instance_sources} ${host_os_sources}
+    ${api_headers} ${trap_instance_sources} ${structdump_sources} ${host_os_sources}
     ${mpw_sources}
     ${include_sources})
 

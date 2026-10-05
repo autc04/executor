@@ -1,6 +1,11 @@
 #include "gtest/gtest.h"
 #include <base/mactype.h>
 #include <base/byteswap.h>
+#include <base/logging.h>
+#include <base/structdump.h>
+#include <FileMgr.h>
+#include <cstring>
+#include <sstream>
 using namespace Executor;
 
 TEST(guestvalues, andUL)
@@ -68,4 +73,91 @@ TEST(guestvalues, rawHostOrder)
 
     p.raw_host_order(0xBEEFCAFE);
     EXPECT_EQ((Point{(int16_t)0xBEEF, (int16_t)0xCAFE}), p);
+}
+
+// The generic logValue fallback should find the generated Executor::describeStruct
+// via ADL and print decoded fields instead of "?".
+TEST(structdump, logValueDescribesGeneratedStruct)
+{
+    HFileParam pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.ioFRefNum = 7;
+    pb.ioFDirIndex = 3;
+    pb.ioFlFndrInfo.fdType = 0x54455854; // 'TEXT'
+
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(pb);
+    std::clog.rdbuf(old);
+
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("ioFRefNum=7"), std::string::npos) << "got: " << out;
+    EXPECT_NE(out.find("ioFDirIndex=3"), std::string::npos) << "got: " << out;
+    // Nested by-value struct is described recursively.
+    EXPECT_NE(out.find("ioFlFndrInfo=FInfo{"), std::string::npos) << "got: " << out;
+}
+
+// A union (param block) prints each arm labelled.
+TEST(structdump, logValueDescribesUnion)
+{
+    ParamBlockRec pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.fileParam.ioFRefNum = 5;
+
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(pb);
+    std::clog.rdbuf(old);
+
+    const std::string out = captured.str();
+    EXPECT_NE(out.find("fileParam=FileParam{"), std::string::npos) << "got: " << out;
+    EXPECT_NE(out.find("ioParam=IOParam{"), std::string::npos) << "got: " << out;
+}
+
+// The type registry is populated from every generated module (through the
+// ReferenceAllStructDumps translation unit), independent of logValue use.
+TEST(structdump, registryFindType)
+{
+    const structdump::TypeDesc* t = structdump::findType("HFileParam");
+    ASSERT_NE(t, nullptr);
+    EXPECT_STREQ(t->name, "HFileParam");
+    EXPECT_EQ(t->size, sizeof(HFileParam));
+    EXPECT_EQ(structdump::findType("NoSuchType"), nullptr);
+}
+
+TEST(structdump, registryPrints)
+{
+    const structdump::TypeDesc* t = structdump::findType("HFileParam");
+    ASSERT_NE(t, nullptr);
+
+    HFileParam pb;
+    std::memset(&pb, 0, sizeof(pb));
+    pb.ioFRefNum = 7;
+
+    std::ostringstream os;
+    t->print(os, &pb);
+    EXPECT_NE(os.str().find("ioFRefNum=7"), std::string::npos) << "got: " << os.str();
+}
+
+// Point is hand-written (not-for: executor in MacTypes.yaml) but still gets a
+// hand-written describeStruct.
+TEST(structdump, describesPoint)
+{
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(Point{3, 4});
+    std::clog.rdbuf(old);
+
+    EXPECT_NE(captured.str().find("Point{3, 4}"), std::string::npos) << "got: " << captured.str();
+}
+
+TEST(structdump, trapFilter)
+{
+    logging::setTrapFilter("PB*,*Info");
+    EXPECT_TRUE(logging::trapLogEnabled("PBGetFInfo/PBHGetFInfo"));
+    EXPECT_TRUE(logging::trapLogEnabled("GetInfo"));
+    EXPECT_FALSE(logging::trapLogEnabled("HOpenResFile"));
+
+    logging::setTrapFilter("");
+    EXPECT_TRUE(logging::trapLogEnabled("HOpenResFile"));
 }

@@ -52,6 +52,8 @@
 #include <hfs/hfs_plus.h>
 #include <base/cpu.h>
 #include <base/debugger.h>
+#include <base/fault_handler.h>
+#include <error/error.h>
 #include <debug/mon_debugger.h>
 #include <PowerCore.h>
 #include <vdriver/eventrecorder.h>
@@ -90,6 +92,7 @@ namespace pox = program_options_extended;
 static bool use_native_code_p = true;
 static bool breakOnProcessStart = false;
 static bool logtraps = false;
+static std::string logTrapFilter;
 static std::vector<std::string> debugCommands;
 static std::string keyboard;
 static bool list_keyboards_p = false;
@@ -223,6 +226,7 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
     po::options_description debugging("Debugging");
     debugging.add_options()
         ("logtraps", po::bool_switch(&logtraps), "print all operating system and toolbox calls and their arguments")
+        ("logtraps-filter", po::value(&logTrapFilter), "with --logtraps, restrict output to trap names matching these comma-separated wildcards (e.g. \"PB*,FS*,HOpen*\")")
         ("break", po::bool_switch(&breakOnProcessStart), "break into debugger at program start")
         ("debug-cmd", po::value(&debugCommands), "run a debugger command at startup (e.g. \"atb \\\"PBGetFInfo/PBHGetFInfo\\\"\"); may be repeated")
         ("debug", po::value<std::string>()->notifier([](const std::string& s) {
@@ -245,7 +249,9 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
             "\"trapfailure\" enables warnings when traps return error codes, "
             "\"errno\" enables some C library-related warnings, "
             "\"unexpected\" enables warnings for unexpected events, "
-            "\"unimplemented\" enables warnings for unimplemented traps.  "
+            "\"unimplemented\" enables warnings for unimplemented traps, "
+            "\"segvfault\" reports the guest address (and, with instruction "
+            "tracking, the guest PC) when emulated code faults.  "
             "Example: \"executor -debug unimp,trace\""
         )
         ;
@@ -426,6 +432,15 @@ int main(int argc, char **argv)
     auto executorThread = std::thread([&] {
         try
         {
+            if(ERROR_ENABLED_P(ERROR_SEGV_FAULT))
+            {
+                // Report guest memory faults (and, with tracking, the faulting
+                // guest PC) instead of dying with a bare SIGSEGV.  Tracking must
+                // be enabled before any guest code is translated.
+                syn68k_track_pc = 1;
+                installFaultHandler();
+            }
+
             char thingOnStack; /* used to determine an approximation of the stack base address */
             InitMemory(&thingOnStack);
 
@@ -436,7 +451,7 @@ int main(int argc, char **argv)
 
             EM_A7 = ptr_to_longint(LM(CurStackBase));
 
-            Executor::traps::init(logtraps);
+            Executor::traps::init(logtraps, logTrapFilter);
             InitLowMem();
             syncint_init(); // timer interrupts: must not be inited before cpu & trapvevtors
 

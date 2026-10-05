@@ -1,6 +1,7 @@
 #include <base/logging.h>
 #include <iomanip>
 #include <cctype>
+#include <vector>
 
 using namespace Executor;
 
@@ -27,19 +28,76 @@ void logging::setEnabled(bool e)
     loggingEnabled = e;
 }
 
+static std::vector<std::string> trapFilter;
+
+void logging::setTrapFilter(const std::string& patterns)
+{
+    trapFilter.clear();
+    std::string cur;
+    for(char c : patterns)
+    {
+        if(c == ',')
+        {
+            if(!cur.empty())
+                trapFilter.push_back(cur);
+            cur.clear();
+        }
+        else
+            cur.push_back(c);
+    }
+    if(!cur.empty())
+        trapFilter.push_back(cur);
+}
+
+// Simple glob: '*' matches any run, '?' any single character.
+static bool globMatch(const char* p, const char* s)
+{
+    while(*p == '*')
+    {
+        if(!*++p)
+            return true;
+        for(; *s; s++)
+            if(globMatch(p, s))
+                return true;
+        return false;
+    }
+    if(!*p)
+        return !*s;
+    if(!*s)
+        return false;
+    if(*p == '?' || *p == *s)
+        return globMatch(p + 1, s + 1);
+    return false;
+}
+
+bool logging::trapLogEnabled(const char* name)
+{
+    if(trapFilter.empty())
+        return true;
+    for(const auto& pattern : trapFilter)
+        if(globMatch(pattern.c_str(), name))
+            return true;
+    return false;
+}
+
 bool logging::loggingActive()
 {
     return nestingLevel <= 1;
 }
 
-void logging::logEscapedChar(unsigned char c)
+void logging::logEscapedCharTo(std::ostream& os, unsigned char c)
 {
     if(c == '\'' || c == '\"' || c == '\\')
-        std::clog << '\\' << c;
+        os << '\\' << c;
     else if(std::isprint(c))
-        std::clog << c;
+        os << c;
     else
-        std::clog << "\\0" << std::oct << (unsigned)c << std::dec;
+        os << "\\0" << std::oct << (unsigned)c << std::dec;
+}
+
+void logging::logEscapedChar(unsigned char c)
+{
+    logEscapedCharTo(std::clog, c);
 }
 
 bool logging::canConvertBack(const void* p)
@@ -91,77 +149,100 @@ bool logging::validAddress(syn68k_addr_t p)
 }
 
 
-void logging::logValue(char x)
+void logging::logValueTo(std::ostream& os, char x)
 {
-    std::clog << (int)x;
-    std::clog << " = '";
-    logEscapedChar(x);
-    std::clog << '\'';
+    os << (int)x << " = '";
+    logEscapedCharTo(os, x);
+    os << '\'';
 }
-void logging::logValue(unsigned char x)
+void logging::logValueTo(std::ostream& os, unsigned char x)
 {
-    std::clog << (int)x;
+    os << (int)x;
     if(std::isprint(x))
-        std::clog << " = '" << x << '\'';
+        os << " = '" << x << '\'';
 }
-void logging::logValue(signed char x)
+void logging::logValueTo(std::ostream& os, signed char x)
 {
-    std::clog << (int)x;
-    if(std::isprint(x))
-        std::clog << " = '" << x << '\'';
+    os << (int)x;
+    if(std::isprint((unsigned char)x))
+        os << " = '" << (char)x << '\'';
 }
-void logging::logValue(int16_t x) { std::clog << x; }
-void logging::logValue(uint16_t x) { std::clog << x; }
-void logging::logValue(int32_t x)
+void logging::logValueTo(std::ostream& os, bool x)
 {
-    std::clog << x << " = '";
-    logEscapedChar((x >> 24) & 0xFF);
-    logEscapedChar((x >> 16) & 0xFF);
-    logEscapedChar((x >> 8) & 0xFF);
-    logEscapedChar(x & 0xFF);
-    std::clog << "'";
+    os << (x ? 1 : 0);
 }
-void logging::logValue(uint32_t x)
+void logging::logValueTo(std::ostream& os, int16_t x) { os << x; }
+void logging::logValueTo(std::ostream& os, uint16_t x) { os << x; }
+void logging::logValueTo(std::ostream& os, int32_t x)
 {
-    std::clog << x << " = '";
-    logEscapedChar((x >> 24) & 0xFF);
-    logEscapedChar((x >> 16) & 0xFF);
-    logEscapedChar((x >> 8) & 0xFF);
-    logEscapedChar(x & 0xFF);
-    std::clog << "'";
+    os << x << " = '";
+    logEscapedCharTo(os, (x >> 24) & 0xFF);
+    logEscapedCharTo(os, (x >> 16) & 0xFF);
+    logEscapedCharTo(os, (x >> 8) & 0xFF);
+    logEscapedCharTo(os, x & 0xFF);
+    os << "'";
 }
-void logging::logValue(unsigned char* p)
+void logging::logValueTo(std::ostream& os, uint32_t x)
 {
-    std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
-    if(validAddress(p) && validAddress(p+256))
+    os << x << " = '";
+    logEscapedCharTo(os, (x >> 24) & 0xFF);
+    logEscapedCharTo(os, (x >> 16) & 0xFF);
+    logEscapedCharTo(os, (x >> 8) & 0xFF);
+    logEscapedCharTo(os, x & 0xFF);
+    os << "'";
+}
+void logging::logValueTo(std::ostream& os, int64_t x) { os << x; }
+void logging::logValueTo(std::ostream& os, uint64_t x) { os << x; }
+void logging::logValueTo(std::ostream& os, float x) { os << x; }
+void logging::logValueTo(std::ostream& os, double x) { os << x; }
+
+namespace
+{
+void logPascalString(std::ostream& os, const unsigned char* p)
+{
+    os << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
+    if(logging::validAddress(p) && logging::validAddress(p + 256))
     {
-        std::clog << " = \"\\p";
+        os << " = \"\\p";
         for(int i = 1; i <= p[0]; i++)
-            logEscapedChar(p[i]);
-        std::clog << '"';
+            logging::logEscapedCharTo(os, p[i]);
+        os << '"';
     }
 }
-void logging::logValue(const void* p)
+}
+void logging::logValueTo(std::ostream& os, unsigned char* p) { logPascalString(os, p); }
+void logging::logValueTo(std::ostream& os, const unsigned char* p) { logPascalString(os, p); }
+void logging::logValueTo(std::ostream& os, const void* p)
 {
     if(canConvertBack(p))
-        std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
+        os << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
     else
-        std::clog << "?";
+        os << "?";
 }
-void logging::logValue(void* p)
+void logging::logValueTo(std::ostream& os, void* p)
+{
+    logValueTo(os, (const void*)p);
+}
+void logging::logValueTo(std::ostream& os, ProcPtr p)
 {
     if(canConvertBack(p))
-        std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
+        os << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
     else
-        std::clog << "?";
+        os << "?";
 }
-void logging::logValue(ProcPtr p)
-{
-    if(canConvertBack(p))
-        std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
-    else
-        std::clog << "?";
-}
+
+void logging::logValue(char x) { logValueTo(std::clog, x); }
+void logging::logValue(unsigned char x) { logValueTo(std::clog, x); }
+void logging::logValue(signed char x) { logValueTo(std::clog, x); }
+void logging::logValue(bool x) { logValueTo(std::clog, x); }
+void logging::logValue(int16_t x) { logValueTo(std::clog, x); }
+void logging::logValue(uint16_t x) { logValueTo(std::clog, x); }
+void logging::logValue(int32_t x) { logValueTo(std::clog, x); }
+void logging::logValue(uint32_t x) { logValueTo(std::clog, x); }
+void logging::logValue(unsigned char* p) { logValueTo(std::clog, p); }
+void logging::logValue(const void* p) { logValueTo(std::clog, p); }
+void logging::logValue(void* p) { logValueTo(std::clog, p); }
+void logging::logValue(ProcPtr p) { logValueTo(std::clog, p); }
 
 
 void logging::dumpRegsAndStack()
@@ -181,7 +262,7 @@ void logging::dumpRegsAndStack()
 
 void logging::logUntypedArgs(const char *name)
 {
-    if(loggingActive())
+    if(loggingActive() && trapLogEnabled(name))
     {
         std::clog.clear();
         indent();
@@ -192,11 +273,21 @@ void logging::logUntypedArgs(const char *name)
 }
 void logging::logUntypedReturn(const char *name)
 {
-    if(loggingActive())
+    if(loggingActive() && trapLogEnabled(name))
     {
         indent();
         std::clog << "returning: " << name << " ";
         dumpRegsAndStack();
         std::clog << std::endl << std::flush;
     }
+}
+
+// Bound to base/mactype.h's hand-written Point (it has no generated
+// describeStruct because it is `not-for: executor` in MacTypes.yaml).
+namespace Executor
+{
+void describeStruct(const Point& p, std::ostream& os)
+{
+    os << "Point{" << p.v << ", " << p.h << "}";
+}
 }

@@ -9,6 +9,7 @@
  */
 #include <stdint.h>
 #include <cstring>
+#include <iosfwd>
 #include <stdexcept>
 #include <type_traits>
 #include <syn68k_public.h>
@@ -31,6 +32,11 @@ struct Point
 
     inline bool operator==(Point other) const { return v == other.v && h == other.h; }
 };
+
+// Point is hand-written (MacTypes.yaml marks it `not-for: executor`), so unlike
+// the generated structs it has no generated describeStruct.  Defined in
+// base/logging.cpp.
+void describeStruct(const Point&, std::ostream&);
 
 #if defined(BIGENDIAN)
 template<typename T>

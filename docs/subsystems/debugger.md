@@ -45,6 +45,25 @@ trap and compare it after, reporting any change. Only available in debug builds.
 shell with disassembly, memory dump, breakpoint management, and expression evaluation
 for 68K addresses. Linking cxmon makes the resulting binary GPL-licensed.
 
+**Struct introspection (`structdump`)**: the multiversal generator emits a
+`describeStruct(const T&, std::ostream&)` for every complete yaml-defined
+struct/union (declared next to the type in `api/*.h`, defined in
+`structdump/*.cpp`). `--logtraps` uses these to decode parameter blocks instead of
+printing `?`, and the debugger's `p "Type" addr [count]` command dumps a named
+type at a guest address via a registry (`src/base/structdump.{h,cpp}`,
+`structdump::findType`/`dumpType`). See
+`docs/ai/2026-09-29-struct-dump-generator-plan.md`.
+
+**Guest fault reporting**: the interpreter dereferences guest memory through plain
+host pointers, so a bad guest address is a host `SIGSEGV` (see
+`docs/ai/2026-09-28-segv-fault-mapping.md`). `--debug segvfault` installs a
+`SIGSEGV`/`SIGBUS` handler (`src/base/fault_handler.cpp`) that maps the faulting
+host address back to a guest address and reports the guest PC, registers, and
+last trap. The guest PC comes from `syn68k_current_pc()`, which is only available
+when instruction tracking (`syn68k_track_pc`) is enabled — this also records a
+per-block synthetic-offset→guest-address table. When disabled, behaviour is a
+normal host crash.
+
 ### Source Files
 
 | Path | Description |
