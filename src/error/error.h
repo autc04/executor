@@ -50,7 +50,7 @@ extern "C" {
 #define ERROR_TEXT_EDIT_SLAM 7
 #define ERROR_SOUND_LOG 8
 #define ERROR_FLOATING_POINT 9
-#define ERROR_SEGV_FAULT 10
+#define ERROR_SEGFAULT 10
 
 /* This is a bit mask for those errors for which we should compile
  * in support.  This way we can conditionally compile in only

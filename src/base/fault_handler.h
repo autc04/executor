@@ -8,7 +8,7 @@ namespace Executor
     // installed, the faulting guest address (and, when syn68k_track_pc is set,
     // the guest PC of the faulting instruction) is reported instead.
     //
-    // Enabled with `--debug segvfault`.  Guest-PC tracking must be turned on
+    // Enabled with `--debug segfault`.  Guest-PC tracking must be turned on
     // (syn68k_track_pc) before any guest code is translated.
     void installFaultHandler();
 }

@@ -83,7 +83,7 @@ namespace
         p = appendStr(p, "guest PC:     ");
         p = appendHex(p, guestPC, 8);
         p = appendStr(p, syn68k_track_pc ? "   (from instruction tracking)\n"
-                                         : "   (tracking off; enable with --debug segvfault)\n");
+                                         : "   (tracking off; enable with --debug segfault)\n");
 
         p = appendStr(p, "last trap:    ");
         p = appendHex(p, currentTrapPC, 8);

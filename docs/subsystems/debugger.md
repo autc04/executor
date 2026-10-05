@@ -56,7 +56,7 @@ type at a guest address via a registry (`src/base/structdump.{h,cpp}`,
 
 **Guest fault reporting**: the interpreter dereferences guest memory through plain
 host pointers, so a bad guest address is a host `SIGSEGV` (see
-`docs/ai/2026-09-28-segv-fault-mapping.md`). `--debug segvfault` installs a
+`docs/ai/2026-09-28-segv-fault-mapping.md`). `--debug segfault` installs a
 `SIGSEGV`/`SIGBUS` handler (`src/base/fault_handler.cpp`) that maps the faulting
 host address back to a guest address and reports the guest PC, registers, and
 last trap. The guest PC comes from `syn68k_current_pc()`, which is only available

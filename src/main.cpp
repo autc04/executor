@@ -250,7 +250,7 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
             "\"errno\" enables some C library-related warnings, "
             "\"unexpected\" enables warnings for unexpected events, "
             "\"unimplemented\" enables warnings for unimplemented traps, "
-            "\"segvfault\" reports the guest address (and, with instruction "
+            "\"segfault\" reports the guest address (and, with instruction "
             "tracking, the guest PC) when emulated code faults.  "
             "Example: \"executor -debug unimp,trace\""
         )
@@ -432,7 +432,7 @@ int main(int argc, char **argv)
     auto executorThread = std::thread([&] {
         try
         {
-            if(ERROR_ENABLED_P(ERROR_SEGV_FAULT))
+            if(ERROR_ENABLED_P(ERROR_SEGFAULT))
             {
                 // Report guest memory faults (and, with tracking, the faulting
                 // guest PC) instead of dying with a bare SIGSEGV.  Tracking must
