@@ -1,6 +1,7 @@
 #include <base/logging.h>
 #include <iomanip>
 #include <cctype>
+#include <vector>
 
 using namespace Executor;
 
@@ -25,6 +26,58 @@ bool logging::enabled()
 void logging::setEnabled(bool e)
 {
     loggingEnabled = e;
+}
+
+static std::vector<std::string> trapFilter;
+
+void logging::setTrapFilter(const std::string& patterns)
+{
+    trapFilter.clear();
+    std::string cur;
+    for(char c : patterns)
+    {
+        if(c == ',')
+        {
+            if(!cur.empty())
+                trapFilter.push_back(cur);
+            cur.clear();
+        }
+        else
+            cur.push_back(c);
+    }
+    if(!cur.empty())
+        trapFilter.push_back(cur);
+}
+
+// Simple glob: '*' matches any run, '?' any single character.
+static bool globMatch(const char* p, const char* s)
+{
+    while(*p == '*')
+    {
+        if(!*++p)
+            return true;
+        for(; *s; s++)
+            if(globMatch(p, s))
+                return true;
+        return false;
+    }
+    if(!*p)
+        return !*s;
+    if(!*s)
+        return false;
+    if(*p == '?' || *p == *s)
+        return globMatch(p + 1, s + 1);
+    return false;
+}
+
+bool logging::trapLogEnabled(const char* name)
+{
+    if(trapFilter.empty())
+        return true;
+    for(const auto& pattern : trapFilter)
+        if(globMatch(pattern.c_str(), name))
+            return true;
+    return false;
 }
 
 bool logging::loggingActive()
@@ -209,7 +262,7 @@ void logging::dumpRegsAndStack()
 
 void logging::logUntypedArgs(const char *name)
 {
-    if(loggingActive())
+    if(loggingActive() && trapLogEnabled(name))
     {
         std::clog.clear();
         indent();
@@ -220,11 +273,21 @@ void logging::logUntypedArgs(const char *name)
 }
 void logging::logUntypedReturn(const char *name)
 {
-    if(loggingActive())
+    if(loggingActive() && trapLogEnabled(name))
     {
         indent();
         std::clog << "returning: " << name << " ";
         dumpRegsAndStack();
         std::clog << std::endl << std::flush;
     }
+}
+
+// Bound to base/mactype.h's hand-written Point (it has no generated
+// describeStruct because it is `not-for: executor` in MacTypes.yaml).
+namespace Executor
+{
+void describeStruct(const Point& p, std::ostream& os)
+{
+    os << "Point{" << p.v << ", " << p.h << "}";
+}
 }

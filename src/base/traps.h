@@ -329,7 +329,7 @@ private:
     NOTRAP_FUNCTION2(LMGet##NAME); \
     NOTRAP_FUNCTION2(LMSet##NAME)
 
-void init(bool enableLogging);
+void init(bool enableLogging, const std::string& trapFilter = std::string());
 extern std::unordered_map<std::string, traps::Entrypoint*> entrypoints;
 
 }

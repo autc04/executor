@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <iostream>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 
@@ -14,6 +15,12 @@ namespace logging
 
 bool enabled();
 void setEnabled(bool e);
+
+// Restrict --logtraps output to trap names matching one of the comma-separated
+// wildcard patterns (e.g. "PB*,FS*,HOpen*").  Empty (or never called) = all.
+void setTrapFilter(const std::string& patterns);
+bool trapLogEnabled(const char* name);
+
 void resetNestingLevel();
 
 bool loggingActive();
@@ -200,7 +207,7 @@ bool validAddress(GUEST<T*> p)
 template<typename... Args>
 void logTrapCall(const char* trapname, Args... args)
 {
-    if(!loggingActive())
+    if(!loggingActive() || !trapLogEnabled(trapname))
         return;
     std::clog.clear();
     indent();
@@ -212,7 +219,7 @@ void logTrapCall(const char* trapname, Args... args)
 template<typename Ret, typename... Args>
 void logTrapValReturn(const char* trapname, Ret ret, Args... args)
 {
-    if(!loggingActive())
+    if(!loggingActive() || !trapLogEnabled(trapname))
         return;
     indent();
     std::clog << "returning: " << trapname << "(";
@@ -224,7 +231,7 @@ void logTrapValReturn(const char* trapname, Ret ret, Args... args)
 template<typename... Args>
 void logTrapVoidReturn(const char* trapname, Args... args)
 {
-    if(!loggingActive())
+    if(!loggingActive() || !trapLogEnabled(trapname))
         return;
     indent();
     std::clog << "returning: " << trapname << "(";

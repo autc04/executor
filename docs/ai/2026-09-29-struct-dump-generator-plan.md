@@ -343,3 +343,26 @@ ParamBlockRec @ 0x40b8216: ParamBlockRec{ioParam=IOParam{...} fileParam=FilePara
 
 This exercises the registry, the address translation, and the generated printers
 together.
+
+## 16. Phase 3 outcome (2026-09-29)
+
+- **`Point`** (`MacTypes.yaml` marks it `not-for: executor`, so it had no
+generated description): declared `void describeStruct(const Point&,
+std::ostream&)` in `base/mactype.h` and defined it in `base/logging.cpp`. Fields
+such as `fdLocation` now print (`fdLocation=Point{8, 25436}`) instead of `?`.
+- **`--logtraps-filter`** (review §6.3): `logging::setTrapFilter` /
+`trapLogEnabled` (`base/logging.{h,cpp}`) accept comma-separated `*`/`?`
+wildcards matched against the trap name; `logTrapCall`/`…Return` and the untyped
+path honour it. `traps::init` gained an optional filter argument, and
+`main.cpp` exposes `--logtraps-filter "PB*,FS*"` (kept as a separate flag because
+`--logtraps` is a `bool_switch` and an optional-value form would swallow the
+positional app path).
+- Tests: `structdump.describesPoint` and `structdump.trapFilter`.
+
+Results: `romlib`, `tests`, `executor-sdl2` build clean; six `structdump` tests
+pass. Live run (MacWrite II): `--logtraps --logtraps-filter "PB*"` cut the output
+from ~54k to 76 lines, all `PB*` traps, with `fdLocation=Point{...}`. Full native
+suite unchanged (same 5 pre-existing failures).
+
+Deliberately not done: enum-value names (OSErr etc.) and filler-field
+suppression — both would need per-enum tables / be lossy, so left for later.

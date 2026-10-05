@@ -138,3 +138,26 @@ TEST(structdump, registryPrints)
     t->print(os, &pb);
     EXPECT_NE(os.str().find("ioFRefNum=7"), std::string::npos) << "got: " << os.str();
 }
+
+// Point is hand-written (not-for: executor in MacTypes.yaml) but still gets a
+// hand-written describeStruct.
+TEST(structdump, describesPoint)
+{
+    std::ostringstream captured;
+    auto* old = std::clog.rdbuf(captured.rdbuf());
+    logging::logValue(Point{3, 4});
+    std::clog.rdbuf(old);
+
+    EXPECT_NE(captured.str().find("Point{3, 4}"), std::string::npos) << "got: " << captured.str();
+}
+
+TEST(structdump, trapFilter)
+{
+    logging::setTrapFilter("PB*,*Info");
+    EXPECT_TRUE(logging::trapLogEnabled("PBGetFInfo/PBHGetFInfo"));
+    EXPECT_TRUE(logging::trapLogEnabled("GetInfo"));
+    EXPECT_FALSE(logging::trapLogEnabled("HOpenResFile"));
+
+    logging::setTrapFilter("");
+    EXPECT_TRUE(logging::trapLogEnabled("HOpenResFile"));
+}

@@ -22,7 +22,11 @@ These tools observe the emulated (guest) side. Build and run basics are in
 ## Trap logging
 
 `--logtraps` prints every OS/toolbox call and return. It requires a build with
-`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose. Pointer arguments are
+`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose (tens of thousands of lines);
+restrict it to matching trap names with
+the comma-separated wildcard filter `--logtraps-filter "PB*,FS*,HOpen*"`
+(`*`/`?` wildcards; matches the trap name, e.g. `PBGetFInfo/PBHGetFInfo`).
+Pointer arguments are
 dereferenced one level, so a **pointer-to-struct argument (parameter block)
 prints its address followed by the decoded struct** — the generated
 `describeStruct` functions in `api/*.h` / `structdump/*.cpp` decode every

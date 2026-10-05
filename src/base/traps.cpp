@@ -66,9 +66,10 @@ uint32_t traps::Entrypoint::breakPPC(PowerCore& cpu)
 }
 
 
-void traps::init(bool log)
+void traps::init(bool log, const std::string& trapFilter)
 {
     logging::setEnabled(log);
+    logging::setTrapFilter(trapFilter);
     ReferenceAllTraps();
     internal::DeferredInit::initAll();
     for(int i = 0; i < NTOOLENTRIES; i++)
