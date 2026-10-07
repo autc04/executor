@@ -28,6 +28,15 @@ void indent();
 
 extern int nestingLevel;
 
+// RAII nesting guard used by the generated trap entrypoints so that --logtraps
+// indentation and the "suppress nested traps" rule match the old LoggedFunction.
+struct LogNestingScope
+{
+    bool active;
+    LogNestingScope() : active(enabled()) { if(active) nestingLevel++; }
+    ~LogNestingScope() { if(active) nestingLevel--; }
+};
+
 void logUntypedArgs(const char *name);
 void logUntypedReturn(const char *name);
 

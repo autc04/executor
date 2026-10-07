@@ -19,11 +19,6 @@ find_package(Boost REQUIRED CONFIG COMPONENTS filesystem program_options)
 
 find_package(Threads REQUIRED)
 
-# Compile the generator-emitted straight-line trap entrypoints (see
-# docs/ai/2026-10-07-generated-trap-entrypoints-plan.md).  Off by default:
-# nothing registers them yet, so this only validates that they build.
-option(EXECUTOR_GENERATED_ENTRYPOINTS "Compile generator-emitted trap entrypoints" OFF)
-
 
 if(WIN32 AND MSVC)
     # compiler uses msvc-style command line
@@ -600,9 +595,10 @@ set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${mpw_sources}
     ${include_sources})
 
-if(EXECUTOR_GENERATED_ENTRYPOINTS)
-    list(APPEND sources ${trap_entry_sources})
-endif()
+# Generator-emitted straight-line entrypoints and wrapper objects; they are the
+# production path for the Pascal-convention traps (see
+# docs/ai/2026-10-07-generated-trap-entrypoints-plan.md).
+list(APPEND sources ${trap_entry_sources})
 
 add_library(romlib ${sources}
         ${GENERATED_FILES}

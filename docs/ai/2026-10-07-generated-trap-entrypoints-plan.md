@@ -17,6 +17,18 @@
   CPU 931.7s → 816s, `executor` Debug 242.5 MB → 171.4 MB, stripped 28.1 MB →
   19.3 MB, `libromlib.a` 418 MB → 294 MB — close to the logging-OFF numbers
   (49.8s / 161.9 MB / 18.0 MB). 138 native tests pass.
+- **Phase 1 — done.** The 566 Pascal traps no longer go through
+  `TrapFunction`/`WrappedFunction`. The generator emits, per trap, straight-line
+  68K and PowerPC entrypoints, a non-template wrapper object `Executor::<Trap>`
+  deriving from `GeneratedEntrypoint`, and registration; the generated header
+  declares the wrapper class + `extern` object instead of `PASCAL_TRAP`.
+  `trap_entries/*.cpp` is always compiled and `traps::init()` calls
+  `trapentries::ReferenceAllEntries()`. Logging uses `logging::logTrapCall`/
+  `…Return` (the L2 shape) via `logging::LogNestingScope`. Measured (logging ON,
+  full clean build): wall unchanged at ~0m51.7s — the critical path is now the
+  Register/file traps (`FileMgr` 18.8 s) — but binary size fell further:
+  `executor` Debug 171.4 → 148.0 MB, stripped 19.3 → 16.8 MB, `libromlib.a`
+  294 → 254 MB, all **below** the old logging-OFF baseline. 138 tests pass.
 
 ## Goal
 
