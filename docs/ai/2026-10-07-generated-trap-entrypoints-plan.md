@@ -1,34 +1,74 @@
 # Generated trap entrypoints (68K + PowerPC) and data-driven logging
 
 > Date: 2026-10-07
-> Status: in progress
+> Status: done (all phases landed on branch `compiletime`)
 
 ## Progress
 
-- **Phase 0 — done.** `multiversal` emits straight-line 68K Pascal entrypoints
-  (566 across 66 modules) into `trap_entries/`, plus `ReferenceAllEntries.cpp`.
-  `src/base/trap-entry.{h,cpp}` holds the `GeneratedEntrypoint` skeleton.
-  Compiled into `romlib` behind the off-by-default
-  `EXECUTOR_GENERATED_ENTRYPOINTS` option; nothing registers them yet.
-- **Logging, single-instantiation (precursor to L1/L2) — done.** `LoggedFunction`
-  now gates on `logging::enabled()` at call time, so a logging-enabled build
-  instantiates the marshalling templates once per trap instead of twice (logged +
-  unlogged). Measured (logging ON, full clean build): wall 1m04.3s → 0m51.7s,
-  CPU 931.7s → 816s, `executor` Debug 242.5 MB → 171.4 MB, stripped 28.1 MB →
-  19.3 MB, `libromlib.a` 418 MB → 294 MB — close to the logging-OFF numbers
-  (49.8s / 161.9 MB / 18.0 MB). 138 native tests pass.
-- **Phase 1 — done.** The 566 Pascal traps no longer go through
-  `TrapFunction`/`WrappedFunction`. The generator emits, per trap, straight-line
-  68K and PowerPC entrypoints, a non-template wrapper object `Executor::<Trap>`
-  deriving from `GeneratedEntrypoint`, and registration; the generated header
-  declares the wrapper class + `extern` object instead of `PASCAL_TRAP`.
-  `trap_entries/*.cpp` is always compiled and `traps::init()` calls
-  `trapentries::ReferenceAllEntries()`. Logging uses `logging::logTrapCall`/
-  `…Return` (the L2 shape) via `logging::LogNestingScope`. Measured (logging ON,
-  full clean build): wall unchanged at ~0m51.7s — the critical path is now the
-  Register/file traps (`FileMgr` 18.8 s) — but binary size fell further:
-  `executor` Debug 171.4 → 148.0 MB, stripped 19.3 → 16.8 MB, `libromlib.a`
-  294 → 254 MB, all **below** the old logging-OFF baseline. 138 tests pass.
+Every trap in `multiversal/defs/*.yaml` is now a straight-line generated
+entrypoint; the old `TrapFunction` / `WrappedFunction` / `SubTrapFunction` /
+`TrapVariant` / `DispatcherTrap` template machinery is gone from generated code,
+and `--logtraps` is data-driven.  `EXECUTOR_ENABLE_LOGGING` has been removed —
+logging is runtime-only.
+
+Headline numbers (`ninja clean && time ninja` in `build/`, Debug, 24 cores, all
+front-ends + tests; `executor` = `build/executor`):
+
+| phase | wall | user | executor debug | executor stripped | libromlib.a |
+|---|---|---|---|---|---|
+| **start** (logging ON) | 1m04.3s | 12m34.5s | 242,503,464 | 28,112,904 | 418,003,096 |
+| logging single-instantiation | 0m51.7s | 816s CPU | 171.4 MB | 19.3 MB | 294 MB |
+| Phase 1 — Pascal traps | 0m51.7s | | 148.0 MB | 16.8 MB | 254 MB |
+| Phase 2a–2e / 4a — Register, file, dispatch | 0m46.4s | 10m43.3s | 90.8 MB | 11.5 MB | 167.7 MB |
+| 4a-4 — remaining traps + HFS_SUBTRAP | 0m47.7s | 10m46.7s | 89,904,744 | 11,433,960 | 166,386,180 |
+| 4a-5 — generated dispatchers | 0m48.0s | 10m45.8s | 88,832,272 | 11,413,480 | 162,098,390 |
+| 2g/4c — NOTRAP_FUNCTION | 0m47.1s | 10m38.8s | 70,854,320 | 9,828,328 | 129,608,614 |
+| 4b — dead machinery deleted | 0m47.5s | 10m40.6s | 70,853,528 | 9,828,328 | 129,607,286 |
+| L3 — data-driven logging | 0m47.5s | 10m35.8s | 69,697,168 | 9,746,408 | 126,460,662 |
+| **flag removed** (runtime-only) | 0m47.5s | 10m36.2s | 69,696,760 | 9,746,408 | 126,459,446 |
+
+Net: wall **−26%**, `executor` debug **−71%**, stripped **−65%**, `libromlib.a`
+**−70%**.  Logging-ON and logging-OFF now differ by ~0.15 s wall and ~0.1 MB
+stripped, which is why the build option was dropped.
+
+The comparison build was a clean rebuild that must be understood in terms of
+*total serial work*, not the critical path: after the generated-trap work the
+heaviest translation units are ordinary hand-written ones (`front-end-qt`
+`qtkeycodes.cpp` ~6.7 s, `init.cpp` ~6.5 s, five `main.cpp` ~6 s, `prPrinting.cpp`
+~5.6 s), and the generated `trap_entries/*.cpp` are around 5 s each.  That shift is
+recorded separately in `docs/ai/2026-10-07-ordinary-tu-compile-time-notes.md`.
+
+What landed (each commit builds all front-ends and passes the suites):
+
+1. **Phase 0** — generator infrastructure; `GeneratedEntrypoint` skeleton.
+2. **Logging single-instantiation** — `LoggedFunction` gates on
+   `logging::enabled()`, so one instantiation serves logged and unlogged.
+3. **Phase 1** — the 566 Pascal traps become generated wrapper objects.
+4. **Phase 2a–2e, 4a-1..4a-3** — Register traps (plain, `Out`/`InOut`, extras,
+   flag variants), file traps (`FILE_TRAP`/`HFS_TRAP`/`*_SUBTRAP`), and
+   dispatcher sub-traps (`PASCAL_SUBTRAP`, `REGISTER_SUBTRAP*`, `FILE_SUBTRAP`).
+5. **4a-4** — the last fallbacks: `void()` Register traps (`ADBReInit`),
+   `D0Minus1Boolean` (`GetOSEvent`/`OSEventAvail`), multi-extra Register traps
+   (`HandToHand` et al.) and `HFS_SUBTRAP` (`PBHOpenDF`).
+6. **4a-5** — `DISPATCHER_TRAP`/`EXTERN_DISPATCHER_TRAP` become
+   `GeneratedDispatcherTrap` objects (selector convention as data).
+7. **2g/4c** — the 546 `NOTRAP_FUNCTION*` (low-memory accessors `LMGet*`/
+   `LMSet*`, `FSOpen`/`HOpen`/…, `SwapMMUMode`, …) become generated entries with
+   trap number 0.  Biggest single size win.
+8. **4b** — delete `TrapVariant`, `DispatcherTrap`, `selectors::*` and the
+   now-unused macros; the generator `raise`s for any trap shape it cannot convert.
+9. **L3** — data-driven `--logtraps` (per-type printers + a non-template
+   formatter).
+10. **Flag removal** — delete `EXECUTOR_ENABLE_LOGGING` and its `#ifdef`s.
+
+See [Sub-steps](#sub-steps) for the full outline that was reviewed, and
+[Baseline to beat](#baseline-to-beat) for the raw numbers.
+
+### Superseded earlier notes
+
+- **Phase 0** also added an off-by-default `EXECUTOR_GENERATED_ENTRYPOINTS`
+  option; the generated entrypoints are now unconditional and that option is gone.
+- **Phase 1** originally measured 148.0 MB / 16.8 MB (logging ON).
 
 ## Goal
 
@@ -113,7 +153,9 @@ Heaviest TUs: `FileMgr` 27 s, `CQuickDraw` 25 s, `QuickDraw` 24 s,
 This plan targets the 36% that lives in the generated trap TUs, and removes the
 compile-time logging duplication as a side effect.
 
-## Current data flow
+## Data flow
+
+**Before** (the shape this plan replaced):
 
 ```mermaid
 flowchart TD
@@ -125,6 +167,20 @@ flowchart TD
     T -->|init| TT[tooltraptable / ostraptable]
     T -->|init| PPC[builtinlibs::addPPCEntrypoint]
     H -->|other TUs, EXTERN| O[extern TrapFunction objects]
+```
+
+**After** (what landed):
+
+```mermaid
+flowchart TD
+    Y[defs/*.yaml] --> G[make-multiverse.rb -G Executor]
+    G --> H[api/Module.h: wrapper class + extern object]
+    G --> TE[trap_entries/Module.cpp: 68K+PPC entries, wrapper methods, log printers]
+    G --> SD[structdump/Module.cpp: describeStruct]
+    TE -->|init| TT[tooltraptable / ostraptable]
+    TE -->|init| PPC[builtinlibs::addPPCEntrypoint]
+    TE -->|init| D[dispatcher->addSelector]
+    TI[trap_instances/Module.cpp] -->|INSTANTIATE_TRAPS_Module| M[hand-written WrappedFunction / TrapFunction / SubTrapFunction]
 ```
 
 Relevant hand-written machinery: `src/base/traps.h`, `src/base/traps.impl.h`,
@@ -153,12 +209,16 @@ review thread). A generate-everything refactor **must keep**:
   (`base/debugger.cpp`, `debug/mon_debugger.cpp`, `main.cpp`).
 - `tooltraptable` / `ostraptable` and `stub_*` for `base/patches.cpp`.
 
-Everything else is reachable **only** from generated code and can be replaced:
-`TrapVariant`, `SubTrapFunction`, `DispatcherTrap`, `GenericDispatcherTrap`, the
-`selectors::*` DSL, the `Out`/`InOut`/`TrapBit`/`D0HighWord`/`D0LowWord`/
-`ClearD0`/`SaveA1D1D2`/`MoveA1ToA0`/`CCFromD0`/`ReturnMemErr` descriptor set, and
-the `callfrom68K`/`callfromPPC`/`callto68K` invokers (the last one only via
-`UPP::operator()`).
+Everything else is reachable **only** from generated code and was replaced:
+`TrapVariant`, `DispatcherTrap`, the `selectors::*` DSL and the macros only
+generated code expanded.  **Correction (after landing):** the `Out`/`InOut`/
+`TrapBit`/`D0HighWord`/`D0LowWord`/`ClearD0`/descriptor set and the
+`callfrom68K`/`callfromPPC` invokers **stayed** — the generated Register entries
+use the descriptors as types (`callconv::TrapBit<ASYNCBIT> c0;`), and
+`WrappedFunction::init()` still uses the invokers for the hand-written
+`*_FUNCTION_PTR` sites.  `SubTrapFunction` also stayed, for `GetFrontProcess`.
+Only `TrapVariant`, `DispatcherTrap`, `selectors::*` and the genuinely dead macros
+were deleted (see [Sub-steps](#sub-steps)).
 
 ## Design
 
@@ -317,54 +377,59 @@ roughly doubles those TUs). Instantiates `logTrapCall`/`logTrapValReturn` once
 per *signature* instead of once per trap, and no longer at all for the
 non-logging path.
 
-**L3 — data-driven logging.** Generate static data describing functions
-(argument list: type, size, kind, register/stack slot) and reuse the existing
-generated struct descriptors (`structdump::TypeDesc`, already emitted by the
-generator, with `void (*print)(std::ostream&, const void*)`). A single
-non-template interpreter walks the descriptor and prints. Justified because
-logging output is far less time-critical than the non-logged trap invocation
-path, so a small interpretive cost at log time is acceptable. This removes all
-per-trap logging template instantiation, including `logList`/`logValue`. It also
-unifies `--logtraps` with the cxmon `p` registry.
+**L3 — data-driven logging — done.** The generated entrypoints emit one printer
+per distinct argument/return type per module (calling `logging::logValue`), a small
+per-trap `static const logging::LogArgFn` table, and a single non-template call to
+`logging::logTrapCallData` / `logTrapValReturnData` / `logTrapVoidReturnData`.  This
+removes all per-trap logging template instantiation (`logList`/`logValue` were
+already per-type).  It does **not** reuse `structdump::TypeDesc` for the argument
+*locations* — the entrypoints already hold the typed values, so only the printers
+had to be shared.  The data-driven form is verified by diffing the structure of a
+`--logtraps` run against the pre-L3 binary.
 
-**`EXECUTOR_ENABLE_LOGGING` is to be removed.** The build option exists only
-because the templated logging feature doubled trap compile time and binary size
-(see the measurements above); it is not desirable in its own right. Once
-logging no longer forces a second instantiation per trap (L2), and certainly
-once it is data-driven (L3), logging becomes a purely runtime feature and the
-`#ifdef EXECUTOR_ENABLE_LOGGING` and the CMake option are deleted. Until then
-each iteration keeps the flag working, so the ON/OFF build and its `--logtraps`
-behaviour can still be compared.
+**`EXECUTOR_ENABLE_LOGGING` is removed — done.** The build option existed only
+because the templated logging feature doubled trap compile time and binary size; it
+was never desirable in its own right.  Logging is now a purely runtime feature:
+the `#ifdef EXECUTOR_ENABLE_LOGGING` guards and the CMake option are deleted, and
+`--logtraps` is always available.  After L3 a logging-enabled build costs ~0.15 s
+wall and ~0.1 MB stripped over a logging-disabled one, which is why dropping the
+flag costs nothing.
 
 ## Phases
 
-Each phase must build all front-ends, run the full test suites, and be
-benchmarked with `ninja clean && time ninja` (logging ON and OFF).
+Each phase built all front-ends, ran the full test suites, and was benchmarked with
+`ninja clean && time ninja` (sizes too).  Everything below is **done**; the ordered
+list of sub-steps is in [Sub-steps](#sub-steps).
 
 ### Landed
 
 - **Phase 0 — infrastructure.** `multiversal` emits straight-line 68K Pascal
   entrypoints into `trap_entries/`; `src/base/trap-entry.{h,cpp}` holds the
   `GeneratedEntrypoint` skeleton. No behaviour change.
-- **Phase 1 — Pascal traps (68K + PPC).** Pascal traps now use generated
+- **Phase 1 — Pascal traps (68K + PPC).** Pascal traps use generated
   `Wrapper_<Trap>` objects deriving from `GeneratedEntrypoint`, with straight-line
   68K/PPC entrypoints; the header declares the class + `extern` object instead of
-  `PASCAL_TRAP`. Logging is emitted as `logging::logTrapCall`/`…Return` with
-  `logging::LogNestingScope` (the L2 shape).
-- **Logging single-instantiation** (precursor to L1/L2).
+  `PASCAL_TRAP`.
+- **Logging single-instantiation** (precursor to L2).
 
-### Phase 2–4 (approved scope): Register, variants, dispatch
+## Sub-steps
 
-Same shape as Phase 1: for each trap the generator emits a `Wrapper_<Trap>`
-class (declared in the module header) plus straight-line 68K and PowerPC
-entrypoints, registration, and logging in `trap_entries/<Module>.cpp`. The
+This is the outline that was reviewed before implementation.  Every sub-step was
+required to build all front-ends, run `ctest -LE xfail` and the Retro68 Mac suite,
+be benchmarked with `ninja clean && time ninja` (plus sizes), and be committed
+separately.  All are **done**.
+
+Same shape as Phase 1 throughout: for each trap the generator emits a
+`Wrapper_<Trap>` class (declared in the module header) plus straight-line 68K and
+PowerPC entrypoints, registration, and logging in `trap_entries/<Module>.cpp`. The
 PowerPC entry is **convention-independent** (it only needs the implementation's
 argument types, via `callfromPPC::ParameterPasser`), so every sub-step emits PPC
-too and the old separate "Phase 3" collapses into them. All descriptor/extra
-*behaviour* stays in the existing hand-written classes; generated code only
+too and the old separate "Phase 3" collapsed into them. All descriptor/extra
+*behaviour* stayed in the existing hand-written classes; generated code only
 constructs them and reproduces the template unrolling below.
 
-**Unrolling order to reproduce** (from `callfrom68K::Invoker` + `RegInvoker`):
+**Unrolling order reproduced** by the generated 68K Register entry (from
+`callfrom68K::Invoker` + `RegInvoker`):
 
 1. construct the extras outermost-first (`Extra1`, `Extra2`, …);
 2. `retaddr = POPADDR()`;
@@ -377,114 +442,126 @@ constructs them and reproduces the template unrolling below.
    (`r = ExtraN.afterwards(r) … r = Extra1.afterwards(r)`);
 8. `return r`.
 
-Sub-steps — each must build all front-ends, run `ctest -LE xfail`, benchmark
-(`ninja clean && time ninja`, sizes), and be committed separately:
-
-- **2a — plain Register traps, no extras, no variants.** Arg descriptors
+- **2a — done.** Plain Register traps: arg descriptors
   `D<n>`/`A<n>`/`TrapBit<mask>`/`D0HighWord`/`D0LowWord`; return conventions
-  `D<n>`/`A<n>`/`void`. Object/impl naming follows the macro exactly:
+  `D<n>`/`A<n>`/`void`. Object/impl naming followed the macro exactly:
   `REGISTER_TRAP` (name == cname) defines object `NAME` wrapping `C_NAME`;
-  `REGISTER_TRAP2` defines object `stub_NAME` wrapping `NAME`. Covers e.g.
-  `PBUnmountVol`, `HGetState`, most of ADB/TimeMgr/OSUtil.
-- **2b — `Out<T,loc>` / `InOut<T,loc,outloc>` argument descriptors.** These own a
-  `GUEST<T> temp`; materialising the host value yields `&temp` and the
-  descriptor's destructor writes the result back. Covers `MaxMem`,
-  `NewHandle`-style out params.
-- **2c — extras.** `ReturnMemErr<D0>`, `ReturnMemErrConditional<D0>`,
-  `SaveA1D1D2`, `ClearD0`, `CCFromD0`, `MoveA1ToA0`. Note `ReturnMemErr`/
-  `ReturnMemErrConditional` are **generator-emitted**: their definitions come from
-  an `executor_only` block in `multiversal/defs/MemoryMgr.yaml`, so the trap TU
-  must include that module's header. Exercises the construct-before /`afterwards`
-  nesting (steps 1 and 7).
-- **2d — flag traps and variants.** `REGISTER_FLAG_TRAP` /
-  `REGISTER_2FLAG_TRAP`: generate the `stub_<impl>` `REGISTER_TRAP2` object plus
-  one generated adapter object per exported name (`NewHandle`, `NewHandleClear`,
-  …). The adapter forwards to the stub with its flag arguments bound, exposes
-  `operator()`/`operator&`, and (like today's `TrapVariant`) registers a PPC name
-  only — no 68K trap-table entry of its own.
-- **2e — file traps.** `FILE_TRAP`/`FILE_SUBTRAP`/`HFS_TRAP`/`HFS_SUBTRAP`,
-  including the `PBH*`→`PB*` rename, the `trap & 0xA0FF` masking and the
-  `ASYNCBIT`/`HFSBIT` `TrapBit`s. This is the `FileMgr` critical path (18.8 s
-  today) and the main compile-time payoff of the scope.
-- **2f — drop the Register path from the templates.** Once the generated headers
-  no longer expand `REGISTER_TRAP*`/`FILE_TRAP`/`HFS_TRAP` for generated traps,
-  remove the now-unused `TrapFunction`/`WrappedFunction` marshalling
-  instantiations, keeping the hand-written `*_FUNCTION_PTR` and `RAW_68K_*` uses.
-- **4a — dispatcher traps.** `DISPATCHER_TRAP` + `PASCAL_SUBTRAP` /
-  `REGISTER_SUBTRAP*`: generate the selector read and the lookup, replacing
-  `DispatcherTrap<selectors::…>` + its `unordered_map` (initially a generated
-  static table or `switch`).
-- **4b — delete dead machinery.** `TrapVariant`, `SubTrapFunction`,
-  `DispatcherTrap`, `selectors::*`, the descriptor set and the `Invoker` layers
-  once nothing generated needs them; shrink `functions.impl.h` / `traps.h` to the
-  hand-written uses under *Compatibility shims*.
+  `REGISTER_TRAP2` defines object `stub_NAME` wrapping `NAME`.
+- **2b — done.** `Out<T,loc>` / `InOut<T,loc,outloc>` argument descriptors.
+- **2c — done.** Extras: `ReturnMemErr<D0>`, `ReturnMemErrConditional<D0>`,
+  `SaveA1D1D2`, `ClearD0`, `CCFromD0`, `MoveA1ToA0`.
+- **2d — done.** Flag traps and variants (`REGISTER_FLAG_TRAP`,
+  `REGISTER_2FLAG_TRAP`): the `stub_<impl>` object plus one generated adapter per
+  exported name, forwarding with its flag arguments bound and registering a PPC
+  name only.
+- **2e — done.** File traps: `FILE_TRAP`/`FILE_SUBTRAP`/`HFS_TRAP`, including the
+  `PBH*`→`PB*` rename, the `trap & 0xA0FF` masking and the `ASYNCBIT`/`HFSBIT`
+  `TrapBit`s.
+- **4a-1 — done.** `PASCAL_SUBTRAP`.
+- **4a-2/4a-3 — done.** `REGISTER_SUBTRAP*` and `FILE_SUBTRAP`.
+- **4a-4 — done.** The last non-dispatcher fallbacks: `void()` Register traps
+  (`ADBReInit`), the `D0Minus1Boolean` return convention (`GetOSEvent`,
+  `OSEventAvail`), Register traps with several extras (`HandToHand`, `PtrToHand`,
+  `PtrToXHand`, `HandAndHand`, `PtrAndHand`) and `HFS_SUBTRAP` (`PBHOpenDF`).
+- **4a-5 — done.** The dispatchers themselves: `DISPATCHER_TRAP`/`
+  EXTERN_DISPATCHER_TRAP` become one non-template `GeneratedDispatcherTrap`
+  object per dispatcher, with the selector convention as data.
+- **2g/4c — done.** The 546 `NOTRAP_FUNCTION*` (low-memory accessors, `FSOpen` /
+  `HOpen` / `TE*Scrap*` / `Ser*`, `SwapMMUMode`, …) become generated entries with
+  trap number 0.
+- **4b — done.** Delete dead machinery and fail loudly for unconvertible shapes.
+- **L3 — done.** Data-driven `--logtraps`.
+- **Flag removal — done.** `EXECUTOR_ENABLE_LOGGING` deleted.
+
+**What 4b actually deleted.** `TrapVariant`, `DispatcherTrap`, the `selectors::*`
+DSL, `LOWMEM_ACCESSOR`, `TRAP_VARIANT`/`REGISTER_FLAG_TRAP`/`REGISTER_2FLAG_TRAP`,
+`FILE_*TRAP`/`HFS_*TRAP`, `REGISTER_SUBTRAP*` and `DISPATCHER_TRAP`.  `SubTrapFunction`,
+`TrapFunction`, `WrappedFunction`, the `callconv` descriptors and the
+`callfrom68K`/`callfromPPC` invokers **stay**: hand-written code still uses them
+via `*_FUNCTION_PTR`, `RAW_68K_*` and the verbatim YAML blocks (`NOTRAP_FUNCTION2`
+for `GetGrayRgn`, `PASCAL_SUBTRAP` for `GetFrontProcess`).  The generator now
+`raise`s for any trap shape it cannot convert instead of silently falling back.
 
 **Risks carried by this scope.** The unrolling is mechanical but
 silent-failure-prone — a mis-ordered `afterwards` or an `Out` write-back bug
-corrupts guest memory rather than failing a build. Verification is the native
-suite (`FileTest`, `MemoryMgr`, `quickdraw`, which do cover these traps) plus a
-`--logtraps` output diff; real Mac apps can't be run here. Each sub-step leaves
-the old path intact for the traps it has not yet converted, so a regression stays
-bisectable.
-
-Logging iterations L1→L2→L3 run across these sub-steps (L2 already landed with
-Phase 1; L3 once the struct descriptors are wired).
+corrupts guest memory rather than failing a build.  Mitigation was the native
+suite (`FileTest`, `MemoryMgr`, `quickdraw`, which do cover these traps), the
+Retro68 Mac suite, a `--logtraps` structure diff, and — importantly — **real Mac
+applications** (see the note under [Risks and open questions](#risks-and-open-questions)).
+Each sub-step left the old path intact for the traps it had not yet converted, so
+a regression stayed bisectable.
 
 ## Validation
 
-- `ctest --test-dir build` and `ctest -LE xfail` (the known `FileTest` `xfail`s).
-- Mac-app suite: `cmake --build tests/build && build/executor tests/build/tests.ad;
-  cat tests/build/out`.
-- **`--logtraps` equivalence**: run a fixed app (e.g. MacWrite II) under
-  `--logtraps --logtraps-filter "PB*"` before/after and diff the output.
-- **Patching**: exercise `GetTrapAddress`/`SetTrapAddress` and confirm
-  `operator()` still routes through the table when patched.
-- **Debugger**: `--debug`, `--break`, `atc`/`atd` on named entrypoints
-  (`Entrypoint::breakpoint`), cxmon `p`.
-- **Device-driver ABI**: the `REGISTER_FUNCTION_PTR(..., D0(A0,A1))` path in
-  `mactcp.cpp`/`serial.cpp` and the surrounding native tests.
-- **Compile-time**: `ninja clean && time ninja` ON/OFF vs the baseline table
-  above, plus `-ftime-report` on `FileMgr.cpp` to confirm the instantiation
-  count collapses.
+What was actually run at every sub-step, plus the extra checks:
+
+- `ctest --test-dir build -LE xfail` — **138/138**.
+- Retro68 Mac suite: `cmake --build tests/build &&
+  build/executor --headless tests/build/tests.ad; cat tests/build/out` —
+  **90 passed + 2 known `xfail`s** (`FileTest.SetFInfo_CrDat`,
+  `FileTest.SetFLock`).
+- **Real Mac applications and a real System boot**, headless.  This is the
+  strongest check on the dispatchers and `NOTRAP_FUNCTION` entries: `ResEdit` and
+  `ClarisWorks 3.0` run for tens of seconds with no aborts, assertions or
+  `Unknown selector` messages, exercising generated `FSDispatch` subtraps
+  (`PBHCreate`, `PBHOpenRF`, `PBHGetFInfo`, `PBGetWDInfo`, `FSMakeFSSpec`),
+  `ResourceDispatch`, the `Pack8` AppleEvents dispatcher and the D0 flag traps.
+  Local paths are deliberately not recorded here.
+- **`--logtraps` equivalence**: the Mac suite run under `--logtraps` produces a
+  ~2890-line log whose trap-name/structure sequence is identical before and after
+  (only guest uninitialised-memory values differ).  `ROMlib_vcatch` moves between
+  runs; it is filtered out for the comparison.
+- Reported by the suites: patching (`FileTest` drives `PBHGetFInfo` etc.), the
+  debugger registry, and the `REGISTER_FUNCTION_PTR(..., D0(A0,A1))` path in
+  `mactcp.cpp`/`serial.cpp`.
+- **Compile-time and size**: `ninja clean && time ninja` plus `stat`/`strip`
+  after every sub-step (see [Progress](#progress)); the logtraps-ON/OFF delta now
+  measures ~0.15 s wall / ~0.1 MB stripped.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `multiversal/executor.rb` (+ a new emitter, e.g. `multiversal/entries.rb`) | emit 68K/PPC entrypoints, registration, logging calls |
-| `multiversal/make-multiverse.rb` | drive the new emitter / output dirs |
-| `src/base/trap-entry.{h,cpp}` | non-template runtime helpers, `GeneratedEntrypoint` |
-| `src/base/traps.h`, `src/base/traps.impl.h` | shrink to runtime infra; keep `WrappedFunction`/`TrapFunction`/`Raw` |
-| `src/base/functions.h`, `src/base/functions.impl.h` | shrink to what hand-written call sites still instantiate |
-| `src/base/logging.{h,cpp}` | L2/L3 changes |
-| `src/base/structdump.{h,cpp}` | L3: function descriptors reuse the type registry |
-| `src/CMakeLists.txt` | generated `trap_entries` sources |
-| `docs/subsystems/trap-dispatch.md` | updated **as part of the phase that lands** the generated-entrypoint model (per the documentation policy above), not in advance |
+| `multiversal/executor.rb` | emit 68K/PPC entrypoints, wrapper classes, dispatcher objects, logging printers |
+| `src/base/trap-entry.{h,cpp}` | `GeneratedEntrypoint` and `GeneratedDispatcherTrap` |
+| `src/base/traps.h`, `src/base/traps.impl.h` | shrunk to the runtime infra plus hand-written uses (`WrappedFunction`/`TrapFunction`/`SubTrapFunction`, `UPP`, `Raw`) |
+| `src/base/functions.h`, `src/base/functions.impl.h` | still hold the `callconv` descriptors and invokers used by `*_FUNCTION_PTR` |
+| `src/base/logging.{h,cpp}` | runtime gate, filter, and the data-driven `logTrap*Data` formatter |
+| `src/CMakeLists.txt` | generated `trap_entries`/`structdump` sources |
+| `CMakeLists.txt` | `EXECUTOR_ENABLE_LOGGING` removed |
+| `docs/subsystems/trap-dispatch.md` | rewritten for the generated-entrypoint model |
+| `docs/architecture.md`, `README.md`, `AGENTS.md`, `.agents/skills/executor-guest-debugging/SKILL.md` | build-option references removed |
 
 ## Risks and open questions
 
 - **ABI fidelity.** The 68K/PPC marshalling semantics (stack parity, Pascal
   return placement, `Out`/`InOut`, the `Register` extras, OS-trap register setup
-  done by `alinehandler`) are subtle and load-bearing. Mitigation: port one
-  convention at a time, diff `--logtraps`, and lean on the test suites; Phase 1
-  is deliberately the low-risk subset.
+  done by `alinehandler`) are subtle and load-bearing. Mitigation: one convention
+  per sub-step, `--logtraps` diffs, the test suites, and real applications.
+- **How validation was initially understated.** An earlier draft of this document
+  said "real Mac apps can't be run here".  That was an unverified assumption of
+  mine, not a property of Executor: GUI front-ends need a window server, but the
+  *headless* front-end runs real Mac software fine in an ordinary sandbox, both
+  single applications and a full System boot.  The assumption was corrected once
+  real disk contents were available, and the dispatcher/`NOTRAP_FUNCTION`
+  sub-steps were validated against real applications as a result.  (The specific
+  local paths are not recorded in this repository.)
 - **PPC parameter passing.** `ParameterPasser` mixes GPR/FPR/stack by position
-  and type (`float`/`double` specialisations). The generator must reproduce this
-  exactly, including `sizeof(GUEST<T>) <= 4` for register-passed scalars.
-- **Namespace and names.** Generated callable objects must live where
-  hand-written code expects them (as the existing `Executor::<Trap>` names) and
-  `&Trap` must still yield a typed `UPP`.
-- **Debugger registry.** `entrypoints[name]` must stay populated for
-  `atc`/`atd`; generated `GeneratedEntrypoint::init()` must call
-  `Entrypoint::init()`.
-- **Removing `EXECUTOR_ENABLE_LOGGING`.** The option is slated for deletion
-  once logging is runtime-only; validate a logging-enabled build and its
-  `--logtraps` output before the flag is dropped.
-- **Generator determinism.** Keep output byte-stable so `ccache`/incremental
-  builds stay effective.
-- **Interaction with `structdump`.** L3 unifies logging with the type registry;
-  decide whether `structdump` stays a separate generated directory or merges
-  with the new entrypoint output.
+  and type; the generated entry reproduces it exactly, including
+  `sizeof(GUEST<T>) <= 4` for register-passed scalars.
+- **Namespace and names.** Generated objects keep the `Executor::<Trap>` /
+  `Executor::stub_<Trap>` names hand-written code expects, and `&Trap` still
+  yields a typed `UPP`.
+- **Debugger registry.** `entrypoints[name]` stays populated for `atc`/`atd`;
+  `GeneratedEntrypoint::init()` calls `Entrypoint::init()`.
+- **Generator determinism.** Output is byte-stable so incremental builds stay
+  effective.
+- **Alarm over `structdump`.** L3 didn't need the type registry: the entrypoints
+  already hold typed values, so only the printers are shared.  `structdump` stays
+  a separate generated directory.
+- **Unreachable shape = generator error.** The generator now raises for any trap
+  shape it cannot convert; a future YAML construct that needs a new shape will
+  fail the build loudly rather than falling back.
 
 ## Not in scope
 
@@ -503,18 +580,27 @@ Sizes are bytes; the "stripped" columns are the same binaries after `strip`.
 hundred KB of it. Regenerate with:
 
 ```
-cmake -B build -DEXECUTOR_ENABLE_LOGGING={ON,OFF}
-ninja -C build clean
-time ninja -C build
+ninja -C build clean && time ninja -C build
 stat -c '%s %n' build/executor build/tests/tests build/src/libromlib.a
 strip -o /tmp/ex.stripped build/executor && stat -c '%s %n' /tmp/ex.stripped
+strip -o /tmp/tests.stripped build/tests/tests && stat -c '%s %n' /tmp/tests.stripped
 ```
+
+**Before** (logging had to be enabled to get `--logtraps`, and that cost):
 
 | config | real | user | sys | `executor` debug | `executor` stripped | `tests` debug | `tests` stripped | `libromlib.a` |
 |---|---|---|---|---|---|---|---|---|
 | logging ON | 1m04.3s | 12m34.5s | 2m57.8s | 242,503,464 | 28,112,904 | 244,358,336 | 28,459,568 | 418,003,096 |
 | logging OFF | 0m49.8s | 10m33.3s | 2m41.6s | 161,867,640 | 17,983,496 | 163,718,744 | 18,326,064 | 275,318,268 |
 
-The target is the logging-OFF build time and binary sizes **while keeping
-logging available**, i.e. the logging-ON row should converge on the logging-OFF
-row once logging is runtime-only / data-driven.
+**After** (logging always available, no build flag):
+
+| config | real | user | sys | `executor` debug | `executor` stripped | `tests` debug | `tests` stripped | `libromlib.a` |
+|---|---|---|---|---|---|---|---|---|
+| no flag | 0m47.5s | 10m36.2s | 2m50.0s | 69,696,760 | 9,746,408 | 71,495,336 | 10,089,008 | 126,459,446 |
+
+The old target was "the logging-OFF build time and sizes while keeping logging
+available".  That is met and then some: the single configuration is now smaller
+and faster than the old logging-OFF build while `--logtraps` always works.
+
+Known-failing, unchanged: the two `xfail` `FileTest` cases.

@@ -8,6 +8,12 @@ These are findings already gathered while working on
 so the leads aren't lost; they have **not** been investigated beyond what is
 written, and no plan is proposed.
 
+> Update (later on 2026-10-07): the generated-trap work continued past the point
+> these numbers were taken (phases 2a–4c and L3), and those translation units are
+> now smaller still.  The ordinary-TU figures below are unaffected by that and
+> remain the reason most of the remaining serial compile work is *outside* the
+> generated trap TUs.
+
 ## Context
 
 Measurements below are from this machine (24 cores), `CMAKE_BUILD_TYPE=Debug`,
