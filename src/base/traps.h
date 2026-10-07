@@ -102,6 +102,38 @@ public:
     using GenericDispatcherTrap::GenericDispatcherTrap;
 };
 
+// Where a dispatcher reads its selector from, described as data rather than a
+// template parameter so that generated code can construct a dispatcher without
+// instantiating anything.
+enum class SelectorKind
+{
+    D0,
+    D1,
+    StackWMasked,
+    StackLMasked,
+    StackWLookahead,
+};
+
+// Non-template replacement for DispatcherTrap<SelectorConvention>: the selector
+// convention is a (kind, mask) pair passed to the constructor.
+class GeneratedDispatcherTrap : public GenericDispatcherTrap
+{
+public:
+    GeneratedDispatcherTrap(const char* name, uint16_t trapno, SelectorKind kind, uint32_t mask)
+        : GenericDispatcherTrap(name, trapno), kind(kind), mask(mask) {}
+
+    virtual void init() override;
+    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, std::function<syn68k_addr_t(syn68k_addr_t)> handler) override;
+
+private:
+    static syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, void* extra);
+    uint32_t getSelector() const;
+    void commitSelector() const;
+
+    SelectorKind kind;
+    uint32_t mask;
+};
+
 
 template<typename F, F* fptr, typename CallConv = callconv::Pascal>
 class WrappedFunction {};
