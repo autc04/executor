@@ -260,6 +260,53 @@ void logging::dumpRegsAndStack()
     std::clog << std::dec;
 }
 
+namespace
+{
+void logArgList(const logging::LogArgFn* printers, const void* const* values, unsigned count)
+{
+    for(unsigned i = 0; i < count; i++)
+    {
+        if(i)
+            std::clog << ", ";
+        printers[i](values[i]);
+    }
+}
+}
+
+void logging::logTrapCallData(const char *trapname, const LogArgFn* printers, const void* const* values, unsigned count)
+{
+    if(!loggingActive() || !trapLogEnabled(trapname))
+        return;
+    std::clog.clear();
+    indent();
+    std::clog << trapname << "(";
+    logArgList(printers, values, count);
+    std::clog << ")\n" << std::flush;
+}
+
+void logging::logTrapValReturnData(const char *trapname, LogArgFn printer, const void* value,
+                                   const LogArgFn* printers, const void* const* values, unsigned count)
+{
+    if(!loggingActive() || !trapLogEnabled(trapname))
+        return;
+    indent();
+    std::clog << "returning: " << trapname << "(";
+    logArgList(printers, values, count);
+    std::clog << ") => ";
+    printer(value);
+    std::clog << std::endl << std::flush;
+}
+
+void logging::logTrapVoidReturnData(const char *trapname, const LogArgFn* printers, const void* const* values, unsigned count)
+{
+    if(!loggingActive() || !trapLogEnabled(trapname))
+        return;
+    indent();
+    std::clog << "returning: " << trapname << "(";
+    logArgList(printers, values, count);
+    std::clog << ")\n" << std::flush;
+}
+
 void logging::logUntypedArgs(const char *name)
 {
     if(loggingActive() && trapLogEnabled(name))

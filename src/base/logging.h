@@ -26,6 +26,17 @@ void resetNestingLevel();
 bool loggingActive();
 void indent();
 
+// Data-driven trap logging: the generated entrypoints pass an array of
+// per-type printers (one generated function per distinct argument/return
+// type, shared by every trap that uses it) plus an array of pointers to the
+// values.  Keeping the per-trap part to data means --logtraps instantiates no
+// template per trap.
+using LogArgFn = void (*)(const void*);
+void logTrapCallData(const char* name, const LogArgFn* printers, const void* const* values, unsigned count);
+void logTrapValReturnData(const char* name, LogArgFn printer, const void* value,
+                          const LogArgFn* printers, const void* const* values, unsigned count);
+void logTrapVoidReturnData(const char* name, const LogArgFn* printers, const void* const* values, unsigned count);
+
 extern int nestingLevel;
 
 // RAII nesting guard used by the generated trap entrypoints so that --logtraps
