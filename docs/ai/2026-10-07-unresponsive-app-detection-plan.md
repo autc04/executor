@@ -442,13 +442,14 @@ app.
 ## Iteration 3 — Visual feedback: dim the desktop to 50 % transparent black
 
 > **Implemented 2026-10-07 (no fade yet).** The dim is applied in the shared
-> `VideoDriver::updateBuffer()` (`vdriver.cpp`): the hole spans (outside
-> `rootlessRegion_`) are written as premultiplied black at `desktopDim_` alpha
-> (`a << 24`), or fully transparent when `desktopDim_` is 0.
-> `updateResponsivenessFeedback()` sets `desktopDim_ = captured ? kCaptureDim : 0`
-> and marks the whole screen dirty. No per-front-end hook was needed — both
-> rootless front-ends decode their frames through `updateBuffer` with per-pixel
-> alpha. The fade is iteration 4.
+> `VideoDriver::updateBuffer()` (`vdriver.cpp`): in the hole spans (outside
+> `rootlessRegion_`), the white desktop backdrop (`pixel == 0xFFFFFFFF`) is
+> written as premultiplied black at `desktopDim_` alpha (`a << 24`), or fully
+> transparent when `desktopDim_` is 0; non-white pixels drawn over the desktop
+> are kept. `updateResponsivenessFeedback()` sets
+> `desktopDim_ = captured ? kCaptureDim : 0` and marks the whole screen dirty. No
+> per-front-end hook was needed — both rootless front-ends decode their frames
+> through `updateBuffer` with per-pixel alpha. The fade is iteration 4.
 
 **Goal:** while captured, the desktop area is dimmed to black at 50 % opacity,
 in rootless mode, without dimming the emulated windows.
@@ -456,10 +457,14 @@ in rootless mode, without dimming the emulated windows.
 ### Design
 
 - Target `kCaptureDim = 0.5f`.  **Implemented** in the shared
-  `VideoDriver::updateBuffer()` rather than a per-front-end hook: the hole spans
-  (outside `rootlessRegion_`) are written as premultiplied black at the current
-  dim (`a << 24`), or fully transparent when the dim is 0.  Because both rootless
-  front-ends (Wayland and Qt) already decode their frames through `updateBuffer`
+  `VideoDriver::updateBuffer()` rather than a per-front-end hook.  In the hole
+  spans (outside `rootlessRegion_`) the white desktop backdrop is mapped to
+  premultiplied black at the current dim (`a << 24`), or fully transparent when
+  the dim is 0.  The existing `pixel == 0xFFFFFFFF` check must stay: it is what
+  distinguishes the desktop backdrop from content an application draws *over* the
+  desktop without going through a window (e.g. GrowWindow feedback during a resize
+  tracking loop), which Executor cannot intercept and must keep visible.
+  Because both rootless front-ends decode their frames through `updateBuffer`
   with per-pixel alpha, the dim needs no further front-end code.
 - **Wayland**: the surface already carries per-pixel alpha, so the holes dim
   directly; the input region is independent, so capture (iteration 2) is

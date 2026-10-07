@@ -369,13 +369,18 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                     {
                         int nextX = std::min(r.right, (int)*rowIt++);
 
-                        /* Outside the rootless region: the desktop.  Never show
-                         * the framebuffer here -- it is transparent, or dimmed
-                         * while the guest is captured. */
+                        /* Outside the rootless region is the desktop.  Its
+                         * white backdrop (see ROMLib_InitGrayRgn) becomes
+                         * transparent -- or dimmed while the guest is captured --
+                         * but anything drawn *over* the desktop without going
+                         * through a window, such as GrowWindow feedback during a
+                         * resize tracking loop, must be kept visible: Executor
+                         * cannot intercept those draws to update the region, so
+                         * the white check is what tells the two apart. */
                         for(; x < nextX; x++)
                         {
-                            getPixel(); /* keep the source cursor in step */
-                            buffer[y * bufferWidth + x] = dimPixel;
+                            uint32_t pixel = getPixel();
+                            buffer[y * bufferWidth + x] = pixel == 0xFFFFFFFF ? dimPixel : pixel;
                         }
                         
                         if(x >= r.right)
