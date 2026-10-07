@@ -52,6 +52,9 @@ void GeneratedEntrypoint::init()
                 return fnppc(cpu);
             });
     }
+
+    if(dispatcher)
+        dispatcher->addSelector(selector, this, fn68k);
 }
 
 }
