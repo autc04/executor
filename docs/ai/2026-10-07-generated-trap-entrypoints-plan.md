@@ -1,7 +1,22 @@
 # Generated trap entrypoints (68K + PowerPC) and data-driven logging
 
 > Date: 2026-10-07
-> Status: proposed (no code written yet)
+> Status: in progress
+
+## Progress
+
+- **Phase 0 — done.** `multiversal` emits straight-line 68K Pascal entrypoints
+  (566 across 66 modules) into `trap_entries/`, plus `ReferenceAllEntries.cpp`.
+  `src/base/trap-entry.{h,cpp}` holds the `GeneratedEntrypoint` skeleton.
+  Compiled into `romlib` behind the off-by-default
+  `EXECUTOR_GENERATED_ENTRYPOINTS` option; nothing registers them yet.
+- **Logging, single-instantiation (precursor to L1/L2) — done.** `LoggedFunction`
+  now gates on `logging::enabled()` at call time, so a logging-enabled build
+  instantiates the marshalling templates once per trap instead of twice (logged +
+  unlogged). Measured (logging ON, full clean build): wall 1m04.3s → 0m51.7s,
+  CPU 931.7s → 816s, `executor` Debug 242.5 MB → 171.4 MB, stripped 28.1 MB →
+  19.3 MB, `libromlib.a` 418 MB → 294 MB — close to the logging-OFF numbers
+  (49.8s / 161.9 MB / 18.0 MB). 138 native tests pass.
 
 ## Goal
 

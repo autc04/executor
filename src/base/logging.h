@@ -283,6 +283,12 @@ public:
 
     Ret operator() (Args... args) const
     {
+        // Runtime gate: this functor is always used in a logging-enabled build,
+        // so that the marshalling templates are instantiated once per trap
+        // rather than once for the logged path and once for the unlogged path.
+        if(!enabled())
+            return fun(args...);
+
         LogLevelAdjuster adj;
 
         if constexpr(std::is_same_v<CallConv, callconv::Raw>)

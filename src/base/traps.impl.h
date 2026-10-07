@@ -92,52 +92,52 @@ void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
 {
     Entrypoint::init();
 #ifdef EXECUTOR_ENABLE_LOGGING
-    if(logging::enabled())
-        guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
-                [this](syn68k_addr_t addr)
-                {
-                    if(auto ret = this->checkBreak68K(addr); ~ret)
-                        return ret;
+    // LoggedFunction gates on logging::enabled() at call time, so a single
+    // instantiation serves both the logged and the unlogged case.
+    guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
+            [this](syn68k_addr_t addr)
+            {
+                if(auto ret = this->checkBreak68K(addr); ~ret)
+                    return ret;
 
-                    return callfrom68K::Invoker<Ret (Args...), CallConv>
-                        ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(name, fptr));
-                }
-            ));    
-    else
-#endif    
-        guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
-                [this](syn68k_addr_t addr)
-                {
-                    if(auto ret = this->checkBreak68K(addr); ~ret)
-                        return ret;
+                return callfrom68K::Invoker<Ret (Args...), CallConv>
+                    ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(name, fptr));
+            }
+        ));    
+#else
+    guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
+            [this](syn68k_addr_t addr)
+            {
+                if(auto ret = this->checkBreak68K(addr); ~ret)
+                    return ret;
 
-                    return callfrom68K::Invoker<Ret (Args...), CallConv>
-                        ::invokeFrom68K(addr, fptr);
-                }
-            ));    
+                return callfrom68K::Invoker<Ret (Args...), CallConv>
+                    ::invokeFrom68K(addr, fptr);
+            }
+        ));    
+#endif
 
     if(libname)
     {
 #ifdef EXECUTOR_ENABLE_LOGGING
-        if(logging::enabled())
-            builtinlibs::addPPCEntrypoint(libname, name,
-                [this](PowerCore& cpu) { 
-                    if(auto ret = this->checkBreakPPC(cpu); ~ret)
-                        return ret;
+        builtinlibs::addPPCEntrypoint(libname, name,
+            [this](PowerCore& cpu) { 
+                if(auto ret = this->checkBreakPPC(cpu); ~ret)
+                    return ret;
 
-                    return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, logging::makeLoggedFunction(name, fptr)); 
-                }
-            );
-        else
+                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, logging::makeLoggedFunction(name, fptr)); 
+            }
+        );
+#else
+        builtinlibs::addPPCEntrypoint(libname, name,
+            [this](PowerCore& cpu) { 
+                if(auto ret = this->checkBreakPPC(cpu); ~ret)
+                    return ret;
+                
+                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, fptr);
+            }
+        );
 #endif
-            builtinlibs::addPPCEntrypoint(libname, name,
-                [this](PowerCore& cpu) { 
-                    if(auto ret = this->checkBreakPPC(cpu); ~ret)
-                        return ret;
-                    
-                    return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, fptr);
-                }
-            );
     }
 }
 
@@ -169,23 +169,22 @@ void SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv>::init()
 {
     WrappedFunction<Ret(Args...),fptr,CallConv>::init();
 #ifdef EXECUTOR_ENABLE_LOGGING
-    if(logging::enabled())
-        dispatcher.addSelector(selector, this,
-            [this](syn68k_addr_t addr)
-            {
-                return callfrom68K::Invoker<Ret (Args...), CallConv>
-                    ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(this->name, fptr));
-            }
-        );
-    else
+    dispatcher.addSelector(selector, this,
+        [this](syn68k_addr_t addr)
+        {
+            return callfrom68K::Invoker<Ret (Args...), CallConv>
+                ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(this->name, fptr));
+        }
+    );
+#else
+    dispatcher.addSelector(selector, this,
+        [](syn68k_addr_t addr)
+        {
+            return callfrom68K::Invoker<Ret (Args...), CallConv>
+                ::invokeFrom68K(addr, fptr); 
+        }
+    );
 #endif
-        dispatcher.addSelector(selector, this,
-            [](syn68k_addr_t addr)
-            {
-                return callfrom68K::Invoker<Ret (Args...), CallConv>
-                    ::invokeFrom68K(addr, fptr); 
-            }
-        );
 }
 
 template<class SelectorConvention>
@@ -251,35 +250,30 @@ void TrapVariant<Trap, Ret (Args...), flags...>::init()
     if(libname)
     {
 #ifdef EXECUTOR_ENABLE_LOGGING
-        if(logging::enabled())
-        {
-            builtinlibs::addPPCEntrypoint(libname, name,
-                [this](PowerCore& cpu)
-                {
-                    if(auto ret = this->checkBreakPPC(cpu); ~ret)
-                        return ret;
+        builtinlibs::addPPCEntrypoint(libname, name,
+            [this](PowerCore& cpu)
+            {
+                if(auto ret = this->checkBreakPPC(cpu); ~ret)
+                    return ret;
 
-                    return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu,
-                        logging::makeLoggedFunction1<Ret (Args...)>(name, 
-                            [this](Args... args) -> Ret { return (*this)(args...); }
-                        )
-                    );
-                });
-        }
-        else
-#endif        
-        {
-            builtinlibs::addPPCEntrypoint(libname, name,
-                [this](PowerCore& cpu)
-                {
-                    if(auto ret = this->checkBreakPPC(cpu); ~ret)
-                        return ret;
-
-                    return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu,
+                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu,
+                    logging::makeLoggedFunction1<Ret (Args...)>(name, 
                         [this](Args... args) -> Ret { return (*this)(args...); }
-                    );
-                });
-        }
+                    )
+                );
+            });
+#else
+        builtinlibs::addPPCEntrypoint(libname, name,
+            [this](PowerCore& cpu)
+            {
+                if(auto ret = this->checkBreakPPC(cpu); ~ret)
+                    return ret;
+
+                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu,
+                    [this](Args... args) -> Ret { return (*this)(args...); }
+                );
+            });
+#endif
     }
 }
 
