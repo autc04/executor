@@ -341,26 +341,94 @@ behaviour can still be compared.
 Each phase must build all front-ends, run the full test suites, and be
 benchmarked with `ninja clean && time ninja` (logging ON and OFF).
 
-- **Phase 0 — infrastructure, no behaviour change.** Add
-  `src/base/trap-entry.{h,cpp}` and a generator mode that emits one 68K
-  entrypoint for a single module behind a flag, to validate the shape. Nothing
-  else uses it yet.
-- **Phase 1 — 68K Pascal.** Emit straight-line 68K entrypoints for `PASCAL_TRAP`
-  and `PASCAL_SUBTRAP` (≈1116 of 1346 declarations; simplest, no descriptors).
-  Keep `TrapVariant`/`DispatcherTrap`/`Register` on the old path.
-- **Phase 2 — 68K Register.** Emit descriptor-driven 68K entrypoints for
-  `REGISTER_*`; wire `FILE_TRAP`/`HFS_TRAP` to the runtime-flag variant scheme.
-- **Phase 3 — PowerPC.** Emit PPC entrypoints for every trap and register them
-  via `addPPCEntrypoint`, replacing `callfromPPC::Invoker` for generated traps.
-- **Phase 4 — dispatch traps.** Emit selector reads + lookup; drop
-  `DispatcherTrap`/`selectors::*`.
-- **Phase 5 — delete dead machinery.** Remove `TrapVariant`, `SubTrapFunction`,
-  the descriptor set and the `Invoker` layers once nothing generated needs them;
-  shrink `functions.impl.h` / `traps.h`. Keep only the hand-written uses listed
-  under *Compatibility shims*.
+### Landed
 
-Logging iterations L1→L2→L3 run across these phases (L1 during Phase 1, L2 once
-68K Pascal is stable, L3 when struct descriptors are already wired).
+- **Phase 0 — infrastructure.** `multiversal` emits straight-line 68K Pascal
+  entrypoints into `trap_entries/`; `src/base/trap-entry.{h,cpp}` holds the
+  `GeneratedEntrypoint` skeleton. No behaviour change.
+- **Phase 1 — Pascal traps (68K + PPC).** Pascal traps now use generated
+  `Wrapper_<Trap>` objects deriving from `GeneratedEntrypoint`, with straight-line
+  68K/PPC entrypoints; the header declares the class + `extern` object instead of
+  `PASCAL_TRAP`. Logging is emitted as `logging::logTrapCall`/`…Return` with
+  `logging::LogNestingScope` (the L2 shape).
+- **Logging single-instantiation** (precursor to L1/L2).
+
+### Phase 2–4 (approved scope): Register, variants, dispatch
+
+Same shape as Phase 1: for each trap the generator emits a `Wrapper_<Trap>`
+class (declared in the module header) plus straight-line 68K and PowerPC
+entrypoints, registration, and logging in `trap_entries/<Module>.cpp`. The
+PowerPC entry is **convention-independent** (it only needs the implementation's
+argument types, via `callfromPPC::ParameterPasser`), so every sub-step emits PPC
+too and the old separate "Phase 3" collapses into them. All descriptor/extra
+*behaviour* stays in the existing hand-written classes; generated code only
+constructs them and reproduces the template unrolling below.
+
+**Unrolling order to reproduce** (from `callfrom68K::Invoker` + `RegInvoker`):
+
+1. construct the extras outermost-first (`Extra1`, `Extra2`, …);
+2. `retaddr = POPADDR()`;
+3. construct each argument descriptor (`CC0`, `CC1`, …) and materialise the host
+   argument values (the descriptor→parameter conversions);
+4. log the incoming arguments;
+5. call the implementation; log the return value;
+6. unless the return convention is `void`, `RetConv::set(retval)`;
+7. `r = retaddr`, then run the extras' `afterwards` innermost-first
+   (`r = ExtraN.afterwards(r) … r = Extra1.afterwards(r)`);
+8. `return r`.
+
+Sub-steps — each must build all front-ends, run `ctest -LE xfail`, benchmark
+(`ninja clean && time ninja`, sizes), and be committed separately:
+
+- **2a — plain Register traps, no extras, no variants.** Arg descriptors
+  `D<n>`/`A<n>`/`TrapBit<mask>`/`D0HighWord`/`D0LowWord`; return conventions
+  `D<n>`/`A<n>`/`void`. Object/impl naming follows the macro exactly:
+  `REGISTER_TRAP` (name == cname) defines object `NAME` wrapping `C_NAME`;
+  `REGISTER_TRAP2` defines object `stub_NAME` wrapping `NAME`. Covers e.g.
+  `PBUnmountVol`, `HGetState`, most of ADB/TimeMgr/OSUtil.
+- **2b — `Out<T,loc>` / `InOut<T,loc,outloc>` argument descriptors.** These own a
+  `GUEST<T> temp`; materialising the host value yields `&temp` and the
+  descriptor's destructor writes the result back. Covers `MaxMem`,
+  `NewHandle`-style out params.
+- **2c — extras.** `ReturnMemErr<D0>`, `ReturnMemErrConditional<D0>`,
+  `SaveA1D1D2`, `ClearD0`, `CCFromD0`, `MoveA1ToA0`. Note `ReturnMemErr`/
+  `ReturnMemErrConditional` are **generator-emitted**: their definitions come from
+  an `executor_only` block in `multiversal/defs/MemoryMgr.yaml`, so the trap TU
+  must include that module's header. Exercises the construct-before /`afterwards`
+  nesting (steps 1 and 7).
+- **2d — flag traps and variants.** `REGISTER_FLAG_TRAP` /
+  `REGISTER_2FLAG_TRAP`: generate the `stub_<impl>` `REGISTER_TRAP2` object plus
+  one generated adapter object per exported name (`NewHandle`, `NewHandleClear`,
+  …). The adapter forwards to the stub with its flag arguments bound, exposes
+  `operator()`/`operator&`, and (like today's `TrapVariant`) registers a PPC name
+  only — no 68K trap-table entry of its own.
+- **2e — file traps.** `FILE_TRAP`/`FILE_SUBTRAP`/`HFS_TRAP`/`HFS_SUBTRAP`,
+  including the `PBH*`→`PB*` rename, the `trap & 0xA0FF` masking and the
+  `ASYNCBIT`/`HFSBIT` `TrapBit`s. This is the `FileMgr` critical path (18.8 s
+  today) and the main compile-time payoff of the scope.
+- **2f — drop the Register path from the templates.** Once the generated headers
+  no longer expand `REGISTER_TRAP*`/`FILE_TRAP`/`HFS_TRAP` for generated traps,
+  remove the now-unused `TrapFunction`/`WrappedFunction` marshalling
+  instantiations, keeping the hand-written `*_FUNCTION_PTR` and `RAW_68K_*` uses.
+- **4a — dispatcher traps.** `DISPATCHER_TRAP` + `PASCAL_SUBTRAP` /
+  `REGISTER_SUBTRAP*`: generate the selector read and the lookup, replacing
+  `DispatcherTrap<selectors::…>` + its `unordered_map` (initially a generated
+  static table or `switch`).
+- **4b — delete dead machinery.** `TrapVariant`, `SubTrapFunction`,
+  `DispatcherTrap`, `selectors::*`, the descriptor set and the `Invoker` layers
+  once nothing generated needs them; shrink `functions.impl.h` / `traps.h` to the
+  hand-written uses under *Compatibility shims*.
+
+**Risks carried by this scope.** The unrolling is mechanical but
+silent-failure-prone — a mis-ordered `afterwards` or an `Out` write-back bug
+corrupts guest memory rather than failing a build. Verification is the native
+suite (`FileTest`, `MemoryMgr`, `quickdraw`, which do cover these traps) plus a
+`--logtraps` output diff; real Mac apps can't be run here. Each sub-step leaves
+the old path intact for the traps it has not yet converted, so a regression stays
+bisectable.
+
+Logging iterations L1→L2→L3 run across these sub-steps (L2 already landed with
+Phase 1; L3 once the struct descriptors are wired).
 
 ## Validation
 
