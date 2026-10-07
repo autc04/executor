@@ -20,8 +20,10 @@ using namespace Executor;
 using namespace std::chrono_literals;
 
 /* How often the event loop wakes to re-evaluate the guest's captured state, so
- * that capture starts even while the guest never yields. */
+ * that capture starts even while the guest never yields, and how often while the
+ * desktop dim is fading (which needs smoother frames). */
 static constexpr int kResponsivenessPollMs = 100;
+static constexpr int kFadeFrameMs = 16;
 
 template<typename... Args>
 std::shared_ptr<std::tuple<Args...>> argCollector(std::function<void (Args...)>& f)
@@ -215,10 +217,10 @@ void WaylandVideoDriver::runEventLoop()
 
         /* Re-evaluate the captured-mouse state even while the guest is stuck in
          * a loop that never calls SystemTask/WaitNextEvent. */
-        bool captureChanged = updateResponsivenessFeedback();
+        bool feedbackActive = updateResponsivenessFeedback();
         {
             std::lock_guard lk(mutex_);
-            if(captureChanged || clickCaptureDirty_)
+            if(feedbackActive || clickCaptureDirty_)
                 requestUpdate();
         }
 
@@ -237,9 +239,11 @@ void WaylandVideoDriver::runEventLoop()
             }
         }
 
-        /* Never block indefinitely: we have to keep polling the captured state. */
-        if(timeout < 0 || timeout > kResponsivenessPollMs)
-            timeout = kResponsivenessPollMs;
+        /* Never block indefinitely: we have to keep polling the captured state,
+         * and faster while the dim is fading. */
+        int pollCapMs = feedbackActive ? kFadeFrameMs : kResponsivenessPollMs;
+        if(timeout < 0 || timeout > pollCapMs)
+            timeout = pollCapMs;
 
         if(timedOut)
             noteUpdatesDone();

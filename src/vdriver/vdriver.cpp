@@ -10,8 +10,10 @@ using namespace Executor;
 
 std::unique_ptr<VideoDriver> Executor::vdriver;
 
-/* How opaque the desktop dim becomes while the guest is captured. */
+/* How opaque the desktop dim becomes while the guest is captured, and how long
+ * the fade takes. */
 static constexpr float kCaptureDim = 0.5f;
+static constexpr float kFadeDurationMs = 300.0f;
 
 Framebuffer::Framebuffer(int w, int h, int d)
     : width(w), height(h), bpp(d)
@@ -190,13 +192,40 @@ bool VideoDriver::updateResponsivenessFeedback()
         return false;
 
     bool captured = Responsiveness::instance().poll();
+    bool repaint = false;
 
-    if(captured == clickCapture_)
-        return false;
+    if(captured != clickCapture_)
+    {
+        clickCapture_ = captured;
+        setClickCapture(captured);
 
-    clickCapture_ = captured;
-    desktopDim_ = captured ? kCaptureDim : 0.0f;
+        /* Start fading the desktop dim towards its new target.  Capture itself
+         * toggles immediately -- the fade is only visual. */
+        dimTarget_ = captured ? kCaptureDim : 0.0f;
+        dimStart_ = desktopDim_;
+        fadeStart_ = std::chrono::steady_clock::now();
+        fading_ = true;
+        repaint = true;
+    }
 
+    if(fading_)
+    {
+        float elapsed = std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(
+            std::chrono::steady_clock::now() - fadeStart_).count();
+        float t = elapsed / kFadeDurationMs;
+        if(t >= 1.0f)
+        {
+            t = 1.0f;
+            fading_ = false;
+        }
+
+        /* ease-out cubic */
+        float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+        desktopDim_ = dimStart_ + (dimTarget_ - dimStart_) * eased;
+        repaint = true;
+    }
+
+    if(repaint)
     {
         std::lock_guard lk(mutex_);
         /* The dim paints the whole desktop, so the holes have to be redrawn
@@ -204,8 +233,7 @@ bool VideoDriver::updateResponsivenessFeedback()
         dirtyRects_.add(0, 0, height(), width());
     }
 
-    setClickCapture(captured);
-    return true;
+    return repaint;
 }
 
 void VideoDriver::commitRootlessRegion()

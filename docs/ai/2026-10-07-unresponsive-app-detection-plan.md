@@ -503,18 +503,25 @@ in rootless mode, without dimming the emulated windows.
 
 ## Iteration 4 — Fade effect
 
+> **Implemented 2026-10-07.** `updateResponsivenessFeedback()` starts a fade on
+> each capture change (`dimStart_`, `dimTarget_`, `fadeStart_`, `fading_`) and
+> advances `desktopDim_` with an ease-out cubic (`1-(1-t)^3`) over
+> `kFadeDurationMs = 300` ms, returning true (and dirtying the whole screen)
+> until it settles. The Wayland event loop and the Qt `QTimer` shorten their
+> poll interval to 16 ms while it returns true and back to 100 ms once settled.
+
 **Goal:** animate the transition between transparent and 50 % black instead of
 snapping.
 
 ### Design
 
-- The state machine owns `dimCurrent_`/`dimTarget_`; add `kFadeDurationMs`
-  (proposed 300 ms) and an easing function (proposed ease-out,
-  `1 - (1 - t)^3`), evaluated against `steady_clock` on the GUI thread.
-- `updateResponsivenessFeedback()` returns `true` while
-  `|dimCurrent_ - dimTarget_| > epsilon`, so the front-end keeps scheduling
-  frames (Qt: the `QTimer` slot / repeated `requestUpdate()`; Wayland: keep
-  calling `requestFrame()`), stopping once settled.
+- The state machine owns `desktopDim_` (the value `updateBuffer()` paints),
+  `dimTarget_`, `dimStart_`, `fadeStart_` and `fading_`; `kFadeDurationMs` is
+  300 ms and the easing is ease-out cubic, evaluated against `steady_clock` on
+  the GUI thread.
+- `updateResponsivenessFeedback()` returns `true` on a capture change and on
+  every frame while the fade is still running (so the front-end keeps scheduling
+  frames), and `false` once settled.
 - Fade **out** with the same timing when capture ends.
 - Capture itself toggles at detection time, *not* tied to the fade, so mouse
   capture is protected immediately even while the fade runs.

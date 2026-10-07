@@ -40,6 +40,11 @@ Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
 
 constexpr bool log_key_events = false;
 
+/* How often the GUI thread re-evaluates the guest's captured state, and how
+ * often while the desktop dim is fading (which needs smoother frames). */
+constexpr int kIdlePollMs = 100;
+constexpr int kFadeFrameMs = 16;
+
 using namespace Executor;
 
 namespace Executor
@@ -240,9 +245,14 @@ bool QtVideoDriver::setMode(int width, int height, int bpp, bool grayscale_p)
             responsivenessTimer_ = new QTimer(window);
             QObject::connect(responsivenessTimer_, &QTimer::timeout, qapp, [this] {
                 if(updateResponsivenessFeedback())
+                {
                     requestUpdate();
+                    responsivenessTimer_->start(kFadeFrameMs);
+                }
+                else
+                    responsivenessTimer_->start(kIdlePollMs);
             });
-            responsivenessTimer_->start(100);
+            responsivenessTimer_->start(kIdlePollMs);
         }
 
 #ifdef __APPLE__

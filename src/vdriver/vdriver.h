@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <chrono>
 #include <unordered_map>
 #include <string>
 #include <array>
@@ -161,6 +162,10 @@ protected:
     bool rootlessRegionDirty_ = false;
     bool clickCapture_ = false;
     float desktopDim_ = 0.0f;
+    float dimTarget_ = 0.0f;
+    float dimStart_ = 0.0f;
+    std::chrono::steady_clock::time_point fadeStart_;
+    bool fading_ = false;
 
     Executor::DirtyRects dirtyRects_;
 
