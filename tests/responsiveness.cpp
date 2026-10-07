@@ -151,6 +151,54 @@ TEST_F(ResponsivenessTest, ResetClearsCaptureAndRestartsTheClock)
     EXPECT_TRUE(r.pollAt(3000));
 }
 
+TEST_F(ResponsivenessTest, ReleaseNeverExitsCaptureOnItsOwn)
+{
+    auto& r = Responsiveness::instance();
+
+    EXPECT_TRUE(r.pollAt(1000));    /* captured */
+
+    r.setButtonDownAt(true, 2000);  /* press   */
+    r.setButtonDownAt(false, 3000); /* release */
+
+    /* No pump happened, so capture must survive both the press and the release,
+     * even long afterwards. */
+    EXPECT_TRUE(r.pollAt(12000));
+    EXPECT_TRUE(r.isCaptured());
+
+    /* Only a pump clears it. */
+    r.noteResponseAt(12000);
+    EXPECT_FALSE(r.pollAt(12000));
+}
+
+TEST_F(ResponsivenessTest, EventWaitIsActiveForItsWholeDuration)
+{
+    auto& r = Responsiveness::instance();
+
+    {
+        Responsiveness::ActiveScope active; /* e.g. inside WaitNextEvent */
+        /* However long the wait lasts, it is not a stuck application. */
+        EXPECT_FALSE(r.pollAt(100000000));
+        EXPECT_FALSE(r.pollAt(200000000));
+    }
+
+    /* Once the wait ends, the quiet clock starts from the exit. */
+    unsigned long last = r.lastResponseMs();
+    EXPECT_FALSE(r.pollAt(last + 999));
+    EXPECT_TRUE(r.pollAt(last + 1000));
+}
+
+TEST_F(ResponsivenessTest, EnteringAnEventWaitClearsCapture)
+{
+    auto& r = Responsiveness::instance();
+
+    EXPECT_TRUE(r.pollAt(1000)); /* captured */
+
+    {
+        Responsiveness::ActiveScope active;
+        EXPECT_FALSE(r.pollAt(100000000)); /* waiting for events: not captured */
+    }
+}
+
 TEST_F(ResponsivenessTest, ForceCapturedBypassesTimeoutButtonAndEnabled)
 {
     auto& r = Responsiveness::instance();

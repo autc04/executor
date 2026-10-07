@@ -71,10 +71,19 @@ prevent confusion with "crashed".
 | Source | File | Counts? |
 |--------|------|---------|
 | `_SystemTask` → `C_SystemTask` | `src/desk.cpp:159` | **yes** |
-| `_WaitNextEvent` → `C_WaitNextEvent` | `src/toolevent.cpp:464` | **yes** |
+| `_WaitNextEvent` → `C_WaitNextEvent` | `src/toolevent.cpp:464` | **yes, for its whole duration** — it may block until the next event, and that time is the app behaving correctly (see below) |
 | `_ModalDialog` → `C_ModalDialog` | `src/dial/dialHandle.cpp:115`, `:188` | **yes** — runs its own `GetNextEvent` loop; on a real Mac it calls `SystemTask` internally |
 | `_GetNextEvent` → `C_GetNextEvent` | `src/toolevent.cpp:446` | **no** — a Mac `GetNextEvent` does not yield either |
 | `_GetOSEvent` (games poll this) | `src/osevent/osevent.cpp` | **no** — this is the whole point |
+
+**Event waits count as activity for their whole duration, not just their entry.**
+`WaitNextEvent` can block until the next event (e.g. a click) — `C_WaitNextEvent`
+loops on `GetNextEvent`/`syncint_wait_interrupt()` until an event arrives or the
+`sleep` expires.  Noting a response only at entry would let a program that is
+sitting in `WaitNextEvent` for longer than the timeout look stuck, so the whole
+call is wrapped in `Responsiveness::ActiveScope` (see the tracker API below):
+while it is active the tracker never enters capture, and the quiet clock restarts
+when the wait ends.
 
 ### Mouse-down tracking loops
 
@@ -192,7 +201,7 @@ window with the framebuffer, so iterations 2–4 are no-ops there.
 flowchart TD
     subgraph Emulator thread
         ST[C_SystemTask] --> NOTE[Responsiveness::noteResponse]
-        WNE[C_WaitNextEvent] --> NOTE
+        WNE["C_WaitNextEvent (ActiveScope)"] --> NOTE
         MD[C_ModalDialog] --> NOTE
     end
     subgraph GUI thread
@@ -222,6 +231,12 @@ public:
     // Emulator thread: guest just called SystemTask/WaitNextEvent/ModalDialog.
     void noteResponse();   void noteResponseAt(unsigned long nowMs);
 
+    // Emulator thread: the app is waiting for events (e.g. inside WaitNextEvent,
+    // which may block until the next event).  The whole duration counts as
+    // activity; ActiveScope is the RAII helper.
+    void enterActive();    void exitActive();
+    class ActiveScope { /* enterActive() on construction, exitActive() on destruction */ };
+
     // GUI thread: host mouse button press/release (from EventSink).  A release
     // restarts the quiet clock.
     void setButtonDown(bool down);
@@ -243,6 +258,7 @@ public:
 private:
     std::atomic<unsigned long> lastResponseMs_{0};  // last pump
     std::atomic<unsigned long> lastReleaseMs_{0};   // last button release
+    std::atomic<int> activeDepth_{0};                // inside an event-wait call
     std::atomic<bool> buttonDown_{false};
     std::atomic<int> timeoutTicks_{60};
     std::atomic<bool> enabled_{true};
@@ -255,11 +271,15 @@ private:
 - `noteResponse()` stores `msecs_elapsed()`.
 - `setButtonDown(false)` records the release time — the quiet clock restarts
   there, so a tracking loop's duration never counts as quiet time.
-- `pollAt()` latches: it clears `captured_` if the feature is off or the app
-  pumped within `timeoutTicks_ * 50 / 3` ms; it sets `captured_` if the button
-  has been up since `max(lastPump, lastRelease)` for that long; and otherwise it
-  leaves the previous value alone — that last case is the "a held button never
-  leaves capture" rule.
+- `pollAt()` latches: it clears `captured_` if the feature is off, if the app
+  is inside an event wait (`activeDepth_ > 0`), or if the app pumped within
+  `timeoutTicks_ * 50 / 3` ms; it sets `captured_` if the button has been up
+  since `max(lastPump, lastRelease)` for that long; and otherwise it leaves the
+  previous value alone — that last case is the "a held button never leaves
+  capture" rule.
+- `enterActive()`/`exitActive()` (via `ActiveScope`) bracket `WaitNextEvent`:
+  they keep the app out of capture for the whole call and restart the quiet
+  clock when it ends.
 - `poll()` is `pollAt(msecs_elapsed())`, plus the `forceCaptured` override.
 - `reset()` clears the latch and the button state and restarts the clock, so a
   freshly launched app is not instantly flagged before it has had a chance to
@@ -327,9 +347,11 @@ usable from the GUI thread and the prefs dialog.
 
 - Add `src/vdriver/responsiveness.{h,cpp}` as above; register it in
   `vdriver_sources` in `src/CMakeLists.txt`.
-- `noteResponse()` at the top of `C_SystemTask()` (`desk.cpp:159`),
-  `C_WaitNextEvent()` (`toolevent.cpp:464`), and `C_ModalDialog()`
-  (`dialHandle.cpp:115`, `:188`). Do **not** hook `GetNextEvent`/`GetOSEvent`.
+- `noteResponse()` at the top of `C_SystemTask()` (`desk.cpp:159`) and
+  `C_ModalDialog()` (`dialHandle.cpp:115`, `:188`).  `C_WaitNextEvent()`
+  (`toolevent.cpp:464`) is instead wrapped in `Responsiveness::ActiveScope`, so
+  the whole (possibly blocking) call counts as activity.  Do **not** hook
+  `GetNextEvent`/`GetOSEvent`.
 - `setButtonDown(down)` from `EventSink::mouseButtonEvent` (`eventsink.cpp:21`),
   before marshalling to the emulator thread (this runs on the GUI thread).
 - `reset()` at boot next to `syncint_init()`/`ROMlib_eventinit()`

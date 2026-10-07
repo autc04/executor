@@ -37,6 +37,24 @@ public:
     void noteResponse();
     void noteResponseAt(unsigned long nowMs);
 
+    /* Emulator thread: the application is waiting for events (WaitNextEvent may
+     * block until the next event, e.g. a click).  The whole time spent inside
+     * such a call is the application behaving correctly, so it must not be
+     * mistaken for a stuck application -- neither may it count towards entering
+     * capture.  ActiveScope is the RAII helper; enter/exit maintain a nesting
+     * counter and refresh the quiet clock. */
+    void enterActive();
+    void exitActive();
+
+    class ActiveScope
+    {
+    public:
+        ActiveScope() { instance().enterActive(); }
+        ~ActiveScope() { instance().exitActive(); }
+        ActiveScope(const ActiveScope&) = delete;
+        ActiveScope& operator=(const ActiveScope&) = delete;
+    };
+
     /* GUI thread: host mouse button press/release.  A release restarts the
      * quiet clock. */
     void setButtonDown(bool down);
@@ -76,6 +94,7 @@ private:
 
     std::atomic<unsigned long> lastResponseMs_; /* last pump */
     std::atomic<unsigned long> lastReleaseMs_;  /* last mouse-button release */
+    std::atomic<int> activeDepth_;              /* inside an event-wait call */
     std::atomic<bool> buttonDown_;
     std::atomic<int> timeoutTicks_;
     std::atomic<bool> enabled_;

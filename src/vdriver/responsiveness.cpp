@@ -12,7 +12,7 @@ Responsiveness& Responsiveness::instance()
 
 Responsiveness::Responsiveness()
     : lastResponseMs_(msecs_elapsed()), lastReleaseMs_(msecs_elapsed()),
-      buttonDown_(false), timeoutTicks_(60), enabled_(true),
+      activeDepth_(0), buttonDown_(false), timeoutTicks_(60), enabled_(true),
       forceCaptured_(false), captured_(false)
 {
 }
@@ -25,6 +25,21 @@ void Responsiveness::noteResponse()
 void Responsiveness::noteResponseAt(unsigned long nowMs)
 {
     lastResponseMs_ = nowMs;
+}
+
+void Responsiveness::enterActive()
+{
+    activeDepth_++;
+    lastResponseMs_ = msecs_elapsed();
+}
+
+void Responsiveness::exitActive()
+{
+    if(activeDepth_ > 0)
+        activeDepth_--;
+    /* The quiet clock restarts when the wait ends, so a long block never counts
+     * as quiet time. */
+    lastResponseMs_ = msecs_elapsed();
 }
 
 void Responsiveness::setButtonDown(bool down)
@@ -71,8 +86,9 @@ bool Responsiveness::pollAt(unsigned long nowMs)
 
     if(!enabled_)
         captured = false;                        /* feature off */
-    else if(nowMs < lastPump || nowMs - lastPump < timeoutMs())
-        captured = false;                        /* the app pumped recently */
+    else if(activeDepth_ > 0
+            || nowMs < lastPump || nowMs - lastPump < timeoutMs())
+        captured = false;                        /* pumping or waiting for events */
     else
     {
         /* Quiet enough to enter, but only if the button has also been up (no

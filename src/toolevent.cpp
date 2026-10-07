@@ -469,9 +469,10 @@ Boolean Executor::C_WaitNextEvent(INTEGER mask, EventRecord *evp,
     Point p;
     TMTask tm;
 
-    /* Unlike GetNextEvent, WaitNextEvent yields to the Window Manager on a real
-     * Mac, so it counts as proof that the application is alive. */
-    Responsiveness::instance().noteResponse();
+    /* WaitNextEvent yields to the Window Manager on a real Mac -- and here it
+     * may block until the next event (e.g. a click).  The whole time spent
+     * inside it counts as the application being alive, not just its entry. */
+    Responsiveness::ActiveScope active;
 
     if(sleep > 0)
     {
