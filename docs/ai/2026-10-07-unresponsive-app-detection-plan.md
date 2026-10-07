@@ -72,18 +72,18 @@ prevent confusion with "crashed".
 |--------|------|---------|
 | `_SystemTask` → `C_SystemTask` | `src/desk.cpp:159` | **yes** |
 | `_WaitNextEvent` → `C_WaitNextEvent` | `src/toolevent.cpp:464` | **yes, for its whole duration** — it may block until the next event, and that time is the app behaving correctly (see below) |
-| `_ModalDialog` → `C_ModalDialog` | `src/dial/dialHandle.cpp:115`, `:188` | **yes** — runs its own `GetNextEvent` loop; on a real Mac it calls `SystemTask` internally |
+| `_ModalDialog` → `C_ModalDialog` | `src/dial/dialHandle.cpp:115`, `:188` | **yes, for its whole duration** — runs its own `GetNextEvent` loop; on a real Mac it pumps `SystemTask` internally |
 | `_GetNextEvent` → `C_GetNextEvent` | `src/toolevent.cpp:446` | **no** — a Mac `GetNextEvent` does not yield either |
 | `_GetOSEvent` (games poll this) | `src/osevent/osevent.cpp` | **no** — this is the whole point |
 
 **Event waits count as activity for their whole duration, not just their entry.**
 `WaitNextEvent` can block until the next event (e.g. a click) — `C_WaitNextEvent`
 loops on `GetNextEvent`/`syncint_wait_interrupt()` until an event arrives or the
-`sleep` expires.  Noting a response only at entry would let a program that is
-sitting in `WaitNextEvent` for longer than the timeout look stuck, so the whole
-call is wrapped in `Responsiveness::ActiveScope` (see the tracker API below):
-while it is active the tracker never enters capture, and the quiet clock restarts
-when the wait ends.
+`sleep` expires — and `ModalDialog` runs its own event loop for as long as the
+dialog is up.  Noting a response only at entry would let a program sitting in
+the wait look stuck, so both are wrapped in `Responsiveness::ActiveScope` (see
+the tracker API below): while active the tracker never enters capture, and the
+quiet clock restarts when the wait ends.
 
 ### Mouse-down tracking loops
 
@@ -202,7 +202,7 @@ flowchart TD
     subgraph Emulator thread
         ST[C_SystemTask] --> NOTE[Responsiveness::noteResponse]
         WNE["C_WaitNextEvent (ActiveScope)"] --> NOTE
-        MD[C_ModalDialog] --> NOTE
+        MD["C_ModalDialog (ActiveScope)"] --> NOTE
     end
     subgraph GUI thread
         MB[EventSink::mouseButtonEvent] --> BTN[setButtonDown]
@@ -347,11 +347,11 @@ usable from the GUI thread and the prefs dialog.
 
 - Add `src/vdriver/responsiveness.{h,cpp}` as above; register it in
   `vdriver_sources` in `src/CMakeLists.txt`.
-- `noteResponse()` at the top of `C_SystemTask()` (`desk.cpp:159`) and
-  `C_ModalDialog()` (`dialHandle.cpp:115`, `:188`).  `C_WaitNextEvent()`
-  (`toolevent.cpp:464`) is instead wrapped in `Responsiveness::ActiveScope`, so
-  the whole (possibly blocking) call counts as activity.  Do **not** hook
-  `GetNextEvent`/`GetOSEvent`.
+- `noteResponse()` at the top of `C_SystemTask()` (`desk.cpp:159`).
+  `C_WaitNextEvent()` (`toolevent.cpp:464`) and `C_ModalDialog()`
+  (`dialHandle.cpp:115`, `:188`) are instead wrapped in
+  `Responsiveness::ActiveScope`, so their whole (possibly long) duration counts
+  as activity.  Do **not** hook `GetNextEvent`/`GetOSEvent`.
 - `setButtonDown(down)` from `EventSink::mouseButtonEvent` (`eventsink.cpp:21`),
   before marshalling to the emulator thread (this runs on the GUI thread).
 - `reset()` at boot next to `syncint_init()`/`ROMlib_eventinit()`

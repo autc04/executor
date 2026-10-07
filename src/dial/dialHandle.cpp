@@ -123,9 +123,10 @@ void Executor::C_ModalDialog(ModalFilterUPP fp, GUEST<INTEGER> *item) /* IMI-415
    */
     TheGDeviceGuard guard(LM(MainDevice));
 
-    /* ModalDialog runs its own GetNextEvent loop, but on a real Mac it pumped
-     * SystemTask internally, so it counts as the application being alive. */
-    Responsiveness::instance().noteResponse();
+    /* ModalDialog runs its own event loop and, on a real Mac, pumps SystemTask
+     * internally, so the whole (potentially long) time spent in it counts as the
+     * application being alive. */
+    Responsiveness::ActiveScope active;
 
     EventRecord evt;
     DialogPeek dp;
@@ -201,9 +202,10 @@ void Executor::C_ModalDialog(ModalFilterUPP fp, GUEST<INTEGER> *item) /* IMI-415
 
     TheGDeviceGuard guard(LM(MainDevice));
 
-    /* ModalDialog runs its own GetNextEvent loop, but on a real Mac it pumped
-     * SystemTask internally, so it counts as the application being alive. */
-    Responsiveness::instance().noteResponse();
+    /* ModalDialog runs its own event loop and, on a real Mac, pumps SystemTask
+     * internally, so the whole (potentially long) time spent in it counts as the
+     * application being alive. */
+    Responsiveness::ActiveScope active;
 
     EventRecord evt;
     DialogPeek dp;

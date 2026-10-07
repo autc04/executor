@@ -106,3 +106,9 @@ clears handlers registered by the previous application.
 - **Key map consistency**: `LM(KeyMap)` is a 16-byte guest bitmap; `ROMlib_GetKey`
   consults the host-side state, which is kept in sync with `LM(KeyMap)` on every key
   event.
+- **Responsiveness tracking**: `SystemTask`, `WaitNextEvent` and `ModalDialog`
+  feed the `Responsiveness` tracker (see `video-driver.md`). `WaitNextEvent` and
+  `ModalDialog` count as activity for their whole (possibly blocking) duration via
+  `Responsiveness::ActiveScope`; `GetNextEvent`/`GetOSEvent` deliberately do not
+  count, which is how the emulator spots an application that has stopped pumping
+  its event loop (`docs/ai/2026-10-07-unresponsive-app-detection-plan.md`).
