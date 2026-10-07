@@ -17,20 +17,6 @@ namespace traps
 {
 #define TOOLBIT (0x0800)
 
-namespace selectors
-{
-    template <uint32_t mask> struct D0;
-    template <uint32_t mask> struct D1;
-    using D0W = D0<0xFFFF>;
-    using D0L = D0<0xFFFFFFFF>;
-    template <uint32_t mask = 0xFFFF> struct StackWMasked;
-    template <uint32_t mask = 0xFFFFFFFF> struct StackLMasked;
-    using StackW = StackWMasked<>;
-    using StackL = StackLMasked<>;
-    template <uint32_t mask = 0xFFFF> struct StackWLookahead;
-    using TrapBits = D1<0x600>;
-}
-
 namespace internal
 {
     class DeferredInit
@@ -91,17 +77,6 @@ protected:
     uint16_t trapno;
 };
 
-template<class SelectorConvention>
-class DispatcherTrap : public GenericDispatcherTrap
-{
-    static syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, void* extra);
-public:
-    virtual void init() override;
-    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, std::function<syn68k_addr_t(syn68k_addr_t)> handler) override;
-
-    using GenericDispatcherTrap::GenericDispatcherTrap;
-};
-
 // Where a dispatcher reads its selector from, described as data rather than a
 // template parameter so that generated code can construct a dispatcher without
 // instantiating anything.
@@ -114,7 +89,7 @@ enum class SelectorKind
     StackWLookahead,
 };
 
-// Non-template replacement for DispatcherTrap<SelectorConvention>: the selector
+// Non-template replacement for the old templated dispatcher: the selector
 // convention is a (kind, mask) pair passed to the constructor.
 class GeneratedDispatcherTrap : public GenericDispatcherTrap
 {
@@ -210,41 +185,11 @@ private:
     GenericDispatcherTrap& dispatcher;
 };
 
-template<typename Trap, typename F, bool... flags>
-class TrapVariant;
-
-template<typename Trap, typename Ret, typename... Args, bool... flags>
-class TrapVariant<Trap, Ret (Args...), flags...>  : public Entrypoint
-{
-    template<class T1>
-    struct cast_any_t
-    {
-        T1 x;
-
-        template<class T2>
-        operator T2() { return (T2)x; }
-    };
-
-    template<class T1>
-    cast_any_t<T1> cast_any(const T1& x) const { return {x}; }
-public:
-    Ret operator()(Args... args) const { return trap(cast_any(args)..., flags...); }
-
-    virtual void init() override;
-    TrapVariant(const Trap& trap, const char* name, const char* exportToLib = nullptr);
-private:
-    const Trap& trap;
-};
-
 #define EXTERN_FUNCTION_WRAPPER(NAME, FPTR, INIT, ...) \
     extern Executor::traps::__VA_ARGS__ NAME
-#define EXTERN_DISPATCHER_TRAP(NAME, TRAP, SELECTOR) \
-    extern Executor::traps::DispatcherTrap<Executor::traps::selectors::SELECTOR> NAME
 #define DEFINE_FUNCTION_WRAPPER(NAME, FPTR, INIT, ...) \
     Executor::traps::__VA_ARGS__ NAME INIT;   \
     template class Executor::traps::__VA_ARGS__;
-#define DEFINE_DISPATCHER_TRAP(NAME, TRAP, SELECTOR) \
-    Executor::traps::DispatcherTrap<Executor::traps::selectors::SELECTOR> NAME { #NAME, TRAP }
 
 #ifndef TRAP_INSTANTIATION
 #define TRAP_INSTANTIATION EXTERN
@@ -253,9 +198,13 @@ private:
 #define PREPROCESSOR_CONCAT1(A,B) A##B
 #define PREPROCESSOR_CONCAT(A,B) PREPROCESSOR_CONCAT1(A,B)
 #define CREATE_FUNCTION_WRAPPER PREPROCESSOR_CONCAT(TRAP_INSTANTIATION, _FUNCTION_WRAPPER)
-#define DISPATCHER_TRAP PREPROCESSOR_CONCAT(TRAP_INSTANTIATION, _DISPATCHER_TRAP)
 
 #define COMMA ,
+
+// The hand-written macro surface.  Since the generator converts every trap in
+// defs/*.yaml itself, these are only the fallbacks it uses for anything it has
+// not (yet) converted, plus the hand-written uses in emustubs.h and the
+// verbatim blocks in the YAML (NOTRAP_FUNCTION2, PASCAL_SUBTRAP, RAW_68K_*).
 #define PASCAL_TRAP(NAME, TRAP) \
     CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, "InterfaceLib"), TrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP>)
 #define REGISTER_TRAP(NAME, TRAP, ...) \
@@ -265,10 +214,6 @@ private:
 
 #define PASCAL_SUBTRAP(NAME, TRAP, SELECTOR, TRAPNAME) \
     CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, TRAPNAME, "InterfaceLib"), SubTrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP COMMA SELECTOR>)
-#define REGISTER_SUBTRAP(NAME, TRAP, SELECTOR, TRAPNAME, ...) \
-    CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, TRAPNAME, "InterfaceLib"), SubTrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP COMMA SELECTOR COMMA callconv::Register<__VA_ARGS__>>)
-#define REGISTER_SUBTRAP2(NAME, TRAP, SELECTOR, TRAPNAME, ...) \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &NAME, (#NAME, TRAPNAME, "InterfaceLib"), SubTrapFunction<decltype(NAME) COMMA &NAME COMMA TRAP COMMA SELECTOR COMMA callconv::Register<__VA_ARGS__>>)
 
 #define NOTRAP_FUNCTION(NAME) \
     CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, "InterfaceLib"), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME>)
@@ -298,68 +243,10 @@ private:
 #define RAW_68K_IMPLEMENTATION(NAME) \
         syn68k_addr_t Executor::RAW_##NAME(syn68k_addr_t trap_address [[maybe_unused]], void *)
 
-#define TRAP_VARIANT(NAME, IMPL_NAME, ...) \
-    CREATE_FUNCTION_WRAPPER(NAME, , (stub_##IMPL_NAME, #NAME, "InterfaceLib"), TrapVariant<decltype(stub_##IMPL_NAME), __VA_ARGS__>)
-#define REGISTER_FLAG_TRAP(IMPL_NAME, NAME0, NAME1, TRAP, TYPE, ...) \
-    REGISTER_TRAP2(IMPL_NAME, TRAP, __VA_ARGS__); \
-    TRAP_VARIANT(NAME0, IMPL_NAME, TYPE, false); \
-    TRAP_VARIANT(NAME1, IMPL_NAME, TYPE, true)
-#define REGISTER_2FLAG_TRAP(IMPL_NAME, NAME00, NAME01, NAME10, NAME11, TRAP, TYPE, ...) \
-    REGISTER_TRAP2(IMPL_NAME, TRAP, __VA_ARGS__); \
-    TRAP_VARIANT(NAME00, IMPL_NAME, TYPE, false, false); \
-    TRAP_VARIANT(NAME10, IMPL_NAME, TYPE, true, false); \
-    TRAP_VARIANT(NAME01, IMPL_NAME, TYPE, false, true); \
-    TRAP_VARIANT(NAME11, IMPL_NAME, TYPE, true, true)
-
+// Bits read out of the register operand lists of the file-manager traps; the
+// generated entrypoints use these when constructing their descriptors.
 #define ASYNCBIT (1 << 10)
 #define HFSBIT (1 << 9)
-
-#define FILE_TRAP(NAME, PBTYPE, TRAP) \
-    REGISTER_FLAG_TRAP(NAME, NAME##Sync, NAME##Async, TRAP, OSErr(PBTYPE), D0 (A0, TrapBit<ASYNCBIT>))
-
-#define FILE_SUBTRAP(NAME, PBTYPE, TRAP, SELECTOR, TRAPNAME) \
-    REGISTER_SUBTRAP2(NAME, TRAP, SELECTOR, TRAPNAME, D0 (A0, TrapBit<ASYNCBIT>)); \
-    TRAP_VARIANT(NAME##Sync, NAME, OSErr(PBTYPE), false); \
-    TRAP_VARIANT(NAME##Async, NAME, OSErr(PBTYPE), true)
-
-
-#define HFS_TRAP(NAME, HNAME, PBTYPE, TRAP) \
-    inline OSErr NAME##_##HNAME(ParmBlkPtr pb, Boolean async, Boolean hfs) \
-    { \
-        return hfs ? HNAME((PBTYPE)pb, async) : NAME(pb, async); \
-    } \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &NAME##_##HNAME, \
-        (#NAME "/" #HNAME), \
-        TrapFunction<decltype(NAME##_##HNAME), \
-            &NAME##_##HNAME, TRAP, \
-            callconv::Register<D0 (A0, TrapBit<ASYNCBIT>, TrapBit<HFSBIT>)>>); \
-    TRAP_VARIANT(NAME##Sync, NAME, OSErr(ParmBlkPtr), false, false); \
-    TRAP_VARIANT(NAME##Async, NAME, OSErr(ParmBlkPtr), true, false); \
-    TRAP_VARIANT(HNAME##Sync, NAME, OSErr(HParmBlkPtr), false, true); \
-    TRAP_VARIANT(HNAME##Async, NAME, OSErr(HParmBlkPtr), true, true)
-
-#define HFS_SUBTRAP(NAME, HNAME, PBTYPE, TRAP, SELECTOR, TRAPNAME) \
-    inline OSErr NAME##_##HNAME(ParmBlkPtr pb, Boolean async, Boolean hfs) \
-    { \
-        return hfs ? HNAME((PBTYPE)pb, async) : NAME(pb, async); \
-    } \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &NAME##_##HNAME, \
-        (#NAME "/" #HNAME, TRAPNAME), \
-        SubTrapFunction<decltype(NAME##_##HNAME), \
-            &NAME##_##HNAME, TRAP, SELECTOR, \
-            callconv::Register<D0 (A0, TrapBit<ASYNCBIT>, TrapBit<HFSBIT>)>>); \
-    TRAP_VARIANT(NAME##Sync, NAME, OSErr(ParmBlkPtr), false, false); \
-    TRAP_VARIANT(NAME##Async, NAME, OSErr(ParmBlkPtr), true, false); \
-    TRAP_VARIANT(HNAME##Sync, NAME, OSErr(HParmBlkPtr), false, true); \
-    TRAP_VARIANT(HNAME##Async, NAME, OSErr(HParmBlkPtr), true, true)
-
-
-
-#define LOWMEM_ACCESSOR(NAME) \
-    inline decltype(NAME)::type LMGet##NAME() { return LM(NAME); } \
-    inline void LMSet##NAME(decltype(NAME)::type val) { LM(NAME) = val; } \
-    NOTRAP_FUNCTION2(LMGet##NAME); \
-    NOTRAP_FUNCTION2(LMSet##NAME)
 
 void init(bool enableLogging, const std::string& trapFilter = std::string());
 extern std::unordered_map<std::string, traps::Entrypoint*> entrypoints;
