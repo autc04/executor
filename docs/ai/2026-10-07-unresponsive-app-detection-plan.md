@@ -381,12 +381,14 @@ usable from the GUI thread and the prefs dialog.
 
 ## Iteration 2 — Capture clicks while captured (rootless only)
 
-> **Wayland part implemented 2026-10-07.** `VideoDriver::updateResponsivenessFeedback()`
-> (base, `vdriver.cpp`) polls the tracker on the GUI thread and calls the new
-> `setClickCapture(bool)` hook; the Wayland event loop wakes every 100 ms to drive
-> it and applies the input region in `frameCallback` (whole surface when captured,
-> the rootless region otherwise), driven by a new `clickCaptureDirty_` flag. Qt is
-> still to do.
+> **Wayland and Qt parts implemented 2026-10-07.**
+> `VideoDriver::updateResponsivenessFeedback()` (base, `vdriver.cpp`) polls the
+> tracker on the GUI thread and calls the new `setClickCapture(bool)` hook.
+> Wayland wakes its event loop every 100 ms and applies the input region in
+> `frameCallback` (whole surface when captured, the rootless region otherwise).
+> Qt runs a 100 ms `QTimer`, sets the window mask to the whole window while
+> captured, and now renders with per-pixel alpha (which also fixes the black
+> holes on Qt's Wayland backend).
 
 **Goal:** while captured, clicks in the rootless "holes" are delivered to
 Executor instead of falling through to the host, so they do not interrupt the
@@ -397,17 +399,16 @@ app.
 - `VideoDriver::setClickCapture(bool)` (base no-op; front-end hooks below),
   driven by the base `updateResponsivenessFeedback()` (which also returns true
   when a repaint is needed).
-- **Qt** (`src/config/front-ends/qt/qt.cpp`): the rootless mask is the
-  click-through mechanism, so capture means *widening the effective mask to the
-  full screen* while captured, and restoring the rootless mask otherwise. Keep
-  the two sources separate — store the rootless region and a
-  `clickCaptureActive_` flag, and compute the effective mask in `render()`
-  (`qt.cpp:240`) as `clickCaptureActive_ ? fullScreen : rootlessRegion`.
-  - This couples iteration 2 with iteration 3 on Qt: a full-screen mask makes
-    the whole window opaque, so the now-visible desktop pixels must be painted
-    (the dim), not left as a hole. See iteration 3 (approach A).
-  - The mask is also the *paint* clip, and Qt's Wayland backend does not honour
-    that clip (it blackens the masked-out area) — see the Qt note in iteration 3.
+- **Qt** (`src/config/front-ends/qt/qt.cpp`) — **implemented:** the base
+  `clickCapture_` flag is honored in `render()` as `clickCapture_ ? whole window
+  : rootlessRegion`, with a `clickCaptureDirty_` flag so a capture change redraws
+  the mask.  The window renders with per-pixel alpha (the `qimage` is
+  `Format_ARGB32_Premultiplied` and the surface format requests an alpha buffer),
+  which also fixes the Qt/Wayland black holes; the mask is kept for *input*
+  shaping.  A 100 ms `QTimer` drives `updateResponsivenessFeedback()`.
+  - No longer coupled to iteration 3: because the holes are transparent by alpha
+    rather than by the mask, a full-window mask while captured does not make the
+    window opaque, so the desktop stays see-through. See iteration 3 (approach A).
 - **Wayland** (`wayland.cpp`): `setClickCapture(true)` sets the input region to
   the full screen; `false` restores the region computed by
   `commitRootlessRegion()`. Wayland keeps paint and input separate, so nothing
@@ -451,35 +452,22 @@ in rootless mode, without dimming the emulated windows.
   Paint the desktop pixels (the region *outside* `rootlessRegion_`) as
   `rgba(0, 0, 0, alpha)`, leaving emulated windows opaque. The input region is
   independent, so capture (iteration 2) is unaffected.
-- **Qt — approach A (selected).** Use the binary rootless mask normally (desktop
-  punched out, click-through). While captured, **drop the mask and render the
-  window with per-pixel alpha**: switch the backing image to
-  `QImage::Format_ARGB32_Premultiplied`, paint desktop pixels as black at
-  `alpha`, and keep emulated window pixels opaque. A maskless window hit-tests as
-  a rectangle, which *is* the click capture from iteration 2 — so iteration 2 and
-  iteration 3 are the same Qt state change.
+- **Qt — approach A (selected; the rendering basis landed with iteration 2).**
+  The rootless window already renders with per-pixel alpha
+  (`QImage::Format_ARGB32_Premultiplied` plus an alpha surface format), so the
+  desktop pixels are transparent and the host shows through; `updateBuffer()`
+  already writes `0` for the holes.  The window mask is kept for **input**
+  shaping and is set to the whole window while captured.  The dim is therefore
+  just painting those desktop pixels as `rgba(0, 0, 0, alpha)` instead of
+  transparent — no mask changes or per-platform hit-testing work needed.
   - **Known Qt/Wayland issue (observed):** Qt's Wayland backend does not clip the
-    window properly — the masked-out region renders as **black** instead of
-    transparent. It is only the *paint* that is wrong; click-through still works.
-    X11 and macOS clip correctly, and Windows is untested. Because the rootless
-    mask is the paint clip, this already makes today's rootless *display* wrong on
-    Qt/Wayland, independent of the capture feature.
-  - **Suggested workaround:** always render the rootless window with per-pixel
-    alpha (transparent where the desktop is) instead of relying on `setMask` for
-    the visual clip — i.e. make approach A the always-on rendering path, not just
-    the captured state. Note this does not by itself restore click-through on Qt
-    (per-pixel alpha does not affect hit-testing, and a maskless window takes
-    clicks over its whole rectangle), so the input side still needs a
-    platform-appropriate mechanism; resolve together with the mask/input question
-    below.
-  - Must be verified per platform that a maskless, per-pixel-alpha `QWindow`
-    still receives the click (needed for capture). On macOS the frameless window
-    may need `setOpaque:NO`, and Windows/X11 may need an ARGB/composited
-    surface; document each.
-  - The fallback if a platform refuses translucency is a dedicated
+    window mask, so the holes used to render as **black** (in an opaque image
+    format) while click-through still worked; X11 and macOS clip correctly, and
+    Windows is untested.  The per-pixel-alpha rendering above removes the black.
+  - If a platform refuses translucency, the fallback is a dedicated
     input-transparent overlay window below the main window (approach B) or, last
-    resort, a full-screen opaque near-black desktop; note the limitation rather
-    than silently degrading.
+    resort, an opaque near-black desktop; note the limitation rather than
+    silently degrading.
 
 ### Tests / validation
 

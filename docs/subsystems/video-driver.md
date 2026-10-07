@@ -101,9 +101,10 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
   (`src/vdriver/vdriver.cpp`) polls `Responsiveness`
   (`src/vdriver/responsiveness.{h,cpp}`) and, while the guest is captured, uses
   the virtual `setClickCapture(true)` hook so clicks in the rootless holes keep
-  going to the emulated app instead of the host desktop. The Wayland front-end
-  drives it from its event loop (input region set to the whole surface); other
-  front-ends currently no-op. See
+  going to the emulated app instead of the host desktop. Wayland drives it from
+  its event loop (input region set to the whole surface) and Qt from a 100 ms
+  `QTimer` (window mask set to the whole window); the Qt rootless window renders
+  with per-pixel alpha. Other front-ends no-op. See
   `docs/ai/2026-10-07-unresponsive-app-detection-plan.md`.
 - Adding a new front-end requires: subclassing `VideoDriver`, implementing all pure
   virtual methods, and adding a CMake option in `src/config/front-ends/`.

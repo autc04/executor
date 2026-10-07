@@ -7,6 +7,8 @@
 #include <QScreen>
 #include <QBackingStore>
 #include <QPaintDevice>
+#include <QSurfaceFormat>
+#include <QTimer>
 #ifdef STATIC_WINDOWS_QT
 #include <QtPlugin>
 #endif
@@ -212,12 +214,36 @@ bool QtVideoDriver::setMode(int width, int height, int bpp, bool grayscale_p)
         framebuffer_ = Framebuffer(geom.width(), geom.height(), bpp ? bpp : 8);
         framebuffer_.rootless = true;
 
-        qimage = new QImage(framebuffer_.width, framebuffer_.height, QImage::Format_RGB32);
+        /* Render with per-pixel alpha.  updateBuffer() already maps the rootless
+         * holes to fully transparent pixels, but an opaque image format turns
+         * those into black; that is invisible on X11/macOS (the window mask
+         * clips them) but shows on Qt's Wayland backend, which does not clip the
+         * mask.  With alpha the holes stay see-through everywhere. */
+        qimage = new QImage(framebuffer_.width, framebuffer_.height, QImage::Format_ARGB32_Premultiplied);
         
         if(!window)
             window = new ExecutorWindow(this);
+        {
+            /* Ask the platform for a translucent surface so the compositor
+             * blends our per-pixel alpha instead of showing it as black. */
+            QSurfaceFormat fmt = window->format();
+            fmt.setAlphaBufferSize(8);
+            window->setFormat(fmt);
+        }
         window->setGeometry(geom);
         window->showMaximized();
+
+        if(!responsivenessTimer_)
+        {
+            /* Periodically re-evaluate the guest's captured state even while it
+             * never yields. */
+            responsivenessTimer_ = new QTimer(window);
+            QObject::connect(responsivenessTimer_, &QTimer::timeout, qapp, [this] {
+                if(updateResponsivenessFeedback())
+                    requestUpdate();
+            });
+            responsivenessTimer_->start(100);
+        }
 
 #ifdef __APPLE__
         geom.setY(geom.y() - 1);
@@ -241,14 +267,25 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
 {
     std::unique_lock lk(mutex_);
     
-    if(rootlessRegionDirty_)
+    if(rootlessRegionDirty_ || clickCaptureDirty_)
     {
         commitRootlessRegion();
         
         QRegion qtRgn;
-        forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
-            qtRgn += QRect(l, t + windowTopPadding, r-l, b-t);
-        });
+        if(clickCapture_)
+        {
+            /* Captured: accept pointer input over the whole window, so clicks
+             * meant for the (busy) application are not lost to the host desktop
+             * through the rootless holes.  The hole pixels stay transparent, so
+             * this only changes hit-testing. */
+            qtRgn += QRect(0, windowTopPadding, width(), height());
+        }
+        else
+        {
+            forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
+                qtRgn += QRect(l, t + windowTopPadding, r-l, b-t);
+            });
+        }
 
 #ifdef __APPLE__
         macosx_autorelease_pool([&] {
@@ -257,6 +294,8 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
 #ifdef __APPLE__
         });
 #endif
+
+        clickCaptureDirty_ = false;
     }
     
     auto r = dirtyRects_.getAndClear();
@@ -296,6 +335,13 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
 void QtVideoDriver::requestUpdate()
 {
     QMetaObject::invokeMethod(window, &QWindow::requestUpdate);
+}
+
+void QtVideoDriver::setClickCapture(bool capture)
+{
+    std::lock_guard lk(mutex_);
+
+    clickCaptureDirty_ = true;
 }
 
 void QtVideoDriver::setCursor(char *cursor_data,
