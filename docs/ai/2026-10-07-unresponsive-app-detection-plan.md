@@ -406,6 +406,8 @@ app.
   - This couples iteration 2 with iteration 3 on Qt: a full-screen mask makes
     the whole window opaque, so the now-visible desktop pixels must be painted
     (the dim), not left as a hole. See iteration 3 (approach A).
+  - The mask is also the *paint* clip, and Qt's Wayland backend does not honour
+    that clip (it blackens the masked-out area) — see the Qt note in iteration 3.
 - **Wayland** (`wayland.cpp`): `setClickCapture(true)` sets the input region to
   the full screen; `false` restores the region computed by
   `commitRootlessRegion()`. Wayland keeps paint and input separate, so nothing
@@ -456,6 +458,20 @@ in rootless mode, without dimming the emulated windows.
   `alpha`, and keep emulated window pixels opaque. A maskless window hit-tests as
   a rectangle, which *is* the click capture from iteration 2 — so iteration 2 and
   iteration 3 are the same Qt state change.
+  - **Known Qt/Wayland issue (observed):** Qt's Wayland backend does not clip the
+    window properly — the masked-out region renders as **black** instead of
+    transparent. It is only the *paint* that is wrong; click-through still works.
+    X11 and macOS clip correctly, and Windows is untested. Because the rootless
+    mask is the paint clip, this already makes today's rootless *display* wrong on
+    Qt/Wayland, independent of the capture feature.
+  - **Suggested workaround:** always render the rootless window with per-pixel
+    alpha (transparent where the desktop is) instead of relying on `setMask` for
+    the visual clip — i.e. make approach A the always-on rendering path, not just
+    the captured state. Note this does not by itself restore click-through on Qt
+    (per-pixel alpha does not affect hit-testing, and a maskless window takes
+    clicks over its whole rectangle), so the input side still needs a
+    platform-appropriate mechanism; resolve together with the mask/input question
+    below.
   - Must be verified per platform that a maskless, per-pixel-alpha `QWindow`
     still receives the click (needed for capture). On macOS the frameless window
     may need `setOpaque:NO`, and Windows/X11 may need an ARGB/composited
