@@ -39,7 +39,6 @@ template<typename Ret, typename... Args, Ret (*fptr)(Args...), typename CallConv
 void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
 {
     Entrypoint::init();
-#ifdef EXECUTOR_ENABLE_LOGGING
     // LoggedFunction gates on logging::enabled() at call time, so a single
     // instantiation serves both the logged and the unlogged case.
     guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
@@ -52,22 +51,9 @@ void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
                     ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(name, fptr));
             }
         ));    
-#else
-    guestFP = (UPP<Ret (Args...),CallConv>)SYN68K_TO_US(callback_install(
-            [this](syn68k_addr_t addr)
-            {
-                if(auto ret = this->checkBreak68K(addr); ~ret)
-                    return ret;
-
-                return callfrom68K::Invoker<Ret (Args...), CallConv>
-                    ::invokeFrom68K(addr, fptr);
-            }
-        ));    
-#endif
 
     if(libname)
     {
-#ifdef EXECUTOR_ENABLE_LOGGING
         builtinlibs::addPPCEntrypoint(libname, name,
             [this](PowerCore& cpu) { 
                 if(auto ret = this->checkBreakPPC(cpu); ~ret)
@@ -76,16 +62,6 @@ void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
                 return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, logging::makeLoggedFunction(name, fptr)); 
             }
         );
-#else
-        builtinlibs::addPPCEntrypoint(libname, name,
-            [this](PowerCore& cpu) { 
-                if(auto ret = this->checkBreakPPC(cpu); ~ret)
-                    return ret;
-                
-                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, fptr);
-            }
-        );
-#endif
     }
 }
 
@@ -116,7 +92,6 @@ template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, uint3
 void SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv>::init()
 {
     WrappedFunction<Ret(Args...),fptr,CallConv>::init();
-#ifdef EXECUTOR_ENABLE_LOGGING
     dispatcher.addSelector(selector, this,
         [this](syn68k_addr_t addr)
         {
@@ -124,15 +99,6 @@ void SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv>::init()
                 ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(this->name, fptr));
         }
     );
-#else
-    dispatcher.addSelector(selector, this,
-        [](syn68k_addr_t addr)
-        {
-            return callfrom68K::Invoker<Ret (Args...), CallConv>
-                ::invokeFrom68K(addr, fptr); 
-        }
-    );
-#endif
 }
 
 

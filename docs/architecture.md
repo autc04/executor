@@ -388,6 +388,5 @@ The VS Code task `test-executor` builds both the emulator and the test binary, r
 
 | Flag | Effect |
 |------|--------|
-| `-DEXECUTOR_ENABLE_LOGGING=ON` | Enables the `--logtraps` runtime option for trap call logging |
 | `-DTWENTYFOUR=YES` | Compile-time 24-bit addressing mode |
 | `-DNO_STATIC_BOOST=ON` | Force dynamic Boost linkage |

@@ -82,7 +82,6 @@ mixing guest and host types is a compile error) do **not** need Retro68.
   one built is renamed to plain `executor` (on macOS it is named
   `Executor 2000`); the others are `executor-<name>`, e.g. `executor-wayland`.
   `-DFRONT_ENDS=headless` builds only the headless front-end.
-- `-DEXECUTOR_ENABLE_LOGGING=ON` — enable the `--logtraps` runtime option.
 - `-DTWENTYFOUR=YES` — 24-bit addressing (≈4 MB RAM, no PPC support).
 - `-DNO_STATIC_BOOST=ON` — force dynamic Boost linkage.
 
@@ -93,7 +92,7 @@ build/executor path/to/disk-image.dsk
 ```
 
 The application is a **positional argument after the options**; `--help` lists
-them. Useful options: `--logtraps` (requires the logging build), `--debug`,
+them. Useful options: `--logtraps`, `--debug`,
 `--debug-cmd`, `--break`, `--keyboards`, `--headless`.
 
 - The GUI front-ends need a real window server, so a GUI run blocks and cannot

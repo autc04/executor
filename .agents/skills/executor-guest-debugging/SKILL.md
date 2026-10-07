@@ -21,8 +21,8 @@ These tools observe the emulated (guest) side. Build and run basics are in
 
 ## Trap logging
 
-`--logtraps` prints every OS/toolbox call and return. It requires a build with
-`-DEXECUTOR_ENABLE_LOGGING=ON` and is very verbose (tens of thousands of lines);
+`--logtraps` prints every OS/toolbox call and return. It is always available and
+is very verbose (tens of thousands of lines);
 restrict it to matching trap names with
 the comma-separated wildcard filter `--logtraps-filter "PB*,FS*,HOpen*"`
 (`*`/`?` wildcards; matches the trap name, e.g. `PBGetFInfo/PBHGetFInfo`).
