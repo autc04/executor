@@ -37,6 +37,7 @@
 #include <rsys/keyboard.h>
 #include <vdriver/refresh.h>
 #include <vdriver/vdriver.h>
+#include <vdriver/responsiveness.h>
 #include <rsys/aboutbox.h>
 #include <rsys/redrawscreen.h>
 #include <rsys/toolevent.h>
@@ -467,6 +468,10 @@ Boolean Executor::C_WaitNextEvent(INTEGER mask, EventRecord *evp,
     Boolean retval;
     Point p;
     TMTask tm;
+
+    /* Unlike GetNextEvent, WaitNextEvent yields to the Window Manager on a real
+     * Mac, so it counts as proof that the application is alive. */
+    Responsiveness::instance().noteResponse();
 
     if(sleep > 0)
     {

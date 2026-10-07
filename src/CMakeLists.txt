@@ -409,6 +409,8 @@ set(vdriver_sources
         vdriver/autorefresh.h
         vdriver/refresh.h
         vdriver/vdriver.h
+        vdriver/responsiveness.h
+        vdriver/responsiveness.cpp
         vdriver/eventsink.cpp
         vdriver/eventrecorder.h
         vdriver/eventrecorder.cpp

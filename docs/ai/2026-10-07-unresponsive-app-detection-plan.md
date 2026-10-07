@@ -5,7 +5,7 @@
 > finished work.
 
 - **Date:** 2026-10-07
-- **Status:** planned / not implemented
+- **Status:** iteration 1 implemented (2026-10-07); iterations 2–5 planned
 - **Area:** `src/vdriver/`, `src/desk.cpp`, `src/toolevent.cpp`,
   `src/dial/dialHandle.cpp`, `src/config/front-ends/{qt,wayland}/`,
   `src/prefs/`, `src/prefpanel.cpp`, `res/System.ad`
@@ -51,14 +51,18 @@ the mouse for the app.
 
 ### Terminology: what "unresponsive" means in this plan
 
-For the rest of this document, **captured state** means:
+For the rest of this document, **captured state** is a *latched* condition:
 
-> the application has not called `SystemTask` or `WaitNextEvent` within the
-> timeout **and** the mouse button is not currently held.
+> the application has gone quiet (no `SystemTask`/`WaitNextEvent`/`ModalDialog`)
+> for the timeout **and** the mouse button has been up for that whole timeout
+> (measured from the later of the last pump and the last button release).  Once
+> captured, the state survives a click and a tracking loop, and is left only
+> when the application pumps its event loop again (or the feature is disabled).
 
-The mouse-button qualifier is important (see the next section) and is the main
-difference from the earlier draft of this plan. The word "unresponsive" is
-avoided below except in code identifiers, to prevent confusion with "crashed".
+The button qualifier gates *entering* capture only, and a tracking loop's
+duration does not count as quiet time (see the next section); it never forces an
+exit.  The word "unresponsive" is avoided below except in code identifiers, to
+prevent confusion with "crashed".
 
 ## Response semantics
 
@@ -77,31 +81,44 @@ avoided below except in code identifiers, to prevent confusion with "crashed".
 A mouse-down tracking loop (Executor's `WaitMouseUp`, `TrackControl`,
 `DragWindow`, `MenuSelect`, `TrackGoAway`, `GrowWindow`, `TrackBox`, …, or a
 loop an application writes itself around `Button`/`StillDown`/`GetOSEvent`)
-must **not** be treated as captured and must **not** produce visual feedback.
-Two reasons:
+must **not** cause us to *enter* capture mode, and therefore must not produce
+visual feedback while it runs.
 
-- Click-through is irrelevant while the button is held: no new click can be
-  initiated, so there is nothing to capture.
-- The in-progress press/release is kept by the emulator window through the
-  window system's implicit grab, so turning capture off mid-press cannot leak
-  the release.
-
-**Recommended mechanism — a global "button held" rule.** Rather than hooking
-every tracking trap, gate the captured state on the mouse button being up:
+**Recommended mechanism — the held button gates entry and suspends the clock.**
+Rather than hooking every tracking trap, (a) block *entering* capture while the
+button is down, and (b) do not let the button-held time count towards the quiet
+timeout.  The quiet clock starts at the later of the last pump and the last
+button *release*:
 
 ```
-responsive  ==  (SystemTask/WaitNextEvent/ModalDialog within timeout)  OR  (button held)
-captured    ==  !responsive
+enter capture  ==  (button up for a full timeout with no pump)
+               ==  !buttonDown  AND
+                   (now - max(lastPump, lastRelease)) >= timeout
+leave capture  ==  (the app pumps its event loop again)  OR  (feature disabled)
 ```
 
 Because *every* tracking loop (Executor's and application-supplied) runs with
-the button held, this single rule covers them all — including the
-application-supplied loops that we cannot hook. It also automatically suppresses
-feedback during drags, so a long window drag does not strobe the desktop dim.
+the button held, this keeps a drag from ever *starting* the capture state, so a
+long window drag does not strobe the desktop dim.
+
+Point (b) matters and is easy to get wrong.  If the tracking-loop time counted
+as quiet time, then the sequence *pump, mouse-down, 10 s tracking loop,
+mouse-up, pump* would enter capture the instant the button came up, because the
+app would already look as if it had been stuck for the whole loop.  Capture must
+instead begin only if a full timeout separates the release from the next pump:
+a tracking loop must not *cause* capture; only sustained silence after it can.
+
+Therefore the held button is deliberately **not** an exit condition either.
+Dropping capture on mouse-down would be wrong: the visual feedback would flicker
+off on every click the app receives while it is busy, and mouse capture would
+momentarily lapse precisely while the user is interacting.  A click delivered
+*because* we were captured must not undo the capture.  This makes the captured
+state a latch, not a pure function of "is the button down right now" (see the
+tracker API below).
 
 Optional defensive hooks on Executor's own tracking traps (they call
 `noteResponse()` when entered) are harmless but should be largely redundant
-under the global rule; add them only if testing shows a gap.
+under the entry rule; add them only if testing shows a gap.
 
 On the button state: the guest-visible flag is `LM(MBState)` (0 = down, set on
 the emulator thread in `EventSink::mouseButtonEvent`, `eventsink.cpp:24`), which
@@ -119,11 +136,13 @@ sequenceDiagram
     Game->>Trk: (silence) 1 s elapses
     Trk->>FE: captured = true
     FE->>FE: capture clicks + fade desktop to 50% black
-    Game->>Game: user clicks in a hole (captured, button now down)
-    Trk->>FE: button held => not captured
-    FE->>FE: fade dim back out (capture stays safe via implicit grab)
+    Game->>Game: user clicks in a hole (button now down)
+    Note over Trk: still captured -- a press must not drop it
     Game->>Game: button released; still polling GetOSEvent
-    Trk->>FE: captured = true again
+    Note over Trk: still captured; the loop time did not count as quiet time
+    Game->>Game: eventually calls WaitNextEvent
+    Trk->>FE: captured = false
+    FE->>FE: release clicks + fade dim out
 ```
 
 ## Background: the pieces this builds on
@@ -181,7 +200,7 @@ flowchart TD
         TIMER[host periodic timer] --> POLL[VideoDriver::updateResponsivenessFeedback]
         POLL --> ST_[(last response, host ms)]
         POLL --> POLL2
-        POLL2{responsive =<br/>recent pump OR button held?} -->|captured| CAP[setClickCapture true]
+        POLL2{captured?<br/>latched; quiet for timeout<br/>AND button up (clock<br/>starts at release)} -->|captured| CAP[setClickCapture true]
         POLL2 -->|animate| DIM[setDesktopDim alpha]
         CAP --> FE[front-end mask / input region]
         DIM --> FE
@@ -201,36 +220,50 @@ public:
     static Responsiveness& instance();
 
     // Emulator thread: guest just called SystemTask/WaitNextEvent/ModalDialog.
-    void noteResponse();
+    void noteResponse();   void noteResponseAt(unsigned long nowMs);
 
-    // GUI thread: host mouse button press/release (from EventSink).
+    // GUI thread: host mouse button press/release (from EventSink).  A release
+    // restarts the quiet clock.
     void setButtonDown(bool down);
+    void setButtonDownAt(bool down, unsigned long nowMs);
 
-    // GUI thread: is the app in the captured state?
-    //   captured == !(recentlyPumped || buttonDown) && enabled
+    // GUI thread: re-evaluate and latch the captured state.
+    bool poll();                          // uses msecs_elapsed()
+    bool pollAt(unsigned long nowMs);     // test seam
+
+    // The state latched by the last poll(); does not re-evaluate.
     bool isCaptured() const;
 
     int  timeoutTicks() const;   void setTimeoutTicks(int ticks); // default 60
     bool enabled() const;        void setEnabled(bool);          // prefs toggle
+    bool forceCaptured() const;  void setForceCaptured(bool);    // debug
 
-    void reset();                // boot and app launch
-
-    // Test seam: evaluate against explicit host time / button state.
-    bool isCapturedAt(unsigned long nowMs, bool buttonDown) const;
+    void reset();                void resetAt(unsigned long nowMs);
+    unsigned long lastResponseMs() const;
 private:
-    std::atomic<unsigned long> lastResponseMs_{0};
+    std::atomic<unsigned long> lastResponseMs_{0};  // last pump
+    std::atomic<unsigned long> lastReleaseMs_{0};   // last button release
     std::atomic<bool> buttonDown_{false};
     std::atomic<int> timeoutTicks_{60};
     std::atomic<bool> enabled_{true};
+    std::atomic<bool> forceCaptured_{false};
+    std::atomic<bool> captured_{false};      // latched
 };
 }
 ```
 
 - `noteResponse()` stores `msecs_elapsed()`.
-- `isCaptured()` is `enabled_ && !buttonDown_ && msecs_elapsed() - lastResponseMs_
-  >= timeoutTicks_ * 50 / 3`.
-- `reset()` stores `msecs_elapsed()` so a freshly launched app is not instantly
-  flagged before it has had a chance to run.
+- `setButtonDown(false)` records the release time — the quiet clock restarts
+  there, so a tracking loop's duration never counts as quiet time.
+- `pollAt()` latches: it clears `captured_` if the feature is off or the app
+  pumped within `timeoutTicks_ * 50 / 3` ms; it sets `captured_` if the button
+  has been up since `max(lastPump, lastRelease)` for that long; and otherwise it
+  leaves the previous value alone — that last case is the "a held button never
+  leaves capture" rule.
+- `poll()` is `pollAt(msecs_elapsed())`, plus the `forceCaptured` override.
+- `reset()` clears the latch and the button state and restarts the clock, so a
+  freshly launched app is not instantly flagged before it has had a chance to
+  run.
 
 ### 2. Feedback state machine + front-end hooks (in `VideoDriver`)
 
@@ -275,6 +308,18 @@ This keeps polling on the thread that owns the graphics and avoids cross-thread
 
 ## Iteration 1 — Detection
 
+> **Implemented 2026-10-07.** `src/vdriver/responsiveness.{h,cpp}`; hooks in
+> `C_SystemTask`, `C_WaitNextEvent`, both `C_ModalDialog` bodies; host button
+> state fed from `EventSink::mouseButtonEvent`; `reset()` at boot and in
+> `NewLaunch`; `--unresponsive-timeout <ticks>` and `--no-mouse-capture`, plus
+> `EXECUTOR_FORCE_UNRESPONSIVE` to force the captured state for manual testing;
+> `tests/responsiveness.cpp` (13 cases, including the pump / mouse-down / 10 s
+> tracking-loop / mouse-up / pump sequence). The latch lives in `pollAt(nowMs)`,
+> which measures the quiet time from `max(lastPump, lastRelease)`; `poll()` adds
+> the force override and `isCaptured()` reads the latched value. Still open:
+> explicit hooks on Executor's own tracking traps (believed unnecessary under
+> the entry rule until proven otherwise).
+
 **Goal:** a correct, testable answer to "should we capture the mouse right now?",
 usable from the GUI thread and the prefs dialog.
 
@@ -308,22 +353,28 @@ usable from the GUI thread and the prefs dialog.
 ### Tests
 
 - New native CTest source `tests/responsiveness.cpp`, registered in
-  `tests/CMakeLists.txt` (`NATIVE_TEST_SOURCES`), using `isCapturedAt` so no real
-  sleeps are needed. Cover: fresh instance is not captured; `noteResponse()`
-  restarts the window; timeout-in-ticks converts to the right millisecond
-  budget; **`setButtonDown(true)` forces not-captured and `false` re-arms**;
-  `setEnabled(false)` forces not-captured; `reset()` restores not-captured.
+  `tests/CMakeLists.txt` (`NATIVE_TEST_SOURCES`), using the `...At(nowMs)` seams
+  so no real sleeps are needed. Cover: fresh instance is not captured;
+  `noteResponse()` restarts the window; timeout-in-ticks converts to the right
+  millisecond budget; **a held button blocks entering capture, does not leave
+  it, and does not count as quiet time** (the pump / mouse-down / 10 s-loop /
+  mouse-up / pump sequence enters only when >1 s separates the mouse-up from the
+  pump; `TrackingLoopFollowedByARealGapEntersCapture` covers the positive case);
+  pumping leaves capture even while held; `setEnabled(false)` forces
+  not-captured; `reset()` clears the latch; the force override wins.
 - Optional: a `--debug`-style flag or env var (e.g.
   `EXECUTOR_FORCE_UNRESPONSIVE`) to force the captured state so iterations 2–4
-  can be exercised without a game. The forced state should bypass the
-  button-held rule so the visuals can be checked.
+  can be exercised without a game. The forced state bypasses the timeout, the
+  held button and the enabled flag so the visuals can be checked.
 
 ### Acceptance
 
 - A program that polls `GetOSEvent` (never `SystemTask`/`WaitNextEvent`) becomes
   captured after ~1 s; calling `WaitNextEvent` clears it within ~1 s.
-- Holding the mouse button suppresses capture immediately; releasing re-arms the
-  ~1 s timer.
+- A tracking loop (button held) never *enters* capture, does not *leave* capture,
+  and does not count towards the timeout: after a pump / 10 s-loop / mouse-up /
+  pump sequence, capture begins only if the app stays silent for >1 s after the
+  mouse-up.
 - No effect in non-rootless modes.
 
 ---
@@ -353,9 +404,10 @@ app.
 - **How captured clicks are handled:** they enter through the existing
   `IEventListener` path (`EventSink::mouseButtonEvent` / `mouseMoved`,
   `eventsink.cpp:21`), which posts ordinary `mouseDown`/`mouseUp`/mouse-moved
-  events — queued and delivered when the app next services events. The
-  in-progress press/release is kept by the window system's implicit grab, so
-  turning capture off on button-down cannot leak the release.
+  events — queued and delivered when the app next services events. Because a
+  held button never leaves capture, the input region stays full-screen for the
+  whole press, so the press and its release are captured and no implicit grab is
+  relied upon.
 
 > An alternative that avoids touching the click area at all — a real host
 > pointer grab — is evaluated in *Alternative design: real mouse capture* below.
@@ -368,14 +420,6 @@ app.
   holes no longer reach the host window behind, and they reach the guest.
 - Wayland: confirm a full-screen input region does not break menu tracking or
   window drags.
-
-### Open questions
-
-- Unbounded event-queue growth if a captured app never resumes. Consider capping
-  or coalescing queued synthetic clicks.
-- Should capture be latched for an in-progress press even if the button-up rule
-  would turn it off? (The implicit-grab argument says no, but verify on Qt and
-  Wayland.)
 
 ---
 
@@ -412,7 +456,7 @@ in rootless mode, without dimming the emulated windows.
 
 - Manual, on Qt and Wayland, with the forced-capture hook: the desktop visibly
   dims while captured, emulated windows keep their normal appearance, and the
-  dim disappears when capture ends (including when the button goes down).
+  dim disappears when capture ends (i.e. when the app pumps events again).
 - Confirm normal (responsive) rendering is unchanged and that the rootless
   region delta computation is unaffected.
 
@@ -441,10 +485,10 @@ snapping.
 - Fade **out** with the same timing when capture ends.
 - Capture itself toggles at detection time, *not* tied to the fade, so mouse
   capture is protected immediately even while the fade runs.
-- Because the button-held rule suppresses capture during tracking loops, the
-  dim does not strobe during drags. Still consider a small **hysteresis/debounce**
-  so an app that flaps around the timeout does not flicker (e.g. require the
-  captured state to hold for a moment before fading in).
+- Because a held button blocks *entering* capture, a tracking loop does not
+  strobe the dim. Still consider a small **hysteresis/debounce** so an app that
+  flaps around the timeout does not flicker (e.g. require the captured state to
+  hold for a moment before fading in).
 
 ### Tests / validation
 
@@ -527,14 +571,15 @@ There is no single cross-platform mechanism:
 
 ### Mapping onto the state machine
 
-Our captured state is active precisely while the button is **up**, but pointer
-grabs are conventionally armed on button-down (`SetCapture`) or are long-lived
-(`XGrabPointer`). So under this design the state machine would **arm the grab
-when it enters the captured state and release it when the app becomes
-responsive or the button goes down** — the same edges that toggle
-`setClickCapture()` today. Release must additionally be forced on focus loss,
-window close, and quit, or the user can be locked out of their desktop; an
-unconditional escape hatch (hotkey, or auto-release on focus-out) is mandatory.
+Pointer grabs are conventionally armed on button-down (`SetCapture`) or are
+long-lived (`XGrabPointer`). So under this design the state machine would **arm
+the grab when it enters the captured state and release it when the app becomes
+responsive** — the same edges that toggle `setClickCapture()` today. Note the
+grab is not tied to the button, so a press does not release it (consistent with
+capture not being left on mouse-down). Release must additionally be forced on
+focus loss, window close, and quit, or the user can be locked out of their
+desktop; an unconditional escape hatch (hotkey, or auto-release on focus-out) is
+mandatory.
 
 ### Pros
 
@@ -600,7 +645,7 @@ unconditional escape hatch (hotkey, or auto-release on focus-out) is mandatory.
 | enable/disable | prefs dialog (iteration 5) + CLI | enabled |
 | timeout | CLI `--unresponsive-timeout <ticks>` (iteration 1); optional prefs field later | 60 ticks (1 s) |
 | dim target / fade duration | constants (`kCaptureDim`, `kFadeDurationMs`) | 0.5, 300 ms |
-| button-held rule | built in (not configurable) | on |
+| held button | gates *entering* capture (built in, not configurable) | on |
 
 ### Documentation updates
 
@@ -618,18 +663,15 @@ unconditional escape hatch (hotkey, or auto-release on focus-out) is mandatory.
    2–3; approach A (toggle mask ↔ translucent ARGB window) is selected. Verify
    per platform that a maskless, per-pixel-alpha `QWindow` still receives clicks
    (needed for capture), with a documented fallback (approach B) where not.
-2. **Implicit grab.** The button-held rule assumes the window system keeps the
-   in-progress press/release with the emulator window even as capture turns off.
-   Verify on Qt and Wayland.
-3. **Host-side polling** is required because the guest may never yield. Ensure
+2. **Host-side polling** is required because the guest may never yield. Ensure
    the periodic timer lives on the GUI thread and never blocks the guest.
-4. **Button state source.** Use a host-side flag in `EventSink`, not
+3. **Button state source.** Use a host-side flag in `EventSink`, not
    `LM(MBState)` (which is written on the emulator thread and would race).
-5. **Hysteresis.** Decide the debounce for a flapping app before implementing
+4. **Hysteresis.** Decide the debounce for a flapping app before implementing
    the fade, to avoid visible flicker.
-6. **Non-rootless modes** must be unaffected; guard all feedback behind
+5. **Non-rootless modes** must be unaffected; guard all feedback behind
    `vdriver->isRootless()`.
-7. **Real mouse capture** (see the alternatives section) would decouple input
+6. **Real mouse capture** (see the alternatives section) would decouple input
    from paint — the cleanest fix for the Qt mask conflict — but is not portable
    (Wayland has no global grab) and risks locking the user out. Revisit as an
    opt-in relative-mouse mode rather than folding it into the default path.

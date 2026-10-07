@@ -7,6 +7,7 @@
 #include <osevent/osevent.h>
 #include <rsys/keyboard.h>
 #include <time/syncint.h>
+#include "responsiveness.h"
 
 using namespace Executor;
 
@@ -20,6 +21,12 @@ Interrupt eventInterrupt {
 
 void EventSink::mouseButtonEvent(bool down)
 {
+    /* This runs on the GUI thread, before the work item is marshalled to the
+     * emulator thread.  The tracker needs the host button state to tell a
+     * mouse-down tracking loop (button held, so click-through is irrelevant)
+     * apart from an idle application. */
+    Responsiveness::instance().setButtonDown(down);
+
     runOnEmulatorThread([=]() {
         if(down)
             LM(MBState) = 0;

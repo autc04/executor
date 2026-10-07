@@ -36,6 +36,7 @@
 #include <rsys/osutil.h>
 #include <rsys/stdfile.h>
 #include <vdriver/refresh.h>
+#include <vdriver/responsiveness.h>
 
 #include <prefs/options.h>
 #include <quickdraw/cquick.h>
@@ -590,6 +591,9 @@ Executor::NewLaunch(ConstStringPtr fName_arg, INTEGER vRefNum_arg, LaunchParamBl
         hle_reinit();
         AE_reinit();
         print_reinit();
+        /* A freshly launched application has not had a chance to pump events
+         * yet; don't flag it as stuck before it has run. */
+        Responsiveness::instance().reset();
 
         ROMlib_init_stdfile();
 
