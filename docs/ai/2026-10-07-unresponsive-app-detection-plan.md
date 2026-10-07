@@ -381,13 +381,22 @@ usable from the GUI thread and the prefs dialog.
 
 ## Iteration 2 — Capture clicks while captured (rootless only)
 
+> **Wayland part implemented 2026-10-07.** `VideoDriver::updateResponsivenessFeedback()`
+> (base, `vdriver.cpp`) polls the tracker on the GUI thread and calls the new
+> `setClickCapture(bool)` hook; the Wayland event loop wakes every 100 ms to drive
+> it and applies the input region in `frameCallback` (whole surface when captured,
+> the rootless region otherwise), driven by a new `clickCaptureDirty_` flag. Qt is
+> still to do.
+
 **Goal:** while captured, clicks in the rootless "holes" are delivered to
 Executor instead of falling through to the host, so they do not interrupt the
 app.
 
 ### Design
 
-- `VideoDriver::setClickCapture(bool)` (base no-op; front-end hooks below).
+- `VideoDriver::setClickCapture(bool)` (base no-op; front-end hooks below),
+  driven by the base `updateResponsivenessFeedback()` (which also returns true
+  when a repaint is needed).
 - **Qt** (`src/config/front-ends/qt/qt.cpp`): the rootless mask is the
   click-through mechanism, so capture means *widening the effective mask to the
   full screen* while captured, and restoring the rootless mask otherwise. Keep
@@ -400,7 +409,11 @@ app.
 - **Wayland** (`wayland.cpp`): `setClickCapture(true)` sets the input region to
   the full screen; `false` restores the region computed by
   `commitRootlessRegion()`. Wayland keeps paint and input separate, so nothing
-  else changes.
+  else changes. **Implemented:** `setClickCapture` only sets `clickCapture_` /
+  `clickCaptureDirty_`; `frameCallback` applies the region (and
+  `requestFrame()` treats `clickCaptureDirty_` as work to do); `runEventLoop`
+  calls `updateResponsivenessFeedback()` each iteration and caps its `poll()`
+  timeout at 100 ms so capture starts even while the guest never yields.
 - **How captured clicks are handled:** they enter through the existing
   `IEventListener` path (`EventSink::mouseButtonEvent` / `mouseMoved`,
   `eventsink.cpp:21`), which posts ordinary `mouseDown`/`mouseUp`/mouse-moved

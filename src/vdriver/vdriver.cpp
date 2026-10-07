@@ -1,4 +1,5 @@
 #include <vdriver/vdriver.h>
+#include <vdriver/responsiveness.h>
 #include <error/error.h>
 #include <quickdraw/region.h>
 
@@ -176,6 +177,23 @@ void VideoDriver::updateScreen(int top, int left, int bottom, int right)
     std::lock_guard lk(mutex_);
     dirtyRects_.add(top, left, bottom, right);
     requestUpdate();
+}
+
+bool VideoDriver::updateResponsivenessFeedback()
+{
+    /* The feedback is only meaningful in rootless mode, where clicks can fall
+     * through the holes onto the host desktop. */
+    if(!isRootless())
+        return false;
+
+    bool captured = Responsiveness::instance().poll();
+
+    if(captured == clickCapture_)
+        return false;
+
+    clickCapture_ = captured;
+    setClickCapture(captured);
+    return true;
 }
 
 void VideoDriver::commitRootlessRegion()

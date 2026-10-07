@@ -19,6 +19,10 @@ using namespace wayland;
 using namespace Executor;
 using namespace std::chrono_literals;
 
+/* How often the event loop wakes to re-evaluate the guest's captured state, so
+ * that capture starts even while the guest never yields. */
+static constexpr int kResponsivenessPollMs = 100;
+
 template<typename... Args>
 std::shared_ptr<std::tuple<Args...>> argCollector(std::function<void (Args...)>& f)
 {
@@ -208,6 +212,16 @@ void WaylandVideoDriver::runEventLoop()
         bool timedOut = false;
 
         display_.dispatch_pending();
+
+        /* Re-evaluate the captured-mouse state even while the guest is stuck in
+         * a loop that never calls SystemTask/WaitNextEvent. */
+        bool captureChanged = updateResponsivenessFeedback();
+        {
+            std::lock_guard lk(mutex_);
+            if(captureChanged || clickCaptureDirty_)
+                requestUpdate();
+        }
+
         {
             std::lock_guard lk(mutex_);
 
@@ -222,6 +236,11 @@ void WaylandVideoDriver::runEventLoop()
                     timeout = std::chrono::duration_cast<std::chrono::milliseconds>(updateTimeout_ - now).count();
             }
         }
+
+        /* Never block indefinitely: we have to keep polling the captured state. */
+        if(timeout < 0 || timeout > kResponsivenessPollMs)
+            timeout = kResponsivenessPollMs;
+
         if(timedOut)
             noteUpdatesDone();
 
@@ -388,7 +407,8 @@ bool WaylandVideoDriver::updateMode()
 
 bool WaylandVideoDriver::requestFrame()
 {
-    if(dirtyRects_.empty() && allocatedShape_.serial == committedShape_.serial && !rootlessRegionDirty_)
+    if(dirtyRects_.empty() && allocatedShape_.serial == committedShape_.serial
+        && !rootlessRegionDirty_ && !clickCaptureDirty_)
         return false;
 
     if(state_ != State::idle
@@ -441,15 +461,26 @@ void WaylandVideoDriver::frameCallback()
         dirtyRects_.add(0,0,shape.height,shape.width);
     }
 
-    if(rootlessRegionDirty_)
+    if(rootlessRegionDirty_ || clickCaptureDirty_)
     {
         commitRootlessRegion();
 
         region_t waylandRgn = compositor_.create_region();
-        forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
-            waylandRgn.add(l, t, r-l, b-t);
-        });
+        if(clickCapture_)
+        {
+            /* While captured, accept pointer input over the whole surface so
+             * that clicks meant for the (busy) application are not lost to the
+             * host desktop through the rootless holes. */
+            waylandRgn.add(0, 0, shape.width, shape.height);
+        }
+        else
+        {
+            forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
+                waylandRgn.add(l, t, r-l, b-t);
+            });
+        }
         surface_.set_input_region(waylandRgn);
+        clickCaptureDirty_ = false;
     }
 
     auto rects = dirtyRects_.getAndClear();
@@ -479,6 +510,14 @@ void WaylandVideoDriver::frameCallback()
 
     surface_.commit();
     display_.flush();
+}
+
+void WaylandVideoDriver::setClickCapture(bool capture)
+{
+    std::lock_guard lk(mutex_);
+
+    clickCapture_ = capture;
+    clickCaptureDirty_ = true;
 }
 
 void WaylandVideoDriver::setCursor(char *cursor_data, uint16_t cursor_mask[16], int hotspot_x, int hotspot_y)
