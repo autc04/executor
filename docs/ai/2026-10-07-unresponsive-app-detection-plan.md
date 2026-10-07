@@ -441,25 +441,36 @@ app.
 
 ## Iteration 3 — Visual feedback: dim the desktop to 50 % transparent black
 
+> **Implemented 2026-10-07 (no fade yet).** The dim is applied in the shared
+> `VideoDriver::updateBuffer()` (`vdriver.cpp`): the hole spans (outside
+> `rootlessRegion_`) are written as premultiplied black at `desktopDim_` alpha
+> (`a << 24`), or fully transparent when `desktopDim_` is 0.
+> `updateResponsivenessFeedback()` sets `desktopDim_ = captured ? kCaptureDim : 0`
+> and marks the whole screen dirty. No per-front-end hook was needed — both
+> rootless front-ends decode their frames through `updateBuffer` with per-pixel
+> alpha. The fade is iteration 4.
+
 **Goal:** while captured, the desktop area is dimmed to black at 50 % opacity,
 in rootless mode, without dimming the emulated windows.
 
 ### Design
 
-- `VideoDriver::setDesktopDim(float alpha)` (base no-op), target
-  `kCaptureDim = 0.5f`.
-- **Wayland** is straightforward: the surface already carries per-pixel alpha.
-  Paint the desktop pixels (the region *outside* `rootlessRegion_`) as
-  `rgba(0, 0, 0, alpha)`, leaving emulated windows opaque. The input region is
-  independent, so capture (iteration 2) is unaffected.
+- Target `kCaptureDim = 0.5f`.  **Implemented** in the shared
+  `VideoDriver::updateBuffer()` rather than a per-front-end hook: the hole spans
+  (outside `rootlessRegion_`) are written as premultiplied black at the current
+  dim (`a << 24`), or fully transparent when the dim is 0.  Because both rootless
+  front-ends (Wayland and Qt) already decode their frames through `updateBuffer`
+  with per-pixel alpha, the dim needs no further front-end code.
+- **Wayland**: the surface already carries per-pixel alpha, so the holes dim
+  directly; the input region is independent, so capture (iteration 2) is
+  unaffected.
 - **Qt — approach A (selected; the rendering basis landed with iteration 2).**
   The rootless window already renders with per-pixel alpha
   (`QImage::Format_ARGB32_Premultiplied` plus an alpha surface format), so the
-  desktop pixels are transparent and the host shows through; `updateBuffer()`
-  already writes `0` for the holes.  The window mask is kept for **input**
-  shaping and is set to the whole window while captured.  The dim is therefore
-  just painting those desktop pixels as `rgba(0, 0, 0, alpha)` instead of
-  transparent — no mask changes or per-platform hit-testing work needed.
+  desktop pixels are transparent and the host shows through.  The dim is
+  therefore just painting those desktop pixels as `rgba(0, 0, 0, alpha)` instead
+  of transparent — the same `updateBuffer` path — with no mask changes or
+  per-platform hit-testing work needed.
   - **Known Qt/Wayland issue (observed):** Qt's Wayland backend does not clip the
     window mask, so the holes used to render as **black** (in an opaque image
     format) while click-through still worked; X11 and macOS clip correctly, and

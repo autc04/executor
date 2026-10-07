@@ -160,6 +160,7 @@ protected:
     std::vector<int16_t> pendingRootlessRegion_;
     bool rootlessRegionDirty_ = false;
     bool clickCapture_ = false;
+    float desktopDim_ = 0.0f;
 
     Executor::DirtyRects dirtyRects_;
 

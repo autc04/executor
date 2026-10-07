@@ -101,7 +101,8 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
   (`src/vdriver/vdriver.cpp`) polls `Responsiveness`
   (`src/vdriver/responsiveness.{h,cpp}`) and, while the guest is captured, uses
   the virtual `setClickCapture(true)` hook so clicks in the rootless holes keep
-  going to the emulated app instead of the host desktop. Wayland drives it from
+  going to the emulated app instead of the host desktop, and dims the desktop
+  holes to 50% black via `updateBuffer()` (`desktopDim_`). Wayland drives it from
   its event loop (input region set to the whole surface) and Qt from a 100 ms
   `QTimer` (window mask set to the whole window); the Qt rootless window renders
   with per-pixel alpha. Other front-ends no-op. See

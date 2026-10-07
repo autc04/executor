@@ -10,6 +10,9 @@ using namespace Executor;
 
 std::unique_ptr<VideoDriver> Executor::vdriver;
 
+/* How opaque the desktop dim becomes while the guest is captured. */
+static constexpr float kCaptureDim = 0.5f;
+
 Framebuffer::Framebuffer(int w, int h, int d)
     : width(w), height(h), bpp(d)
 {
@@ -192,6 +195,15 @@ bool VideoDriver::updateResponsivenessFeedback()
         return false;
 
     clickCapture_ = captured;
+    desktopDim_ = captured ? kCaptureDim : 0.0f;
+
+    {
+        std::lock_guard lk(mutex_);
+        /* The dim paints the whole desktop, so the holes have to be redrawn
+         * even where nothing else changed. */
+        dirtyRects_.add(0, 0, height(), width());
+    }
+
     setClickCapture(captured);
     return true;
 }
@@ -297,6 +309,19 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
     int width = std::min(fb.width, bufferWidth);
     int height = std::min(fb.height, bufferHeight);
 
+    /* Pixels outside the rootless region are the desktop, which shows through
+     * the window as transparent (dimPixel == 0) or, while the guest is
+     * captured, as 50% black.  The buffer is premultiplied ARGB, so black at
+     * alpha a is just a << 24. */
+    uint32_t dimPixel = 0;
+    if(desktopDim_ > 0.0f)
+    {
+        unsigned a = (unsigned)(desktopDim_ * 255.0f + 0.5f);
+        if(a > 255)
+            a = 255;
+        dimPixel = a << 24;
+    }
+
     if(!rootlessRegion_.size())
         rootlessRegion_.insert(rootlessRegion_.end(),
             { 0, 0, (int16_t)width, RGN_STOP,
@@ -336,7 +361,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 while(y >= rgnP.bottom())
                     rgnP.advance();
 
-                auto blitLine = [this, &rgnP, buffer, bufferWidth, bufferHeight, y, &r](auto getPixel) {
+                auto blitLine = [this, &rgnP, buffer, bufferWidth, bufferHeight, y, &r, dimPixel](auto getPixel) {
                     auto rowIt = rgnP.row.begin();
                     int x = r.left;
 
@@ -344,10 +369,13 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                     {
                         int nextX = std::min(r.right, (int)*rowIt++);
 
+                        /* Outside the rootless region: the desktop.  Never show
+                         * the framebuffer here -- it is transparent, or dimmed
+                         * while the guest is captured. */
                         for(; x < nextX; x++)
                         {
-                            uint32_t pixel = getPixel();
-                            buffer[y * bufferWidth + x] = pixel == 0xFFFFFFFF ? 0 : pixel;
+                            getPixel(); /* keep the source cursor in step */
+                            buffer[y * bufferWidth + x] = dimPixel;
                         }
                         
                         if(x >= r.right)
