@@ -220,7 +220,7 @@ OSErr Executor::C_SameProcess(ProcessSerialNumber *serial_number0,
     return noErr;
 }
 
-OSErr Executor::C_GetFrontProcess(ProcessSerialNumber *serial_number)
+OSErr Executor::C_GetFrontProcess(ProcessSerialNumber *serial_number, int32_t dummy)
 {
     *serial_number = current_process_info->serial_number;
     return noErr;
