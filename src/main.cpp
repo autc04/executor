@@ -39,6 +39,7 @@
 #include <print/print.h>
 #include <mman/memsize.h>
 #include <vdriver/autorefresh.h>
+#include <vdriver/responsiveness.h>
 #include <sound/sounddriver.h>
 #include <error/system_error.h>
 #include <base/emustubs.h>
@@ -79,6 +80,7 @@
 
 #include <vector>
 #include <thread>
+#include <cstdlib>
 
 #include <iostream>
 
@@ -93,6 +95,8 @@ static bool use_native_code_p = true;
 static bool breakOnProcessStart = false;
 static bool logtraps = false;
 static std::string logTrapFilter;
+static int unresponsive_timeout_ticks = 60;
+static bool mouse_capture_enabled = true;
 static std::vector<std::string> debugCommands;
 static std::string keyboard;
 static bool list_keyboards_p = false;
@@ -329,6 +333,12 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
 #endif
         ("nobrowser", po::bool_switch(&ROMlib_nobrowser), "don't run Browser")
         ("sticky", po::bool_switch(&ROMlib_sticky_menus_p), "sticky menus")
+        ("unresponsive-timeout", po::value<int>(&unresponsive_timeout_ticks)->default_value(60),
+            "number of 60ths of a second the application may go without calling "
+            "SystemTask or WaitNextEvent before the emulator captures the mouse "
+            "(classic-Mac implicit mouse capture; 60 ticks == 1 second)")
+        ("no-mouse-capture", pox::inverted_bool_switch(&mouse_capture_enabled),
+            "do not capture the mouse when the application stops pumping events")
         ;
     desc.add(misc);
 
@@ -425,6 +435,11 @@ int main(int argc, char **argv)
 #endif
 
     remainingArgs = std::vector<std::string>(argv + 1, argv + argc);
+
+    Responsiveness::instance().setTimeoutTicks(unresponsive_timeout_ticks);
+    Responsiveness::instance().setEnabled(mouse_capture_enabled);
+    if(std::getenv("EXECUTOR_FORCE_UNRESPONSIVE"))
+        Responsiveness::instance().setForceCaptured(true);
     
     checkBadArgs(remainingArgs);
     argsHack = remainingArgs;
@@ -459,6 +474,8 @@ int main(int argc, char **argv)
             
             ROMlib_eventinit();
             hle_init();
+
+            Responsiveness::instance().reset();
 
             ROMlib_fileinit();
 

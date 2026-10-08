@@ -24,10 +24,14 @@ dialog box = WDEF 16, etc.) is implemented by a C++ function called via
 `WINDCALL(w, message, param)` → `ROMlib_windcall`. `C_wdef0` and `C_wdef16` implement
 the two standard WDEFs.
 
-**Rootless mode**: when `Framebuffer::rootless` is true, windows are not drawn onto the
-emulator framebuffer. Instead, `windRootless.cpp` delegates the actual window rectangle
-to the host compositor. `ROMlib_rootless_update`, `ROMlib_rootless_openmenu`, and
-`ROMlib_rootless_closemenu` manage compositing state.
+**Rootless mode**: when `Framebuffer::rootless` is true, emulated windows are composited
+by the host rather than drawn into the emulator framebuffer. `ROMlib_rootless_update`
+builds the region the host should show (menu bar ∪ visible windows ∪ open menus ∪ any
+`extra`) and hands it to `VideoDriver::setRootlessRegion`; the open/close-menu helpers
+add and remove menu rectangles (`windRootless.cpp`). That region doubles as the **input
+shape**: outside it are "holes" through which the host desktop shows and clicks pass to
+the host. Front-ends apply it differently — Qt uses `setMask`, Wayland uses
+`set_input_region` — and both make the holes transparent with per-pixel alpha.
 
 **Update region**: `LM(VisRgn)` and per-window update regions control which portions of
 a window need repainting after being obscured or revealed.
@@ -114,3 +118,13 @@ returning the selected `(menuID, itemIndex)` packed into a `LONGINT`.
   to find the topmost visible window; used internally by `SelectWindow`.
 - Menu color tables (`menuColor.cpp`) are only populated for Color QuickDraw
   environments. In monochrome mode they are ignored.
+- **Rootless mouse capture / desktop dim**: `ROMlib_rootless_drawdesk` erases the
+  desktop (`GrayRgn`) to white in rootless mode, and `updateBuffer` maps that white
+  backdrop to transparent pixels so the host desktop shows through. When the running
+  application stops pumping its event loop,
+  `VideoDriver::updateResponsivenessFeedback()` calls `setClickCapture(true)` (the
+  front-end widens the mask/input shape to the whole window, so clicks are not lost to
+  the host) and dims the backdrop to 50 % black with a fade. Non-white pixels in a hole
+  span are **kept**, so feedback an application draws over the desktop without going
+  through a window (e.g. `GrowWindow`) stays visible. See
+  `docs/ai/2026-10-07-unresponsive-app-detection-plan.md`.

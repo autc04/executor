@@ -24,6 +24,7 @@
 #include <rsys/prefpanel.h>
 #include <base/cpu.h>
 #include <util/macstrings.h>
+#include <vdriver/responsiveness.h>
 
 #include <algorithm>
 
@@ -160,6 +161,10 @@ void Executor::C_SystemTask()
 {
     DCtlHandle dctlh;
     INTEGER i;
+
+    /* The application pumped its event loop, so it is not stuck; this is the
+     * classic-Mac "I'm alive" call. */
+    Responsiveness::instance().noteResponse();
 
     for(i = 0; i < LM(UnitNtryCnt); ++i)
     {

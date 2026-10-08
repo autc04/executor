@@ -83,6 +83,8 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
 | `EventSink::pumpEvents()` | Drain the pending-event queue on the emulator thread |
 | `set_refresh_rate(hz)` | Change the screen refresh frequency |
 | `QtVideoDriver::setMode()` | Resize the Qt window and reallocate the framebuffer |
+| `updateResponsivenessFeedback()` | Poll the guest's captured state and apply the rootless feedback; returns true if a repaint is needed |
+| `setClickCapture(bool)` | Front-end hook: capture/release clicks that would fall through the rootless holes |
 
 ## Design Notes / Gotchas
 
@@ -95,5 +97,15 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
 - **`EventRecorder`**: records/replays raw input events for regression testing. When
   active it wraps `EventSink` and forwards events to the recorder before passing them
   on.
+- **Captured mouse (rootless)**: `VideoDriver::updateResponsivenessFeedback()`
+  (`src/vdriver/vdriver.cpp`) polls `Responsiveness`
+  (`src/vdriver/responsiveness.{h,cpp}`) and, while the guest is captured, uses
+  the virtual `setClickCapture(true)` hook so clicks in the rootless holes keep
+  going to the emulated app instead of the host desktop, and dims the desktop
+  holes to 50% black via `updateBuffer()` (`desktopDim_`). Wayland drives it from
+  its event loop (input region set to the whole surface) and Qt from a 100 ms
+  `QTimer` (window mask set to the whole window); the Qt rootless window renders
+  with per-pixel alpha. Other front-ends no-op. See
+  `docs/ai/2026-10-07-unresponsive-app-detection-plan.md`.
 - Adding a new front-end requires: subclassing `VideoDriver`, implementing all pure
   virtual methods, and adding a CMake option in `src/config/front-ends/`.

@@ -7,6 +7,7 @@ class QGuiApplication;
 class QImage;
 class QBackingStore;
 class QRegion;
+class QTimer;
 
 class QtVideoDriver : public Executor::VideoDriver
 {
@@ -15,9 +16,13 @@ class QtVideoDriver : public Executor::VideoDriver
     QGuiApplication *qapp;
     QImage *qimage;
     ExecutorWindow *window = nullptr;
+    QTimer *responsivenessTimer_ = nullptr;
+
+    bool clickCaptureDirty_ = false;
 
     void render(QBackingStore *bs, QRegion rgn);
     void requestUpdate() override;
+    void setClickCapture(bool capture) override;
 public:
     QtVideoDriver(Executor::IEventListener *eventListener, int& argc, char* argv[]);
     ~QtVideoDriver();

@@ -83,6 +83,8 @@ class WaylandVideoDriver : public Executor::VideoDriver
     bool frameRequested_ = false;
     wayland::callback_t frameCallback_;
 
+    bool clickCaptureDirty_ = false;
+
     Buffer buffer_;
 
 
@@ -155,6 +157,8 @@ class WaylandVideoDriver : public Executor::VideoDriver
     void wakeEventLoop();
 
     void requestUpdate() override;
+
+    void setClickCapture(bool capture) override;
 
 public:
     WaylandVideoDriver(Executor::IEventListener *eventListener, int& argc, char* argv[]);

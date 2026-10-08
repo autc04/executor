@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <chrono>
 #include <unordered_map>
 #include <string>
 #include <array>
@@ -159,6 +160,12 @@ protected:
     std::vector<int16_t> rootlessRegion_;
     std::vector<int16_t> pendingRootlessRegion_;
     bool rootlessRegionDirty_ = false;
+    bool clickCapture_ = false;
+    float desktopDim_ = 0.0f;
+    float dimTarget_ = 0.0f;
+    float dimStart_ = 0.0f;
+    std::chrono::steady_clock::time_point fadeStart_;
+    bool fading_ = false;
 
     Executor::DirtyRects dirtyRects_;
 
@@ -166,6 +173,16 @@ protected:
                     const Executor::DirtyRects::Rects& rects);
 
     virtual void requestUpdate() = 0;
+
+    // Re-evaluate whether the guest should have the mouse captured and apply
+    // the (rootless) feedback.  Front-ends call this periodically from their
+    // frame/timer, on the GUI thread; it returns true if a repaint is needed.
+    // See docs/ai/2026-10-07-unresponsive-app-detection-plan.md.
+    bool updateResponsivenessFeedback();
+
+    // Front-end hook: capture (true) or release (false) clicks that would
+    // otherwise fall through the rootless holes onto the host.  Default no-op.
+    virtual void setClickCapture(bool capture) {}
 
     void commitRootlessRegion();
 

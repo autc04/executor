@@ -27,6 +27,7 @@
 #include <osevent/osevent.h>
 #include <base/functions.impl.h>
 #include <base/traps.impl.h>
+#include <vdriver/responsiveness.h>
 
 using namespace Executor;
 
@@ -122,6 +123,11 @@ void Executor::C_ModalDialog(ModalFilterUPP fp, GUEST<INTEGER> *item) /* IMI-415
    */
     TheGDeviceGuard guard(LM(MainDevice));
 
+    /* ModalDialog runs its own event loop and, on a real Mac, pumps SystemTask
+     * internally, so the whole (potentially long) time spent in it counts as the
+     * application being alive. */
+    Responsiveness::ActiveScope active;
+
     EventRecord evt;
     DialogPeek dp;
     GUEST<DialogPtr> ndp;
@@ -195,6 +201,11 @@ void Executor::C_ModalDialog(ModalFilterUPP fp, GUEST<INTEGER> *item) /* IMI-415
    */
 
     TheGDeviceGuard guard(LM(MainDevice));
+
+    /* ModalDialog runs its own event loop and, on a real Mac, pumps SystemTask
+     * internally, so the whole (potentially long) time spent in it counts as the
+     * application being alive. */
+    Responsiveness::ActiveScope active;
 
     EventRecord evt;
     DialogPeek dp;

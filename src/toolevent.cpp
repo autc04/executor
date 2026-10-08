@@ -37,6 +37,7 @@
 #include <rsys/keyboard.h>
 #include <vdriver/refresh.h>
 #include <vdriver/vdriver.h>
+#include <vdriver/responsiveness.h>
 #include <rsys/aboutbox.h>
 #include <rsys/redrawscreen.h>
 #include <rsys/toolevent.h>
@@ -467,6 +468,11 @@ Boolean Executor::C_WaitNextEvent(INTEGER mask, EventRecord *evp,
     Boolean retval;
     Point p;
     TMTask tm;
+
+    /* WaitNextEvent yields to the Window Manager on a real Mac -- and here it
+     * may block until the next event (e.g. a click).  The whole time spent
+     * inside it counts as the application being alive, not just its entry. */
+    Responsiveness::ActiveScope active;
 
     if(sleep > 0)
     {
