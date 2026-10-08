@@ -1,5 +1,3 @@
-#define INSTANTIATE_TRAPS_mpw
-
 #include <mpw/mpw.h>
 #include <ExMacTypes.h>
 #include <MPW.h>
@@ -15,6 +13,8 @@
 #include <MemoryMgr.h>
 
 #include <memory>
+
+#include <base/traps.impl.h>
 
 using namespace Executor;
 using namespace Executor::mpw;

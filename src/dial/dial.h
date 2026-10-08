@@ -2,9 +2,8 @@
 #define __rsys_dial_h__
 
 #include <DialogMgr.h>
+#include <base/traps.h>
 
-#define MODULE_NAME dial_dial
-#include <base/api-module.h>
 
 namespace Executor
 {

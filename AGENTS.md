@@ -140,19 +140,18 @@ usually little-endian.
 Guest code calls Mac APIs through 68K A-line traps. `alinehandler`
 (`src/base/dispatcher.cpp`) decodes the trap number and dispatches through
 `tooltraptable`/`ostraptable`, which `traps::init()` fills at startup by calling
-`DeferredInit::initAll()` so that every `TrapFunction<>` registers itself. Do not
+`DeferredInit::initAll()` so that every `GeneratedEntrypoint` registers itself. Do not
 manipulate the trap tables at runtime.
 
 Trap declarations are **generated**, not hand-written. `multiversal/defs/*.yaml`
 is turned by `multiversal/make-multiverse.rb` into the headers under
-`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), which use the macros in
-`src/base/traps.h` (`REGISTER_TRAP2`, `PASCAL_TRAP`, `PASCAL_SUBTRAP`, …). Do not
-hand-edit generated headers — edit the YAML definitions instead. A module header
-defines `MODULE_NAME <name>` and includes `<base/api-module.h>`; the matching
-translation unit defines `INSTANTIATE_TRAPS_<name> 1` before including the
-header, which turns the `extern` trap declarations into definitions. Do not break
-this pattern. Implementation functions are named `C_TrapName`; raw 68K handlers
-are `RAW_TrapName` with `RAW_68K_IMPLEMENTATION(Name)`.
+`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …) and the straight-line entrypoints
+under `build/src/trap_entries/`. Do not hand-edit generated headers — edit the YAML
+definitions instead. Every trap is a generated `GeneratedEntrypoint`; there is no module
+instanciation macro (the old `MODULE_NAME` / `api-module.h` / `INSTANTIATE_TRAPS_<name>`
+mechanism is gone). Implementation functions are named `C_TrapName`; raw 68K handlers
+are `RAW_TrapName` with `RAW_68K_IMPLEMENTATION(Name)`, declared in the YAML with
+`executor_raw: true`.
 
 Calling conventions (`callconv`, `src/base/functions.h`): `Pascal` (most Toolbox
 traps), `Register<...>` (most OS traps), `CCall`, and `Raw` (direct CPU state —

@@ -56,8 +56,8 @@ manipulate this list after startup.
 
 **`trapentries::ReferenceAllEntries()`**: `traps::init()` calls this before
 `DeferredInit::initAll()` so that the linker keeps the generated per-trap objects (the
-`trap_entries/*.cpp` translation units reference nothing else). The same trick keeps the
-`trap_instances/*.cpp` objects (`ReferenceAllTraps`).
+`trap_entries/*.cpp` translation units reference nothing else, and a static library would
+otherwise drop them).
 
 **Calling conventions** (`namespace callconv` in `src/base/functions.h`):
 
@@ -66,14 +66,7 @@ manipulate this list after startup.
 | `callconv::Pascal` | Parameters right-to-left on the 68K stack; return value on stack (most Toolbox traps) |
 | `callconv::Register<Ret(Args...), locs...>` | Each argument/return mapped to a specific register (most OS traps) |
 | `callconv::CCall` | Standard C calling convention; used for internal stubs |
-| `callconv::Raw` | Direct syn68k handler; used only when the implementation needs raw CPU state access |
-
-**Module registration pattern** (`src/base/api-module.h`): Each `.cpp` file that still
-needs macro-based trap definitions sets `#define INSTANTIATE_TRAPS_<MODULE_NAME> 1`
-before including its header. `api-module.h` uses this to switch between `extern`
-declarations (header-only inclusion) and full definitions plus template instantiations.
-The generated `trap_instances/<Module>.cpp` still does this for the handful of traps the
-generator does not convert itself (see below).
+| `callconv::Raw` | Legacy direct-syn68k handler; raw traps are now plain `Entry68KFn`s (see below) |
 
 ## Generated vs. hand-written
 
@@ -85,16 +78,20 @@ generator does not convert itself (see below).
 | `api/<Module>.h` | Types, `C_<Trap>` declarations, and the `Wrapper_<Trap>` class + `extern` object per trap |
 | `trap_entries/<Module>.cpp` | Straight-line 68K and PowerPC entrypoints, wrapper methods, per-type logging printers, and the objects |
 | `structdump/<Module>.cpp` | `describeStruct()` per type (used by `--logtraps` and the debugger) plus the type registry |
-| `trap_instances/<Module>.cpp` | `#define INSTANTIATE_TRAPS_<Module>` for the remaining macro-defined traps |
 
-Hand-written `src/` code still uses the macro surface in `src/base/traps.h` for traps it
-publishes itself: `PASCAL_FUNCTION_PTR` / `REGISTER_FUNCTION_PTR` / `CCALL_FUNCTION_PTR`
-(device-manager and driver callbacks that take `UPP`s), `RAW_68K_FUNCTION` /
-`RAW_68K_TRAP` (raw-CPU-state handlers), and the verbatim YAML blocks that spell out
-`NOTRAP_FUNCTION2` (`GetGrayRgn`) or `PASCAL_SUBTRAP` (`GetFrontProcess`). Those are the
-only users of `WrappedFunction`, `TrapFunction` and `SubTrapFunction`. Everything else
-in the trap headers is generated; the generator `raise`s if it meets a trap shape it
-cannot convert, rather than silently falling back to a macro.
+There is no per-module trap-instantiation translation unit any more: every trap,
+including the raw 68K ones (`executor_raw: true` in the YAML), is a generated
+straight-line entrypoint. A raw trap's body is still hand-written as
+`syn68k_addr_t RAW_<Trap>(syn68k_addr_t)` (declared in the generated header, defined in
+`emustubs.cpp`/`pack.cpp`/`patches.cpp` via `RAW_68K_IMPLEMENTATION`) and the generated
+entry just forwards to it with the untyped logging.
+
+Hand-written `src/` code only uses the `*_FUNCTION_PTR` macros in `src/base/traps.h` for
+functions it publishes itself: `PASCAL_FUNCTION_PTR` / `REGISTER_FUNCTION_PTR` /
+`CCALL_FUNCTION_PTR` (and their `EXTERN_` forms) publish device-manager and driver
+callbacks that take `UPP`s. They are the only remaining users of `WrappedFunction`.
+Everything else in the trap headers is generated; the generator `raise`s if it meets a
+trap shape it cannot convert, rather than silently falling back to a macro.
 
 ## Source Files
 
@@ -104,11 +101,10 @@ cannot convert, rather than silently falling back to a macro.
 | `src/base/dispatcher.h` | Declaration of `alinehandler` |
 | `src/base/trap-entry.h` | `GeneratedEntrypoint`, `Entry68KFn`/`EntryPPCFn` |
 | `src/base/trap-entry.cpp` | `GeneratedEntrypoint::init()`, `GeneratedDispatcherTrap` |
-| `src/base/traps.h` | `Entrypoint`, `GenericDispatcherTrap`, `GeneratedDispatcherTrap`, `WrappedFunction`/`TrapFunction`/`SubTrapFunction`, `SelectorKind` |
+| `src/base/traps.h` | `Entrypoint`, `GenericDispatcherTrap`, `GeneratedDispatcherTrap`, `WrappedFunction`, `SelectorKind`, the `*_FUNCTION_PTR` and `RAW_68K_IMPLEMENTATION` macros |
 | `src/base/traps.impl.h` | Template implementations (included by translation units) |
 | `src/base/functions.h` | `callconv` namespace, descriptor types (`Out`, `TrapBit`, …), `UPP<>`, `ProcPtr` |
-| `src/base/functions.impl.h` | `callfrom68K`/`callfromPPC`/`callto68K` invokers (still used by `*_FUNCTION_PTR`) |
-| `src/base/api-module.h` | Per-module trap declaration/definition switching |
+| `src/base/functions.impl.h` | `callfrom68K`/`callfromPPC`/`callto68K` invokers (used by `*_FUNCTION_PTR`) |
 | `src/base/logging.{h,cpp}` | `--logtraps`: runtime gate, filter, value formatting, data-driven trap call/return |
 | `src/base/structdump.h` | `TypeDesc` + type registry used by `describeStruct` |
 | `src/base/emustubs.cpp` | Low-level 68K stubs and glue |
@@ -160,8 +156,8 @@ values, and `--logtraps-filter` still applies.
   patch is honoured. `isPatched()` is always false for a trap number of 0 (i.e.
   `NOTRAP_FUNCTION`s).
 - **Naming convention**: the C++ implementation of a trap named `Foo` is `C_Foo`; the
-  entry object itself is `Foo` (or `stub_Foo` when it wraps another public function, as
-  `REGISTER_TRAP2` and `NOTRAP_FUNCTION2` do). Raw 68K handler variants are `RAW_Foo`.
+  entry object itself is `Foo` (or `stub_Foo` when it wraps another public function). Raw
+  68K handler variants are `RAW_Foo`.
 - **Breakpoints**: setting `Entrypoint::breakpoint = true` causes every invocation to
   call into the debugger before dispatching, without any extra overhead in the hot path.
 - **Adding an API**: add it to the YAML, not to the headers; see `AGENTS.md`.

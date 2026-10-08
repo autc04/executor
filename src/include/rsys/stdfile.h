@@ -7,8 +7,6 @@
 #include <DialogMgr.h>
 #include <file/file.h>
 
-#define MODULE_NAME rsys_stdfile
-#include <base/api-module.h>
 
 namespace Executor
 {

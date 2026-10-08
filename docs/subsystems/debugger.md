@@ -100,8 +100,8 @@ selector-dispatched traps. The selectors (defined in `mpw.h`) include:
 that are distinct from the host system errno values. MPW trap implementations map Mac
 OS errors to `mpw_errno` codes.
 
-**Module name**: `#define MODULE_NAME mpw` — MPW trap objects are registered through
-the standard `api-module.h` mechanism.
+**Registration**: the MPW stubs are published with `CCALL_FUNCTION_PTR(...)` in
+`src/mpw/mpw.cpp` (guests reach them through `UPP`s, not through the trap table).
 
 ### Source Files
 

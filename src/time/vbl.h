@@ -4,8 +4,6 @@
 #include <base/traps.h>
 #include <ExMacTypes.h>
 
-#define MODULE_NAME time_vbl
-#include <base/api-module.h>
 
 namespace Executor
 {

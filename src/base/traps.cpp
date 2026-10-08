@@ -18,7 +18,6 @@ syn68k_addr_t Executor::ostraptable[NOSENTRIES]; /* Gets filled in at run time *
 
 namespace Executor
 {
-void ReferenceAllTraps();
 namespace trapentries { void ReferenceAllEntries(); }
 }
 
@@ -71,7 +70,6 @@ void traps::init(bool log, const std::string& trapFilter)
 {
     logging::setEnabled(log);
     logging::setTrapFilter(trapFilter);
-    ReferenceAllTraps();
     trapentries::ReferenceAllEntries();
     internal::DeferredInit::initAll();
     for(int i = 0; i < NTOOLENTRIES; i++)

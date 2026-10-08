@@ -65,42 +65,6 @@ void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
     }
 }
 
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, typename CallConv>
-Ret TrapFunction<Ret (Args...), fptr, trapno, CallConv>::invokeViaTrapTable(Args... args) const
-{
-    return (UPP<Ret (Args...),CallConv>(SYN68K_TO_US(tableEntry())))(args...);
-}
-
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, typename CallConv>
-void TrapFunction<Ret (Args...), fptr, trapno, CallConv>::init()
-{
-    WrappedFunction<Ret (Args...), fptr, CallConv>::init();
-    originalFunction = US_TO_SYN68K(((void*)this->guestFP));
-    assert(trapno);
-    assert(!tableEntry());
-    tableEntry() = originalFunction;
-}
-
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, uint32_t selector, typename CallConv>
-SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv>::SubTrapFunction(
-    const char* name, GenericDispatcherTrap& dispatcher, const char *exportToLib)
-    : WrappedFunction<Ret(Args...),fptr,CallConv>(name, exportToLib), dispatcher(dispatcher)
-{
-}
-
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, uint32_t selector, typename CallConv>
-void SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv>::init()
-{
-    WrappedFunction<Ret(Args...),fptr,CallConv>::init();
-    dispatcher.addSelector(selector, this,
-        [this](syn68k_addr_t addr)
-        {
-            return callfrom68K::Invoker<Ret (Args...), CallConv>
-                ::invokeFrom68K(addr, logging::makeLoggedFunction<CallConv>(this->name, fptr));
-        }
-    );
-}
-
 
 }
 }

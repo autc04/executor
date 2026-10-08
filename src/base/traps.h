@@ -136,90 +136,18 @@ protected:
     UPPType guestFP;
 };
 
-template<typename F, F* fptr, int trapno, typename CallConv = callconv::Pascal>
-class TrapFunction {};
-
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, typename CallConv>
-class TrapFunction<Ret (Args...), fptr, trapno, CallConv> : public WrappedFunction<Ret (Args...), fptr, CallConv>
-{
-public:
-    using UPPType = typename WrappedFunction<Ret (Args...), fptr, CallConv>::UPPType;
-
-    Ret operator()(Args... args) const
-    {
-        if(isPatched())
-            return invokeViaTrapTable(args...);
-        else
-            return fptr(args...);
-    }
-    
-    virtual void init() override;
-
-    TrapFunction(const char* name, const char* exportToLib = nullptr) : WrappedFunction<Ret(Args...),fptr,CallConv>(name, exportToLib) {}
-
-    bool isPatched() const { return tableEntry() != originalFunction; }
-    Ret invokeViaTrapTable(Args...) const;
-private:
-    syn68k_addr_t originalFunction;
-
-    syn68k_addr_t& tableEntry() const
-    {
-        if(trapno & TOOLBIT)
-            return tooltraptable[trapno & 0x3FF];
-        else
-            return ostraptable[trapno & 0xFF];
-    }
-};
-
-template<typename F, F* fptr, int trapno, uint32_t selector, typename CallConv = callconv::Pascal>
-class SubTrapFunction {};
-
-template<typename Ret, typename... Args, Ret (*fptr)(Args...), int trapno, uint32_t selector, typename CallConv>
-class SubTrapFunction<Ret (Args...), fptr, trapno, selector, CallConv> : public WrappedFunction<Ret (Args...), fptr, CallConv>
-{
-public:
-    Ret operator()(Args... args) const { return fptr(args...); }
-    SubTrapFunction(const char* name, GenericDispatcherTrap& dispatcher, const char* exportToLib = nullptr);
-    virtual void init() override;
-private:
-    GenericDispatcherTrap& dispatcher;
-};
-
 #define EXTERN_FUNCTION_WRAPPER(NAME, FPTR, INIT, ...) \
     extern Executor::traps::__VA_ARGS__ NAME
 #define DEFINE_FUNCTION_WRAPPER(NAME, FPTR, INIT, ...) \
     Executor::traps::__VA_ARGS__ NAME INIT;   \
     template class Executor::traps::__VA_ARGS__;
 
-#ifndef TRAP_INSTANTIATION
-#define TRAP_INSTANTIATION EXTERN
-#endif
-
-#define PREPROCESSOR_CONCAT1(A,B) A##B
-#define PREPROCESSOR_CONCAT(A,B) PREPROCESSOR_CONCAT1(A,B)
-#define CREATE_FUNCTION_WRAPPER PREPROCESSOR_CONCAT(TRAP_INSTANTIATION, _FUNCTION_WRAPPER)
-
 #define COMMA ,
 
-// The hand-written macro surface.  Since the generator converts every trap in
-// defs/*.yaml itself, these are only the fallbacks it uses for anything it has
-// not (yet) converted, plus the hand-written uses in emustubs.h and the
-// verbatim blocks in the YAML (NOTRAP_FUNCTION2, PASCAL_SUBTRAP, RAW_68K_*).
-#define PASCAL_TRAP(NAME, TRAP) \
-    CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, "InterfaceLib"), TrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP>)
-#define REGISTER_TRAP(NAME, TRAP, ...) \
-    CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, "InterfaceLib"), TrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP COMMA callconv::Register<__VA_ARGS__>>)
-#define REGISTER_TRAP2(NAME, TRAP, ...) \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &NAME, (#NAME, "InterfaceLib"), TrapFunction<decltype(NAME) COMMA &NAME COMMA TRAP COMMA callconv::Register<__VA_ARGS__>>)
-
-#define PASCAL_SUBTRAP(NAME, TRAP, SELECTOR, TRAPNAME) \
-    CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, TRAPNAME, "InterfaceLib"), SubTrapFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA TRAP COMMA SELECTOR>)
-
-#define NOTRAP_FUNCTION(NAME) \
-    CREATE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME, "InterfaceLib"), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME>)
-#define NOTRAP_FUNCTION2(NAME) \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &NAME, (#NAME, "InterfaceLib"), WrappedFunction<decltype(NAME) COMMA &NAME>)
-
+// The hand-written macro surface.  Everything the generator can express is
+// emitted as straight-line entrypoints; only the hand-written `*_FUNCTION_PTR`
+// objects (which publish a C++ function as a guest-callable pointer) still use
+// these, plus `RAW_68K_IMPLEMENTATION` for defining a raw 68K handler.
 #define PASCAL_FUNCTION_PTR(NAME) \
     DEFINE_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME>)
 #define REGISTER_FUNCTION_PTR(NAME, ...) \
@@ -232,13 +160,6 @@ private:
     EXTERN_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA callconv::Register<__VA_ARGS__>>)
 #define EXTERN_CCALL_FUNCTION_PTR(NAME) \
     EXTERN_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA callconv::CCall>)
-
-#define RAW_68K_FUNCTION(NAME) \
-    syn68k_addr_t RAW_##NAME(syn68k_addr_t); \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &RAW_##NAME, (#NAME), WrappedFunction<decltype(RAW_##NAME) COMMA &RAW_##NAME COMMA callconv::Raw>)
-#define RAW_68K_TRAP(NAME, TRAP) \
-    syn68k_addr_t RAW_##NAME(syn68k_addr_t); \
-    CREATE_FUNCTION_WRAPPER(stub_##NAME, &RAW_##NAME, (#NAME), TrapFunction<decltype(RAW_##NAME) COMMA &RAW_##NAME COMMA TRAP COMMA callconv::Raw>)
 
 #define RAW_68K_IMPLEMENTATION(NAME) \
         syn68k_addr_t Executor::RAW_##NAME(syn68k_addr_t trap_address [[maybe_unused]])

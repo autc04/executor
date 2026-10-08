@@ -13,8 +13,6 @@
 #include <ResourceMgr.h>
 #include <mman/mman.h>
 
-#define MODULE_NAME menu_menu
-#include <base/api-module.h>
 
 namespace Executor
 {

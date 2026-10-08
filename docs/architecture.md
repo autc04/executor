@@ -154,25 +154,32 @@ The `callconv` namespace (`src/base/functions.h`) models the three conventions u
 
 ### Selector-dispatched traps
 
-Some Mac traps (e.g., `_OSDispatch`, file manager traps) multiplex many functions under a single trap number, dispatching on a selector value. These use `DispatcherTrap<SelectorConvention>`, which reads the selector from D0, D1, a stack word, or the trap bits, then forwards to the matching `SubTrapFunction<>`.
+Some Mac traps (e.g., `_OSDispatch`, file manager traps) multiplex many functions under a single trap number, dispatching on a selector value. These use `GeneratedDispatcherTrap`, whose selector convention (D0, D1, a stack word, or the trap bits) is plain data passed to the constructor, then forwards to the matching generated sub-trap entrypoint.
 
-### Declaration macros
+### Generated declarations
 
-Traps are declared (with macros from `src/base/traps.h`) in the **generated**
-API headers under `build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), produced by
-`make-multiverse.rb` from `multiversal/defs/*.yaml` (see §12); do not hand-edit
-them. Representative generated declarations:
+Every trap is declared by the **generated** API headers under `build/src/api/`
+(`MemoryMgr.h`, `FileMgr.h`, …), produced by `make-multiverse.rb` from
+`multiversal/defs/*.yaml` (see §12); do not hand-edit them. For each trap the header
+declares the implementation function and a small callable object; the straight-line
+entrypoints behind it are emitted into `build/src/trap_entries/<Module>.cpp`:
 
 ```cpp
-REGISTER_TRAP2(DisposeHandle, 0xA023, void(A0), ReturnMemErr<D0>);
-REGISTER_2FLAG_TRAP(_NewHandle_flags, NewHandle, NewHandleClear, NewHandleSys,
-                    NewHandleSysClear, 0xA122, Handle(Size), …);
-PASCAL_SUBTRAP(TempDisposeHandle, 0xA88F, 0x0020, OSDispatch);
+// build/src/api/MemoryMgr.h (generated):
+Handle C_NewHandle(Size logicalSize);
+namespace trapentries { struct Wrapper_stub_NewHandle : traps::GeneratedEntrypoint {
+    using Sig = Handle(Size);
+    Wrapper_stub_NewHandle();
+    Handle operator()(Size logicalSize) const;
+    UPP<Sig, callconv::Register<...>> operator&() const;
+}; }
+extern trapentries::Wrapper_stub_NewHandle stub_NewHandle;
 ```
 
-The `TRAPNAME` of a sub-trap is an identifier, not a string. The macros expand
-differently depending on whether `INSTANTIATE_TRAPS_<MODULE_NAME>` is defined in
-the current translation unit (see §6).
+No trap is declared with a macro any more. The generator `raise`s if it meets a trap
+shape it cannot express rather than falling back to one. The only macro surface left in
+`src/base/traps.h` is `RAW_68K_IMPLEMENTATION` (for defining a raw 68K handler) and the
+hand-written `*_FUNCTION_PTR` family for callbacks the emulator publishes itself.
 
 ---
 
@@ -180,24 +187,16 @@ the current translation unit (see §6).
 
 ### Module pattern
 
-Each subsystem follows the same convention (`src/base/api-module.h`):
-
-1. The **header** defines `MODULE_NAME` then `#include`s `<base/api-module.h>`. This puts the `TrapFunction<>` objects in `extern` declarations and expands trap macros as `extern` variable declarations.
-
-2. The **`.cpp`** defines `INSTANTIATE_TRAPS_<MODULE_NAME> 1` before including the header. `api-module.h` switches to `DEFINE` mode, causing the macros to produce actual variable definitions with explicit template instantiations. This makes every trap self-registering with zero manual glue code.
-
-Implementation functions are named `C_TrapName` by convention. The module
-pattern is emitted by the header generator rather than written out by hand:
+Every trap is a generated straight-line entrypoint. The generated header declares the
+implementation function and the `Wrapper_<Trap>` object; the generated
+`trap_entries/<Module>.cpp` defines the 68K and PowerPC entrypoints, the wrapper methods
+and the objects, which self-register at static-construction time. There is no module
+macro and no per-module instantiation translation unit.
 
 ```cpp
 // build/src/api/MemoryMgr.h (generated):
-#define MODULE_NAME MemoryMgr
-#include <base/api-module.h>
-// ... generated trap declarations ...
-
-// build/src/trap_instances/MemoryMgr.cpp (generated):
-#define INSTANTIATE_TRAPS_MemoryMgr 1
-#include <MemoryMgr.h>
+Handle C_NewHandle(Size logicalSize);
+// ... the Wrapper_stub_NewHandle class + extern object ...
 
 // Hand-written implementation (src/mman/...):
 Handle Executor::C_NewHandle(Size logicalSize)
@@ -205,6 +204,11 @@ Handle Executor::C_NewHandle(Size logicalSize)
     // ... implementation ...
 }
 ```
+
+`traps::init()` calls `trapentries::ReferenceAllEntries()`, which references every
+module's generated entrypoints so the linker keeps those objects in the static library.
+Raw 68K handlers are declared in the generated header (via `executor_raw: true` in the
+YAML) and defined by hand with `RAW_68K_IMPLEMENTATION`.
 
 ### Subsystems
 

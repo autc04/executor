@@ -280,16 +280,6 @@ namespace callfrom68K
         }
     };
 
-    template<>
-    struct Invoker<syn68k_addr_t (syn68k_addr_t addr), callconv::Raw>
-    {
-        template<typename F>
-        static syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, const F& fptr)
-        {
-            return fptr(addr);
-        }
-    };
-
     template<typename F, typename DoneArgs, typename ToDoArgs, typename ToDoCC>
     struct RegInvoker;
 
@@ -427,16 +417,6 @@ namespace callto68K
             callconv::stack::push(Ret());
             Invoker<void (Args...), callconv::Pascal>::invoke68K(ptr, args...);
             return callconv::stack::pop<Ret>();
-        }
-    };
-
-    template<>
-    struct Invoker<syn68k_addr_t (syn68k_addr_t), callconv::Raw>
-    {
-        static syn68k_addr_t invoke68K(void *ptr, syn68k_addr_t)
-        {
-            execute68K(US_TO_SYN68K(ptr));
-            return POPADDR();   // ###
         }
     };
 }

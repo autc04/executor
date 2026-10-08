@@ -5,8 +5,6 @@
 /* to get extern for `ROMlib_PretendSound' */
 #include <prefs/prefs.h>
 
-#define MODULE_NAME sound_soundopts
-#include <base/api-module.h>
 
 namespace Executor
 {

@@ -10,9 +10,8 @@
 #include <ExMacTypes.h>
 #include <QuickDraw.h>
 #include <TextEdit.h>
+#include <base/traps.h>
 
-#define MODULE_NAME textedit_tesave
-#include <base/api-module.h>
 
 namespace Executor
 {

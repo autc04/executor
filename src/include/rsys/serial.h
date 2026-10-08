@@ -9,8 +9,6 @@
 #include <MemoryMgr.h>
 #include <DeviceMgr.h>
 
-#define MODULE_NAME rsys_serial
-#include <base/api-module.h>
 #define _SERIAL_H_
 
 namespace Executor
