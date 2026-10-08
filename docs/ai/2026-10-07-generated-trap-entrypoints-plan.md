@@ -1,9 +1,11 @@
 # Generated trap entrypoints (68K + PowerPC) and data-driven logging
 
 > Date: 2026-10-07
-> Status: implemented through L3 and the removal of `EXECUTOR_ENABLE_LOGGING`
-> on branch `compiletime`; Phase 5 (retiring the module-instantiation machinery)
-> is in progress — 5a–5c have landed, 5d–5e remain.
+> Status: complete.  Implemented through L3, removed `EXECUTOR_ENABLE_LOGGING`,
+> and retired the module-instantiation machinery (Phase 5a–5e) on branch
+> `compiletime`.  There is no `MODULE_NAME` / `api-module.h` /
+> `trap_instances/*.cpp` any more: every trap is a generated straight-line
+> entrypoint.
 
 ## Progress
 
@@ -31,10 +33,15 @@ front-ends + tests; `executor` = `build/executor`):
 | 5a — raw ABI context dropped | 0m48.6s | | 69,659,328 | 9,746,408 | 126,394,670 |
 | 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 68,563,712 | 9,607,144 | 124,524,322 |
 | 5c — the two non-raw verbatim objects | 0m47.8s | 10m36.0s | 68,353,184 | 9,590,760 | 124,073,674 |
+| 5d — machinery deleted | 0m45.0s | 9m41.0s | 66,111,584 | 9,582,568 | 119,795,690 |
 
 Net: wall **−26%**, `executor` debug **−71%**, stripped **−65%**, `libromlib.a`
 **−70%**.  Logging-ON and logging-OFF now differ by ~0.15 s wall and ~0.1 MB
 stripped, which is why the build option was dropped.
+
+Phase 5 alone (the module-instantiation retirement, 5a–5d) took the clean build
+from 0m48.6s to 0m45.0s wall and `libromlib.a` from 126.4 MB to 119.8 MB (the
+66 `trap_instances/*.cpp` TUs are simply gone).
 
 The comparison build was a clean rebuild that must be understood in terms of
 *total serial work*, not the critical path: after the generated-trap work the
@@ -833,6 +840,7 @@ stripped columns are the same binaries after `strip`.
 | 5a — raw ABI context dropped | 0m48.6s | | | 69,659,328 | 9,746,408 | | | 126,394,670 |
 | 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 2m46.0s | 68,563,712 | 9,607,144 | 70,366,384 | 9,953,840 | 124,524,322 |
 | 5c — the two non-raw verbatim objects | 0m47.8s | 10m36.0s | 2m46.0s | 68,353,184 | 9,590,760 | 70,155,856 | 9,937,456 | 124,073,674 |
+| 5d — machinery deleted | 0m45.0s | 9m41.0s | 2m33.3s | 66,111,584 | 9,582,568 | 67,914,256 | 9,929,264 | 119,795,690 |
 
 5b net vs. the pre-5 state: `executor` debug −1,133,048 (−1.6%), stripped
 −139,264 (−1.4%), `libromlib.a` −1,935,124 (−1.5%).  Wall is unchanged within
@@ -856,5 +864,26 @@ known `FileTest` xfails; `--logtraps` structure identical to
 untyped `ResourceStub` lines); a `-G CIncludes` run is byte-identical before and
 after (the new entries are `only-for: Executor` and filtered out), so Retro68 is
 unaffected.
+
+5d deletes the machinery: the generator stops emitting `trap_instances/*.cpp` and
+`ReferenceAllTraps.cpp` (and the `MODULE_NAME` / `api-module.h` preamble), the
+unexercised macro fallbacks become `raise`s, `src/base/api-module.h` is deleted,
+and `traps.h`/`traps.impl.h` lose `TRAP_INSTANTIATION`, `CREATE_FUNCTION_WRAPPER`,
+`PREPROCESSOR_CONCAT`, `PASCAL_TRAP`, `REGISTER_TRAP`, `REGISTER_TRAP2`,
+`PASCAL_SUBTRAP`, `NOTRAP_FUNCTION`, `NOTRAP_FUNCTION2`, `RAW_68K_TRAP`,
+`RAW_68K_FUNCTION`, `TrapFunction` and `SubTrapFunction` (`WrappedFunction`, for the
+`*_FUNCTION_PTR` objects, and `RAW_68K_IMPLEMENTATION` remain).  `ReferenceAllEntries`
+stays — it is what keeps the generated per-trap objects from being dropped by the
+static-library linker.  The dead `callconv::Raw` `callfrom68K`/`callto68K` invokers go
+too.  Net vs. 5c: wall −2.9 s, user −55 s, `executor` debug −2,241,600 (−3.3%),
+stripped −8,192, `libromlib.a` −4,277,984 (−3.4%).
+
+Note the `GetFrontProcess` ABI: the 68K form really takes a second `dummy`
+`int32_t` argument (Apple's inline opcodes make every caller pass `-1`; it is
+ignored, and the PPC convention makes it harmless).  The YAML entry declares it so
+the generated 68K entry pops both words; dropping it would corrupt the guest stack.
+
+Validation for 5d: `ctest -LE xfail` 138/138; Mac suite 90 passed + 2 known
+xfails; `--logtraps` structure identical; `-G CIncludes` byte-identical.
 
 Known-failing, unchanged: the two `xfail` `FileTest` cases.
