@@ -16,7 +16,7 @@ namespace traps
 using Entry68KFn = syn68k_addr_t (*)(syn68k_addr_t);
 using EntryPPCFn = uint32_t (*)(PowerCore&);
 
-// Non-template replacement for WrappedFunction/TrapFunction.  It holds plain
+// Non-template replacement for the old templated wrapper objects.  It holds plain
 // function pointers to generated marshalling code instead of instantiating the
 // callfrom68K/callfromPPC/Register<> templates.  The generated per-trap
 // callable object derives from this and adds the typed operator()/operator&.
