@@ -850,20 +850,30 @@ reduction is purely the dropped `TrapFunction`/`callconv::Raw` instantiations.
 5c converts the last two `verbatim` trap blocks (`PASCAL_SUBTRAP(GetFrontProcess)`
 and `NOTRAP_FUNCTION2(GetGrayRgn)`) to ordinary entries; the inline `GetGrayRgn`
 body moves to a real `C_GetGrayRgn` in `wind/windInit.cpp`, and
-`C_GetFrontProcess` loses its unused `int32_t dummy` parameter.  Neither entry
-changes the CIncludes output because both keep `only-for: Executor` (the
-verbatim blocks they replace were Executor-only; without the marker the CIncludes
-generator would start emitting `GetFrontProcess`/`GetGrayRgn`).  After 5c no
-generated or hand-written header expands a `TRAP_INSTANTIATION` macro — the
-macros themselves are removed in 5d.  Net vs. 5b: `executor` debug −210,528,
-stripped −16,384, `libromlib.a` −450,648.
+`C_GetFrontProcess` loses nothing on 68K but keeps its dummy parameter (see below).
+`GetFrontProcess` stays `only-for: Executor`, so it does not appear in the CIncludes
+output.  `GetGrayRgn` is different: on 68K it must be an inline getter for the
+`GrayRgn` low-memory variable, and only on PowerPC/Carbon is it a regular API
+entrypoint (which is why Executor defines it, with no trap).  It is therefore
+expressed the same way as `GetMBarHeight` — `executor: C_`, `inline: LMGetGrayRgn()`,
+`noinline: ppc` — and the CIncludes output gains it (intended, not a regression):
+
+```c
+#if TARGET_CPU_68K
+#define GetGrayRgn() (LMGetGrayRgn())
+#else
+pascal RgnHandle GetGrayRgn();
+#endif
+```
+
+Net vs. 5b: `executor` debug −210,528, stripped −16,384, `libromlib.a` −450,648.
 
 Validation for 5b/5c: `ctest -LE xfail` 138/138; Mac suite 90 passed + the two
 known `FileTest` xfails; `--logtraps` structure identical to
 `build/golden-logtraps.txt` (same 2883-line trap-name sequence, including the 36
-untyped `ResourceStub` lines); a `-G CIncludes` run is byte-identical before and
-after (the new entries are `only-for: Executor` and filtered out), so Retro68 is
-unaffected.
+untyped `ResourceStub` lines); the `-G CIncludes` output differs from before only
+by the intended `GetGrayRgn` 68K-inline addition (everything else is byte-identical,
+including `needs-glue.txt`), so Retro68 is otherwise unaffected.
 
 5d deletes the machinery: the generator stops emitting `trap_instances/*.cpp` and
 `ReferenceAllTraps.cpp` (and the `MODULE_NAME` / `api-module.h` preamble), the
@@ -884,6 +894,16 @@ ignored, and the PPC convention makes it harmless).  The YAML entry declares it 
 the generated 68K entry pops both words; dropping it would corrupt the guest stack.
 
 Validation for 5d: `ctest -LE xfail` 138/138; Mac suite 90 passed + 2 known
-xfails; `--logtraps` structure identical; `-G CIncludes` byte-identical.
+xfails; `--logtraps` structure identical; `-G CIncludes` unchanged by 5d (defs were
+not touched).
+
+Two post-5d corrections:
+
+- `GetFrontProcess` keeps its 68K `dummy` parameter (see above); the first
+  conversion had dropped it, which left the guest stack 4 bytes short.
+- `GetGrayRgn` is declared for the CIncludes/Retro68 consumer too, as the same
+  68K-inline / PPC-entrypoint split as `GetMBarHeight`: `inline: LMGetGrayRgn()`,
+  `noinline: ppc`.  Before, it was hidden behind `only-for: Executor`, so a 68K
+  Retro68 program calling `GetGrayRgn()` had no declaration at all.
 
 Known-failing, unchanged: the two `xfail` `FileTest` cases.
