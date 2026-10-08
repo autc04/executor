@@ -907,3 +907,139 @@ Two post-5d corrections:
   Retro68 program calling `GetGrayRgn()` had no declaration at all.
 
 Known-failing, unchanged: the two `xfail` `FileTest` cases.
+
+## Follow-up proposal: a macro for the generated trap objects
+
+> Status: **proposal only**, not implemented (discussed 2026-10-08).
+
+Every generated API header spells out the same five-to-seven line
+`Wrapper_<Trap>` class plus an `extern` object for each trap.  `MemoryMgr.h`
+alone has hundreds of them, and that boilerplate dominates the file.  This is
+purely cosmetic — the headers are generated and nobody hand-edits them, but
+they *are* read while debugging.  A small family of function-like macros would
+collapse each object to one or two lines, with no change to the `.cpp` side
+(`gen_wrapper_methods`), the generated entrypoints, the ABI, the binary size or
+the build time: the macros expand to exactly the declarations emitted today.
+
+The task therefore is a readability win only, and low risk, so the return must
+be weighed against churning every generated header and adding a macro surface
+that itself has to be maintained.
+
+### Today
+
+A plain Pascal trap (`build/src/api/Package.h`):
+
+```cpp
+void C_InitPack(INTEGER packid);
+namespace trapentries { struct Wrapper_InitPack : traps::GeneratedEntrypoint {
+    using Sig = void(INTEGER);
+    Wrapper_InitPack();
+    void operator()(INTEGER packid) const;
+    UPP<Sig> operator&() const { return UPP<Sig>(guestFunction()); }
+}; }
+extern trapentries::Wrapper_InitPack InitPack;
+```
+
+A Register trap with `executor_extras` (`build/src/api/OSUtil.h`):
+
+```cpp
+void HWPriv(LONGINT d0, LONGINT a0);
+namespace trapentries { struct Wrapper_stub_HWPriv : traps::GeneratedEntrypoint {
+    using Sig = void(LONGINT, LONGINT);
+    Wrapper_stub_HWPriv();
+    void operator()(LONGINT d0, LONGINT a0) const;
+    UPP<Sig, callconv::Register<void(D0, A0)>> operator&() const { return UPP<Sig, callconv::Register<void(D0, A0)>>(guestFunction()); }
+}; }
+extern trapentries::Wrapper_stub_HWPriv stub_HWPriv;
+```
+
+The Register flag variants (`NewHandle`, `NewHandleClear`, …) and the 33 raw
+68K traps are shorter variants of the same shape (no `operator&` for a variant;
+a `ProcPtr`-returning `operator&` and no `operator()` for a raw trap).
+
+### Proposed macros
+
+Defined in `src/base/trap-entry.h`, which every generated header already
+includes through `base/trap-entry.h`:
+
+```cpp
+// A generated trap object: the typed operator() forwards to IMPL and
+// operator&() hands out the guest UPP named by the trailing argument.
+// Sig is derived from IMPL, so the argument types are written once.
+#define EXECUTOR_TRAP_OBJECT(WRAPPER, OBJECT, IMPL, RET, ARGDECLS, ...) \
+    namespace trapentries { struct WRAPPER : traps::GeneratedEntrypoint { \
+        using Sig = std::remove_pointer_t<decltype(&IMPL)>; \
+        WRAPPER(); \
+        RET operator() ARGDECLS const; \
+        auto operator&() const { return __VA_ARGS__(guestFunction()); } \
+    }; } \
+    extern trapentries::WRAPPER OBJECT
+
+// A Register flag variant: typed operator() only (it shares the UPP of its
+// target, so it has no operator&() of its own).
+#define EXECUTOR_TRAP_VARIANT(WRAPPER, OBJECT, RET, ARGDECLS) \
+    namespace trapentries { struct WRAPPER : traps::GeneratedEntrypoint { \
+        WRAPPER(); \
+        RET operator() ARGDECLS const; \
+    }; } \
+    extern trapentries::WRAPPER OBJECT
+
+// A raw 68K trap: no typed operator(); operator&() yields a ProcPtr.
+#define EXECUTOR_RAW_TRAP_OBJECT(WRAPPER, OBJECT) \
+    namespace trapentries { struct WRAPPER : traps::GeneratedEntrypoint { \
+        WRAPPER(); \
+        ProcPtr operator&() const { return guestFunction(); } \
+    }; } \
+    extern trapentries::WRAPPER OBJECT
+```
+
+The two examples above then read:
+
+```cpp
+void C_InitPack(INTEGER packid);
+EXECUTOR_TRAP_OBJECT(Wrapper_InitPack, InitPack, C_InitPack, void, (INTEGER packid), UPP<Sig>);
+```
+
+```cpp
+void HWPriv(LONGINT d0, LONGINT a0);
+EXECUTOR_TRAP_OBJECT(Wrapper_stub_HWPriv, stub_HWPriv, HWPriv, void,
+                     (LONGINT d0, LONGINT a0), UPP<Sig, callconv::Register<void(D0, A0)>>);
+```
+
+and the other two forms:
+
+```cpp
+EXECUTOR_TRAP_VARIANT(Wrapper_NewHandle, NewHandle, Handle, (Size size));
+EXECUTOR_RAW_TRAP_OBJECT(Wrapper_stub_Pack1, stub_Pack1);
+```
+
+### Design notes / open questions
+
+- **Why `IMPL` and `decltype`.**  The existing header already declares
+  `RET IMPL(ARGS)` immediately above the wrapper, so
+  `std::remove_pointer_t<decltype(&IMPL)>` yields the same `Sig` without
+  spelling the argument types a second time.  `decltype` is unevaluated and
+  instantiates nothing.  It does couple the macro to that preceding
+  declaration, which is always emitted, so the ordering is already guaranteed.
+  The fallback (pass `RET(ARGTYPES)` explicitly as a parameter) is simpler to
+  read but repeats the types.
+- **Why `auto` for `operator&`.**  The UPP type may contain commas
+  (`UPP<Sig, callconv::Register<void(D0, A0)>>`); writing it in the return type
+  *and* the constructor call would need it twice.  `auto` (C++14, already
+  required) lets it appear once, as the trailing argument.
+- **Why the trailing argument is variadic (`...`).**  The preprocessor balances
+  parentheses, but not `<>`, when splitting macro arguments, so the commas in
+  `UPP<...>` would otherwise split it.  `ARGDECLS` (`(Size size)`) keeps its
+  parentheses, so its commas are safe; `RET` is a single token.
+- **Two or three macros.**  A single macro with an empty trailing argument for
+  the variants was considered and reads worse (it would still emit an unused
+  `using Sig`).  Keeping `EXECUTOR_TRAP_VARIANT` and
+  `EXECUTOR_RAW_TRAP_OBJECT` separate matches the three shapes `emit_wrapper`
+  already distinguishes.
+- **Template alternative.**  A `Wrapper<Sig, CallConv, &IMPL>` base template
+  would also remove the boilerplate, but it reintroduces a per-trap template
+  instantiation — exactly what Phases 0–5 removed.  A macro has no such cost.
+- **Scope.**  Header-declaration-only.  `gen_wrapper_methods`, the generated
+  `trap_entries/*.cpp`, `--logtraps`, and the shared-library symbols are
+  untouched, so the only observable change is the text of the generated
+  headers.  The CIncludes/Retro68 generator does not use `Wrapper_` at all.
