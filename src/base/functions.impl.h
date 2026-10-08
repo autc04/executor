@@ -281,12 +281,12 @@ namespace callfrom68K
     };
 
     template<>
-    struct Invoker<syn68k_addr_t (syn68k_addr_t addr, void *), callconv::Raw>
+    struct Invoker<syn68k_addr_t (syn68k_addr_t addr), callconv::Raw>
     {
         template<typename F>
         static syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, const F& fptr)
         {
-            return fptr(addr, nullptr);
+            return fptr(addr);
         }
     };
 
@@ -431,9 +431,9 @@ namespace callto68K
     };
 
     template<>
-    struct Invoker<syn68k_addr_t (syn68k_addr_t, void*), callconv::Raw>
+    struct Invoker<syn68k_addr_t (syn68k_addr_t), callconv::Raw>
     {
-        static syn68k_addr_t invoke68K(void *ptr, syn68k_addr_t, void *)
+        static syn68k_addr_t invoke68K(void *ptr, syn68k_addr_t)
         {
             execute68K(US_TO_SYN68K(ptr));
             return POPADDR();   // ###

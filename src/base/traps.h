@@ -234,14 +234,14 @@ private:
     EXTERN_FUNCTION_WRAPPER(NAME, &C_##NAME, (#NAME), WrappedFunction<decltype(C_##NAME) COMMA &C_##NAME COMMA callconv::CCall>)
 
 #define RAW_68K_FUNCTION(NAME) \
-    syn68k_addr_t RAW_##NAME(syn68k_addr_t, void *); \
+    syn68k_addr_t RAW_##NAME(syn68k_addr_t); \
     CREATE_FUNCTION_WRAPPER(stub_##NAME, &RAW_##NAME, (#NAME), WrappedFunction<decltype(RAW_##NAME) COMMA &RAW_##NAME COMMA callconv::Raw>)
 #define RAW_68K_TRAP(NAME, TRAP) \
-    syn68k_addr_t RAW_##NAME(syn68k_addr_t, void *); \
+    syn68k_addr_t RAW_##NAME(syn68k_addr_t); \
     CREATE_FUNCTION_WRAPPER(stub_##NAME, &RAW_##NAME, (#NAME), TrapFunction<decltype(RAW_##NAME) COMMA &RAW_##NAME COMMA TRAP COMMA callconv::Raw>)
 
 #define RAW_68K_IMPLEMENTATION(NAME) \
-        syn68k_addr_t Executor::RAW_##NAME(syn68k_addr_t trap_address [[maybe_unused]], void *)
+        syn68k_addr_t Executor::RAW_##NAME(syn68k_addr_t trap_address [[maybe_unused]])
 
 // Bits read out of the register operand lists of the file-manager traps; the
 // generated entrypoints use these when constructing their descriptors.
