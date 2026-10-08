@@ -47,6 +47,11 @@ exit_executor(void)
     ExitToShell();
 }
 
+RgnHandle Executor::C_GetGrayRgn()
+{
+    return LM(GrayRgn);
+}
+
 void Executor::ROMLib_InitGrayRgn()
 {
     ThePortGuard guard((GrafPtr)LM(WMgrCPort));

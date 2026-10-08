@@ -3,7 +3,7 @@
 > Date: 2026-10-07
 > Status: implemented through L3 and the removal of `EXECUTOR_ENABLE_LOGGING`
 > on branch `compiletime`; Phase 5 (retiring the module-instantiation machinery)
-> is in progress — 5a and 5b have landed, 5c–5e remain.
+> is in progress — 5a–5c have landed, 5d–5e remain.
 
 ## Progress
 
@@ -30,6 +30,7 @@ front-ends + tests; `executor` = `build/executor`):
 | **flag removed** (runtime-only) | 0m47.5s | 10m36.2s | 69,696,760 | 9,746,408 | 126,459,446 |
 | 5a — raw ABI context dropped | 0m48.6s | | 69,659,328 | 9,746,408 | 126,394,670 |
 | 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 68,563,712 | 9,607,144 | 124,524,322 |
+| 5c — the two non-raw verbatim objects | 0m47.8s | 10m36.0s | 68,353,184 | 9,590,760 | 124,073,674 |
 
 Net: wall **−26%**, `executor` debug **−71%**, stripped **−65%**, `libromlib.a`
 **−70%**.  Logging-ON and logging-OFF now differ by ~0.15 s wall and ~0.1 MB
@@ -831,16 +832,29 @@ stripped columns are the same binaries after `strip`.
 | flag removed (5 pre-state) | 0m47.5s | 10m36.2s | 2m50.0s | 69,696,760 | 9,746,408 | 71,495,336 | 10,089,008 | 126,459,446 |
 | 5a — raw ABI context dropped | 0m48.6s | | | 69,659,328 | 9,746,408 | | | 126,394,670 |
 | 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 2m46.0s | 68,563,712 | 9,607,144 | 70,366,384 | 9,953,840 | 124,524,322 |
+| 5c — the two non-raw verbatim objects | 0m47.8s | 10m36.0s | 2m46.0s | 68,353,184 | 9,590,760 | 70,155,856 | 9,937,456 | 124,073,674 |
 
 5b net vs. the pre-5 state: `executor` debug −1,133,048 (−1.6%), stripped
 −139,264 (−1.4%), `libromlib.a` −1,935,124 (−1.5%).  Wall is unchanged within
 noise; 5b does not yet remove the `trap_instances/*.cpp` TUs (that is 5d), so the
 reduction is purely the dropped `TrapFunction`/`callconv::Raw` instantiations.
 
-Validation for 5b: `ctest -LE xfail` 138/138; Mac suite 90 passed + the two known
-`FileTest` xfails; `--logtraps` structure identical to `build/golden-logtraps.txt`
-(same 2883-line trap-name sequence, including the 36 untyped `ResourceStub`
-lines); a `-G CIncludes` run is byte-identical before and after (the new
-`only-for: Executor` entries are filtered out), so Retro68 is unaffected.
+5c converts the last two `verbatim` trap blocks (`PASCAL_SUBTRAP(GetFrontProcess)`
+and `NOTRAP_FUNCTION2(GetGrayRgn)`) to ordinary entries; the inline `GetGrayRgn`
+body moves to a real `C_GetGrayRgn` in `wind/windInit.cpp`, and
+`C_GetFrontProcess` loses its unused `int32_t dummy` parameter.  Neither entry
+changes the CIncludes output because both keep `only-for: Executor` (the
+verbatim blocks they replace were Executor-only; without the marker the CIncludes
+generator would start emitting `GetFrontProcess`/`GetGrayRgn`).  After 5c no
+generated or hand-written header expands a `TRAP_INSTANTIATION` macro — the
+macros themselves are removed in 5d.  Net vs. 5b: `executor` debug −210,528,
+stripped −16,384, `libromlib.a` −450,648.
+
+Validation for 5b/5c: `ctest -LE xfail` 138/138; Mac suite 90 passed + the two
+known `FileTest` xfails; `--logtraps` structure identical to
+`build/golden-logtraps.txt` (same 2883-line trap-name sequence, including the 36
+untyped `ResourceStub` lines); a `-G CIncludes` run is byte-identical before and
+after (the new entries are `only-for: Executor` and filtered out), so Retro68 is
+unaffected.
 
 Known-failing, unchanged: the two `xfail` `FileTest` cases.
