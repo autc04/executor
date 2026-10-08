@@ -1,11 +1,11 @@
 # Plan: Implicit mouse capture (and "not pumping events" detection)
 
 > **AI-generated.** This document was produced with the assistance of an AI
-> language model and may contain inaccuracies. It is a **plan**, not a record of
-> finished work.
+> language model and may contain inaccuracies. It is a **plan**: iterations 1–4
+> are implemented (see the per-iteration notes), iteration 5 is not.
 
 - **Date:** 2026-10-07
-- **Status:** iteration 1 implemented (2026-10-07); iterations 2–5 planned
+- **Status:** iterations 1–4 implemented (2026-10-07); iteration 5 planned
 - **Area:** `src/vdriver/`, `src/desk.cpp`, `src/toolevent.cpp`,
   `src/dial/dialHandle.cpp`, `src/config/front-ends/{qt,wayland}/`,
   `src/prefs/`, `src/prefpanel.cpp`, `res/System.ad`
@@ -328,17 +328,19 @@ This keeps polling on the thread that owns the graphics and avoids cross-thread
 
 ## Iteration 1 — Detection
 
-> **Implemented 2026-10-07.** `src/vdriver/responsiveness.{h,cpp}`; hooks in
-> `C_SystemTask`, `C_WaitNextEvent`, both `C_ModalDialog` bodies; host button
-> state fed from `EventSink::mouseButtonEvent`; `reset()` at boot and in
-> `NewLaunch`; `--unresponsive-timeout <ticks>` and `--no-mouse-capture`, plus
-> `EXECUTOR_FORCE_UNRESPONSIVE` to force the captured state for manual testing;
-> `tests/responsiveness.cpp` (13 cases, including the pump / mouse-down / 10 s
-> tracking-loop / mouse-up / pump sequence). The latch lives in `pollAt(nowMs)`,
-> which measures the quiet time from `max(lastPump, lastRelease)`; `poll()` adds
-> the force override and `isCaptured()` reads the latched value. Still open:
-> explicit hooks on Executor's own tracking traps (believed unnecessary under
-> the entry rule until proven otherwise).
+> **Implemented 2026-10-07.** `src/vdriver/responsiveness.{h,cpp}`;
+> `noteResponse()` in `C_SystemTask`, and `Responsiveness::ActiveScope` around
+> `C_WaitNextEvent` and both `C_ModalDialog` bodies (their whole duration counts
+> as activity); host button state fed from `EventSink::mouseButtonEvent`;
+> `reset()` at boot and in `NewLaunch`; `--unresponsive-timeout <ticks>` and
+> `--no-mouse-capture`, plus `EXECUTOR_FORCE_UNRESPONSIVE` to force the captured
+> state for manual testing; `tests/responsiveness.cpp` (16 cases, including the
+> pump / mouse-down / 10 s tracking-loop / mouse-up / pump sequence and the
+> event-wait cases). The latch lives in `pollAt(nowMs)`, which measures the quiet
+> time from `max(lastPump, lastRelease)` and never enters while an event wait is
+> active; `poll()` adds the force override and `isCaptured()` reads the latched
+> value. Still open: explicit hooks on Executor's own tracking traps (believed
+> unnecessary under the entry rule until proven otherwise).
 
 **Goal:** a correct, testable answer to "should we capture the mouse right now?",
 usable from the GUI thread and the prefs dialog.
@@ -406,8 +408,9 @@ usable from the GUI thread and the prefs dialog.
 > **Wayland and Qt parts implemented 2026-10-07.**
 > `VideoDriver::updateResponsivenessFeedback()` (base, `vdriver.cpp`) polls the
 > tracker on the GUI thread and calls the new `setClickCapture(bool)` hook.
-> Wayland wakes its event loop every 100 ms and applies the input region in
-> `frameCallback` (whole surface when captured, the rootless region otherwise).
+> Wayland wakes its event loop periodically (100 ms; 16 ms while the dim fades)
+> and applies the input region in `frameCallback` (whole surface when captured,
+> the rootless region otherwise).
 > Qt runs a 100 ms `QTimer`, sets the window mask to the whole window while
 > captured, and now renders with per-pixel alpha (which also fixes the black
 > holes on Qt's Wayland backend).
@@ -438,7 +441,8 @@ app.
   `clickCaptureDirty_`; `frameCallback` applies the region (and
   `requestFrame()` treats `clickCaptureDirty_` as work to do); `runEventLoop`
   calls `updateResponsivenessFeedback()` each iteration and caps its `poll()`
-  timeout at 100 ms so capture starts even while the guest never yields.
+  timeout at 100 ms (16 ms while the dim fades) so capture starts even while the
+  guest never yields.
 - **How captured clicks are handled:** they enter through the existing
   `IEventListener` path (`EventSink::mouseButtonEvent` / `mouseMoved`,
   `eventsink.cpp:21`), which posts ordinary `mouseDown`/`mouseUp`/mouse-moved
@@ -463,7 +467,8 @@ app.
 
 ## Iteration 3 — Visual feedback: dim the desktop to 50 % transparent black
 
-> **Implemented 2026-10-07 (no fade yet).** The dim is applied in the shared
+> **Implemented 2026-10-07 (fade added in iteration 4).** The dim is applied in
+> the shared
 > `VideoDriver::updateBuffer()` (`vdriver.cpp`): in the hole spans (outside
 > `rootlessRegion_`), the white desktop backdrop (`pixel == 0xFFFFFFFF`) is
 > written as premultiplied black at `desktopDim_` alpha (`a << 24`), or fully
@@ -711,26 +716,28 @@ mandatory.
 
 ### Documentation updates
 
-- `docs/subsystems/video-driver.md`: new `VideoDriver` hooks, rootless click
-  capture, dim/fade feedback.
-- `docs/subsystems/event-manager.md`: `SystemTask`/`WaitNextEvent`/`ModalDialog`
-  feed the tracker; `GetOSEvent` deliberately does not.
-- `docs/subsystems/window-dialog-menu.md`: rootless mask vs. input region, and
-  the new feedback behaviour.
-- This document.
+- `docs/subsystems/video-driver.md` — **done**: the new `VideoDriver` hooks,
+  rootless click capture, and the dim/fade feedback.
+- `docs/subsystems/event-manager.md` — **done**: `SystemTask`/`WaitNextEvent`/
+  `ModalDialog` feed the tracker; `GetOSEvent` deliberately does not.
+- `docs/subsystems/window-dialog-menu.md` — **done**: rootless mask vs. input
+  region, and the new feedback behaviour.
+- This document — updated.
 
 ### Risks / open questions
 
-1. **Qt's conflated mask** (paint clip == input shape) is the crux of iterations
-   2–3; approach A (toggle mask ↔ translucent ARGB window) is selected. Verify
-   per platform that a maskless, per-pixel-alpha `QWindow` still receives clicks
-   (needed for capture), with a documented fallback (approach B) where not.
+1. **Qt's conflated mask** (paint clip == input shape). Addressed by rendering
+   with per-pixel alpha while keeping the mask for **input** shaping: capture
+   sets the mask to the whole window, so clicks are taken everywhere while the
+   holes stay transparent. Holes are now transparent on Qt/Wayland too
+   (smoke-tested); Windows is still untested.
 2. **Host-side polling** is required because the guest may never yield. Ensure
    the periodic timer lives on the GUI thread and never blocks the guest.
 3. **Button state source.** Use a host-side flag in `EventSink`, not
    `LM(MBState)` (which is written on the emulator thread and would race).
-4. **Hysteresis.** Decide the debounce for a flapping app before implementing
-   the fade, to avoid visible flicker.
+4. **Hysteresis.** Not implemented.  The button-held entry rule already avoids
+   strobing during drags; a small debounce for an app that flaps around the
+   timeout is a possible follow-up.
 5. **Non-rootless modes** must be unaffected; guard all feedback behind
    `vdriver->isRootless()`.
 6. **Real mouse capture** (see the alternatives section) would decouple input
@@ -741,11 +748,14 @@ mandatory.
 ## Suggested implementation order
 
 1. `Responsiveness` module + hooks + host button state + CLI + tests
-   (iteration 1) — independently valuable and low-risk.
+   (iteration 1) — **done**.
 2. Wayland click capture + dim + fade (iterations 2–4 on the easy surface),
-   using the forced-capture debug hook.
-3. Qt click capture + dim + fade via approach A.
-4. Prefs dialog wiring + resource edit (iteration 5).
+   using the forced-capture debug hook — **done**.
+3. Qt click capture + dim + fade via approach A — **done**.
+4. Prefs dialog wiring + resource edit (iteration 5) — **remaining**.
+
+This document describes the order the work *was* done in; iterations 1–4 are
+implemented and committed, iteration 5 is not started.
 
 ## References
 
