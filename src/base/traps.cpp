@@ -7,6 +7,7 @@
 #include <base/logging.h>
 #include <base/dispatcher.h>
 #include <base/debugger.h>
+#include <OSUtil.h> /* stub_Unimplemented */
 
 #include <assert.h>
 
@@ -17,7 +18,6 @@ syn68k_addr_t Executor::ostraptable[NOSENTRIES]; /* Gets filled in at run time *
 
 namespace Executor
 {
-RAW_68K_TRAP(Unimplemented, 0xA89F);
 void ReferenceAllTraps();
 namespace trapentries { void ReferenceAllEntries(); }
 }

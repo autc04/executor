@@ -2,8 +2,8 @@
 
 > Date: 2026-10-07
 > Status: implemented through L3 and the removal of `EXECUTOR_ENABLE_LOGGING`
-> on branch `compiletime`.  Phase 5 (retiring the module-instantiation
-> machinery) is planned, not started.
+> on branch `compiletime`; Phase 5 (retiring the module-instantiation machinery)
+> is in progress — 5a and 5b have landed, 5c–5e remain.
 
 ## Progress
 
@@ -28,6 +28,8 @@ front-ends + tests; `executor` = `build/executor`):
 | 4b — dead machinery deleted | 0m47.5s | 10m40.6s | 70,853,528 | 9,828,328 | 129,607,286 |
 | L3 — data-driven logging | 0m47.5s | 10m35.8s | 69,697,168 | 9,746,408 | 126,460,662 |
 | **flag removed** (runtime-only) | 0m47.5s | 10m36.2s | 69,696,760 | 9,746,408 | 126,459,446 |
+| 5a — raw ABI context dropped | 0m48.6s | | 69,659,328 | 9,746,408 | 126,394,670 |
+| 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 68,563,712 | 9,607,144 | 124,524,322 |
 
 Net: wall **−26%**, `executor` debug **−71%**, stripped **−65%**, `libromlib.a`
 **−70%**.  Logging-ON and logging-OFF now differ by ~0.15 s wall and ~0.1 MB
@@ -817,5 +819,28 @@ strip -o /tmp/tests.stripped build/tests/tests && stat -c '%s %n' /tmp/tests.str
 The old target was "the logging-OFF build time and sizes while keeping logging
 available".  That is met and then some: the single configuration is now smaller
 and faster than the old logging-OFF build while `--logtraps` always works.
+
+## Phase 5 measurements (as landed)
+
+Measured with the same recipe as the baseline above (`ninja clean && time ninja`
+in `build/`, Debug, 24 cores, all front-ends + tests).  Sizes are bytes; the
+stripped columns are the same binaries after `strip`.
+
+| sub-step | real | user | sys | `executor` debug | `executor` stripped | `tests` debug | `tests` stripped | `libromlib.a` |
+|---|---|---|---|---|---|---|---|---|
+| flag removed (5 pre-state) | 0m47.5s | 10m36.2s | 2m50.0s | 69,696,760 | 9,746,408 | 71,495,336 | 10,089,008 | 126,459,446 |
+| 5a — raw ABI context dropped | 0m48.6s | | | 69,659,328 | 9,746,408 | | | 126,394,670 |
+| 5b — raw entries in multiversal | 0m47.2s | 10m34.8s | 2m46.0s | 68,563,712 | 9,607,144 | 70,366,384 | 9,953,840 | 124,524,322 |
+
+5b net vs. the pre-5 state: `executor` debug −1,133,048 (−1.6%), stripped
+−139,264 (−1.4%), `libromlib.a` −1,935,124 (−1.5%).  Wall is unchanged within
+noise; 5b does not yet remove the `trap_instances/*.cpp` TUs (that is 5d), so the
+reduction is purely the dropped `TrapFunction`/`callconv::Raw` instantiations.
+
+Validation for 5b: `ctest -LE xfail` 138/138; Mac suite 90 passed + the two known
+`FileTest` xfails; `--logtraps` structure identical to `build/golden-logtraps.txt`
+(same 2883-line trap-name sequence, including the 36 untyped `ResourceStub`
+lines); a `-G CIncludes` run is byte-identical before and after (the new
+`only-for: Executor` entries are filtered out), so Retro68 is unaffected.
 
 Known-failing, unchanged: the two `xfail` `FileTest` cases.
