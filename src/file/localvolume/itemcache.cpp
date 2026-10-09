@@ -186,19 +186,39 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
     ItemPtr item = rootDirItem_;
     for(; pathIter != inPath.end(); ++pathIter)
     {
-        const auto& elem = *pathIter;
-
-        if(auto dir = std::dynamic_pointer_cast<DirectoryItem>(item))
-        {
-            cacheDirectory(dir);
-            item = dir->tryResolve(elem);
-            if(!item)
-                return {};
-        }
-        else
+        auto dir = std::dynamic_pointer_cast<DirectoryItem>(item);
+        if(!dir)
             return {};
 
+        const fs::path& elem = *pathIter;
+        fs::path childPath = dir->path() / elem;
+
+        if(!fs::exists(childPath))
+            return {};
+
+        // Resolve the child by (parent CNID, filename) instead of enumerating
+        // the whole parent directory.
+        auto mapping = cnidMapper_->lookupChild(dir->cnid(), elem);
+        if(!mapping)
+            mapping = cnidMapper_->getOrCreateChild(dir->cnid(), childPath, elem);
+
+        item = itemForMapping(*mapping);
+        if(!item)
+            return {};
     }
+    return item;
+}
+
+ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)
+{
+    auto it = items_.find(mapping.cnid);
+    if(it != items_.end())
+        if(ItemPtr item = it->second.lock())
+            return item;
+
+    ItemPtr item = itemFactory_->createItemForDirEntry(*this, mapping.parID, mapping.cnid, mapping.entry, mapping.macname);
+    if(item)
+        items_.emplace(mapping.cnid, item);
     return item;
 }
 

@@ -10,6 +10,7 @@
 #include "gtest/gtest.h"
 #include "localvolume_test_util.h"
 
+#include <file/file.h>
 #include <file/localvolume/stats.h>
 
 #include <cctype>
@@ -480,6 +481,24 @@ TEST_F(LocalVolumeFixture, CaseInsensitiveAmbiguity)
     EXPECT_NE(entries[0].name, entries[1].name);
     EXPECT_TRUE(entries[0].name.find('#') != std::string::npos
         || entries[1].name.find('#') != std::string::npos);
+}
+
+// --------------------------------------------------------------------------
+// Path resolution (F1)
+// --------------------------------------------------------------------------
+
+// Resolving a host path must not enumerate any directory: it walks components
+// through the mapper's (parID, posixFilename) index.
+TEST_F(LocalVolumeFixture, ResolvePathDoesNotEnumerate)
+{
+    hostDir("a");
+    for(int i = 0; i < 50; i++)
+        hostFile("a/f" + std::to_string(i), "x");
+
+    resetLocalVolumeStats();
+    auto spec = nativePathToFSSpec(host("a/f7"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ(0u, localVolumeStats().directoryIterations.load());
 }
 
 // --------------------------------------------------------------------------

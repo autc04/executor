@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cnidmapper.h"
 #include <rsys/filesystem.h>
 #include <util/macstrings.h>
 #include <memory>
@@ -37,6 +38,7 @@ class ItemCache
     std::list<CachedDirectory> cachedDirectories_;
 
     void cleanDirectoryCache();
+    ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
 public:
     ItemCache(fs::path root, mac_string_view volumeName,
                 std::unique_ptr<CNIDMapper> cnidMapper,
