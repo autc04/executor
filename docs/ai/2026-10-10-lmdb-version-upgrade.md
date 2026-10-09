@@ -10,7 +10,10 @@ Date: 2026-10-10
 - The `lmdb` submodule was moved from `mdb.master` @ `22af328` (2019-02-17,
   self-reported version `0.9.70`) to the release tag `LMDB_1.0.2`
   (`c279e047`, 2026-09-08).
-- The `lmdbxx` submodule is unchanged; see "lmdbxx" below.
+- The `lmdbxx` submodule is otherwise unchanged in version, but it now carries
+  a local commit `af9f90b` ("prevent double transaction abort") fixing
+  `txn::commit()`; see "Crash on first real use" and "lmdbxx" below. It is
+  ahead of `origin/master` by one commit and has not been pushed.
 
 ## Test results
 
@@ -26,6 +29,46 @@ real `~/.executor/cnidmap` otherwise). Filter:
 
 No regressions. (`FileTest.SetFInfo_CrDat` and `FileTest.SetFLock` are labelled
 `xfail`.)
+
+## Crash on first real use (Browser) — `lmdb++` `txn::commit()` bug
+
+Starting Executor with no application (so it launches Browser) segfaulted in
+`mdb_page_get`. The crash reproduced with *both* LMDB `22af328` and `LMDB_1.0.2`,
+so it is **not** a 1.0 regression: it is a latent bug exposed by finally enabling
+`LMDBCNIDMapper` (Browser recursively enumerates the whole host tree, which fills
+the default 1 MB map and drives the `growMapIfNecessary` retry path).
+
+Chain of events:
+
+1. `LMDBCNIDMapper::updateDirectoryContents` fills the map; `mdb_txn_commit()`
+   returns `MDB_MAP_FULL`. Its `fail:` label calls `mdb_txn_abort(txn)`, which
+   ends the preallocated `env->me_txn0` **without** freeing it
+   (`mdb_txn_end()` sets `mode = 0` when `!txn->mt_parent`) and sets
+   `MDB_TXN_FINISHED`.
+2. `lmdb++`'s `txn::commit()` did `lmdb::txn_commit(_handle); _handle = nullptr;`
+   so when `txn_commit` throws, `_handle` stays set.
+3. Unwinding destroys the `lmdb::txn`, whose destructor calls `mdb_txn_abort()`
+   a **second** time. `mdb_txn_end()` now takes the `MDB_TXN_FINISHED` early-out,
+   which skips the `mode = 0` reset that protects `me_txn0`, and therefore
+   `free()`s `me_txn0` (`mdb_txn_end`, `if (mode & MDB_END_FREE) free(txn);`).
+4. `growMapIfNecessary` catches the map-full error, grows the map, and retries;
+   `mdb_txn_begin` reuses the now-dangling `env->me_txn0`, whose first field
+   (`mt_parent`) has been overwritten by the allocator. The next
+   `mdb_page_get` walks the bogus `mt_parent` dirty-list and crashes.
+
+Fix (root cause, in the fork): make `txn::commit()` exception-safe by releasing
+the handle before the possibly-throwing call:
+
+```cpp
+void commit() {
+    MDB_txn* const handle = _handle;
+    _handle = nullptr;
+    lmdb::txn_commit(handle);
+}
+```
+
+This is a genuine `lmdb++` bug (present in upstream `bendiken/lmdbxx` and in the
+fork) and would bite any caller that grows-and-retries on `MDB_MAP_FULL`.
 
 ## Upstream versions (as of 2026-10-10)
 
@@ -76,6 +119,10 @@ instead; it is the same on-disk format and API as before.
   pinned. There is nothing to merge or update.
 - `lmdb++.h` compiles cleanly against the LMDB 1.0.2 header, so **lmdbxx does
   not need to be abandoned** in favour of the C API.
+- A one-function fix was applied to the fork's `lmdb++.h` (`txn::commit()`
+  exception safety, see above), committed locally as `af9f90b`. It is ahead of
+  `origin/master` by one commit and needs to be pushed to `autc04/lmdbxx` to
+  persist.
 
 ## References
 
