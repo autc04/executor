@@ -12,10 +12,12 @@
 
 #include <file/localvolume/stats.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -36,6 +38,14 @@ std::set<std::string> namesOf(const std::vector<ListEntry>& v)
 std::set<std::string> setOf(const std::vector<std::string>& v)
 {
     return { v.begin(), v.end() };
+}
+
+// A >31-byte host name. The Mac name is truncated to 30 bytes + ellipsis, so
+// names sharing a 30-byte prefix collapse to the same Mac name and force
+// disambiguation — without relying on case-insensitive comparison.
+std::string longCollidingName(const std::string& tag)
+{
+    return std::string(30, 'a') + tag;
 }
 
 // Minimal well-formed MacBinary II builder, for the forward-looking test below.
@@ -315,6 +325,161 @@ TEST_F(LocalVolumeFixture, RenameCollisionFails)
     hostFile("a");
     hostFile("b");
     EXPECT_EQ(dupFNErr, fmRename(rootDirID_, "a", "b"));
+}
+
+// --------------------------------------------------------------------------
+// CNIDs and name disambiguation
+// --------------------------------------------------------------------------
+
+// A file's CNID survives a rename and a subsequent move.
+TEST_F(LocalVolumeFixture, CnidStableAcrossRenameThenMove)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostFile("src/f", "x");
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+    auto f = fmGet(src->cnid, "f");
+    ASSERT_TRUE(f.has_value());
+
+    ASSERT_EQ(noErr, fmRename(src->cnid, "f", "renamed"));
+    auto renamed = fmGet(src->cnid, "renamed");
+    ASSERT_TRUE(renamed.has_value());
+    EXPECT_EQ(f->cnid, renamed->cnid);
+
+    ASSERT_EQ(noErr, fmMove(src->cnid, "renamed", dst->cnid));
+    auto moved = fmGet(dst->cnid, "renamed");
+    ASSERT_TRUE(moved.has_value());
+    EXPECT_EQ(f->cnid, moved->cnid);
+}
+
+// Deleting any one member of a truncation-collision set must not renumber the
+// survivors' Mac names or CNIDs.
+TEST_F(LocalVolumeFixture, DisambiguatedNamesStableAcrossDelete)
+{
+    const std::string names[3] = {
+        longCollidingName("A01"), longCollidingName("A02"), longCollidingName("A03")
+    };
+
+    // One directory per deletion target, all created before enumeration (host
+    // entries added under an already-enumerated parent are not observed).
+    for(int i = 0; i < 3; i++)
+    {
+        const std::string dir = "dir" + std::to_string(i);
+        hostDir(dir);
+        for(const auto& n : names)
+            hostFile(dir + "/" + n);
+    }
+
+    for(int i = 0; i < 3; i++)
+    {
+        const std::string dir = "dir" + std::to_string(i);
+        SCOPED_TRACE("dir=" + dir);
+
+        auto d = fmGet(rootDirID_, dir);
+        ASSERT_TRUE(d.has_value());
+
+        auto before = fmList(d->cnid);
+        ASSERT_EQ(3u, before.size());
+
+        // Distinct Mac names: one base and two disambiguated.
+        std::set<std::string> distinct;
+        int disambiguated = 0;
+        for(auto& e : before)
+        {
+            distinct.insert(e.name);
+            if(e.name.find('#') != std::string::npos)
+                disambiguated++;
+        }
+        EXPECT_EQ(3u, distinct.size());
+        EXPECT_EQ(2, disambiguated);
+
+        const ListEntry victim = before[i];
+        ASSERT_EQ(noErr, fmDelete(d->cnid, victim.name));
+
+        auto after = fmList(d->cnid);
+        ASSERT_EQ(2u, after.size());
+        for(auto& e : after)
+        {
+            auto it = std::find_if(before.begin(), before.end(),
+                [&](const ListEntry& b) { return b.name == e.name; });
+            ASSERT_TRUE(it != before.end()) << "Mac name changed: " << e.name;
+            EXPECT_EQ(it->cnid, e.cnid);
+        }
+    }
+}
+
+// Moving a member of a truncation-collision set without specifying a new name
+// must preserve the POSIX name, the (disambiguated) Mac name, and the CNID.
+TEST_F(LocalVolumeFixture, MoveKeepsDisambiguatedNameAndPosixName)
+{
+    const std::string p = longCollidingName("B01");
+    const std::string q = longCollidingName("B02");
+
+    hostDir("a");
+    hostDir("b");
+    hostFile("a/" + p);
+    hostFile("a/" + q);
+
+    auto a = fmGet(rootDirID_, "a");
+    auto b = fmGet(rootDirID_, "b");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+
+    auto before = fmList(a->cnid);
+    ASSERT_EQ(2u, before.size());
+
+    const ListEntry* disambiguated = nullptr;
+    for(auto& e : before)
+        if(e.name.find('#') != std::string::npos)
+            disambiguated = &e;
+    ASSERT_TRUE(disambiguated != nullptr);
+
+    // PBCatMove with ioNewName == nil: move without renaming.
+    ASSERT_EQ(noErr, fmMove(a->cnid, disambiguated->name, b->cnid));
+
+    // The moved POSIX name is one of the originals, unchanged; 'a' keeps the
+    // other.
+    auto aFiles = hostList("a");
+    auto bFiles = hostList("b");
+    ASSERT_EQ(1u, aFiles.size());
+    ASSERT_EQ(1u, bFiles.size());
+    EXPECT_TRUE(aFiles[0] == p || aFiles[0] == q);
+    EXPECT_TRUE(bFiles[0] == p || bFiles[0] == q);
+    EXPECT_NE(aFiles[0], bFiles[0]);
+
+    // Mac name (with disambiguator) and CNID preserved.
+    auto moved = fmGet(b->cnid, disambiguated->name);
+    ASSERT_TRUE(moved.has_value()) << disambiguated->name;
+    EXPECT_EQ(disambiguated->name, moved->name);
+    EXPECT_EQ(disambiguated->cnid, moved->cnid);
+}
+
+// Ambiguity that arises only from case-insensitive comparison. This is the one
+// case that needs a case-sensitive host filesystem (Foo and foO cannot coexist
+// on macOS's default filesystem), so it is skipped there.
+TEST_F(LocalVolumeFixture, CaseInsensitiveAmbiguity)
+{
+    hostFile("caseProbe.tmp");
+    if(fs::exists(host("CASEPROBE.TMP")))
+        GTEST_SKIP() << "host filesystem is case-insensitive";
+    fs::remove(host("caseProbe.tmp"));
+
+    hostDir("a");
+    hostFile("a/Foo");
+    hostFile("a/foO"); // same uppercased Mac name as "Foo"
+
+    auto a = fmGet(rootDirID_, "a");
+    ASSERT_TRUE(a.has_value());
+
+    auto entries = fmList(a->cnid);
+    ASSERT_EQ(2u, entries.size());
+    EXPECT_NE(entries[0].name, entries[1].name);
+    EXPECT_TRUE(entries[0].name.find('#') != std::string::npos
+        || entries[1].name.find('#') != std::string::npos);
 }
 
 // --------------------------------------------------------------------------

@@ -382,7 +382,7 @@ Built the native harness:
   `itemsConstructed`, `factoryProbes`); `resetLocalVolumeStats()` for tests.
 - A `DISABLED_` large-directory benchmark.
 
-Result: `ctest --test-dir build -LE xfail` is green (155 tests, 4 new ones
+Result: `ctest --test-dir build -LE xfail` is green (159 tests, 4 new ones
 `DISABLED_`). The suite is the safety net for Phases 1–5, so no refactor starts
 until it is green — which it now is. One production bug surfaced in the process
 and was fixed (*Phase 0 findings*).
@@ -414,6 +414,11 @@ re-probing during a single listing — F4 in practice.
   directory with two subdirectories performs **three** `directory_iterator`
   scans, because `getInfoCommon` caches each returned child directory to read
   `ioDrNmFls`. Captured by `DISABLED_ListingDoesNotEnumerateSubdirectories`.
+- **Name disambiguation is already stable across deletion** (contrary to
+  expectation): with a collision set, deleting any member leaves the survivors'
+  Mac names and CNIDs unchanged, because `SimpleCNIDMapper` keys mappings by
+  host path and reuses them on re-enumeration. Covered by
+  `LocalVolumeFixture.DisambiguatedNamesStableAcrossDelete`.
 
 No production-code refactor happens before this phase is complete.
 
@@ -516,6 +521,17 @@ Shared native-only helpers in `tests/localvolume_test_util.h`:
   and rename-within-directory) keep the CNID; the source listing drops the entry
   and the destination gains it; counts on both sides update; collisions →
   `dupFNErr`.
+- **CNIDs and name disambiguation**: CNID survives rename → move
+  (`CnidStableAcrossRenameThenMove`). A *truncation*-collision set (host names
+  >31 bytes sharing a 30-byte prefix; the Mac name is 30 bytes + ellipsis, and a
+  `#N` suffix shrinks the base to `30 - len("#N")`) is used so the tests do not
+  depend on a case-sensitive host filesystem. Deleting any member leaves the
+  survivors' names and CNIDs unchanged (`DisambiguatedNamesStableAcrossDelete`,
+  all three deletion targets). Moving a disambiguated member with
+  `ioNewName = nil` preserves the POSIX name, the disambiguated Mac name, and the
+  CNID (`MoveKeepsDisambiguatedNameAndPosixName`). Case-only ambiguity is covered
+  once and `GTEST_SKIP()`ped on a case-insensitive host FS
+  (`CaseInsensitiveAmbiguity`).
 - **Sequences**: interleavings of host and FileManager operations with
   assertions after each step (the strongest guard for caching/validation and
   CNID stability).
