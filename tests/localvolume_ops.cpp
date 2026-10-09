@@ -155,21 +155,24 @@ TEST_F(LocalVolumeFixture, ListingExcludesHiddenSidecars)
     EXPECT_EQ(1, *fmChildCount(a->cnid));
 }
 
-// F2/F3 target: enumerating a directory must not descend into its
-// subdirectories. Currently it does: getInfoCommon caches a child directory to
-// read ioDrNmFls, so listing a directory with two subdirectories performs three
-// directory scans. Disabled until the Count stage lands.
-TEST_F(LocalVolumeFixture, DISABLED_ListingDoesNotEnumerateSubdirectories)
+// F3: reporting a child directory's ioDrNmFls during listing must not
+// materialize that child's contents — only the two child directories
+// themselves are constructed, not their files.
+TEST_F(LocalVolumeFixture, ListingDoesNotMaterializeSubdirectories)
 {
     hostDir("a");
     hostFile("a/x");
+    hostFile("a/y");
+    hostFile("a/z");
     hostDir("b");
-    hostFile("b/y");
+    hostFile("b/p");
+    hostFile("b/q");
 
     resetLocalVolumeStats();
-    (void)fmList(rootDirID_);
+    auto listed = fmList(rootDirID_);
+    ASSERT_EQ(2u, listed.size());
 
-    EXPECT_EQ(1u, localVolumeStats().directoryIterations.load());
+    EXPECT_EQ(2u, localVolumeStats().itemsConstructed.load());
 }
 
 // Caching guard: a directory is enumerated once and reused while valid.

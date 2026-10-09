@@ -442,8 +442,7 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
 
         pb->dirInfo.ioFlAttrib = ATTRIB_ISADIR;
         
-        itemCache->cacheDirectory(dirItem);
-        pb->dirInfo.ioDrNmFls = dirItem->countItems();
+        pb->dirInfo.ioDrNmFls = itemCache->countChildren(dirItem);
 
         // Directories have dates just as files do, and Item::getInfo
         // already reads them off the underlying filesystem.  Reporting

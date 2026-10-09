@@ -53,6 +53,8 @@ public:
 
 
     void cacheDirectory(DirectoryItemPtr item);
+    // Number of visible children, without enumerating/constructing them.
+    int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);
     void flushDirectoryCache(CNID dirID);
     void flushItem(ItemPtr item);

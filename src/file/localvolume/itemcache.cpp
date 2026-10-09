@@ -102,6 +102,23 @@ void ItemCache::cacheDirectory(DirectoryItemPtr dir)
     dir->populateCache(std::move(items));
 }
 
+int ItemCache::countChildren(const DirectoryItemPtr& dir)
+{
+    int count = 0;
+    try
+    {
+        for(const auto& e : fs::directory_iterator(dir->path()))
+            if(!itemFactory_->isHidden(e))
+                ++count;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        // Same policy as cacheDirectory: report what we saw rather than fail
+        // the caller.
+    }
+    return count;
+}
+
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
 {
     if(item->isCached())
