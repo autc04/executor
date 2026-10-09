@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 
 using namespace Executor;
 
@@ -340,6 +341,17 @@ std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
         }
         return {};
     });
+}
+
+std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupChild(CNID parID, const fs::path& filename)
+{
+    // Phase 7 will add the (parID, posixFilename) index to this backend.
+    throw std::logic_error("LMDBCNIDMapper::lookupChild not implemented");
+}
+
+CNIDMapper::Mapping LMDBCNIDMapper::getOrCreateChild(CNID parID, const fs::path& path, const fs::path& filename)
+{
+    throw std::logic_error("LMDBCNIDMapper::getOrCreateChild not implemented");
 }
 
 void LMDBCNIDMapper::deleteCNID(lmdb::txn& txn, CNID cnid)
