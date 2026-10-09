@@ -11,6 +11,11 @@
 
 using namespace Executor;
 
+// Host path of the temporary working directory created below; exposed so native
+// tests (tests/localvolume_test_util.h) can build host trees alongside the
+// FileManager's view of the same directory.
+fs::path ExecutorTestTempDir;
+
 QDGlobals qd;
 #include <quickdraw/cquick.h>
 #include <vdriver/vdriver.h>
@@ -79,6 +84,7 @@ public:
 
         tempDir = fs::current_path() / fs::unique_path("temptest-%%%%-%%%%-%%%%-%%%%");
         fs::create_directory(tempDir);
+        ExecutorTestTempDir = tempDir;
 
         if(auto fsspec = nativePathToFSSpec(tempDir))
         {

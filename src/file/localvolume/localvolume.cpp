@@ -15,6 +15,7 @@
 #include "simplecnidmapper.h"
 #include "lmdbcnidmapper.h"
 #include "itemcache.h"
+#include "stats.h"
 
 #include <algorithm>
 #include <map>
@@ -98,6 +99,7 @@ ItemPtr LocalVolume::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNI
 {
     for(auto& itemFactory : itemFactories)
     {
+        localVolumeStats().factoryProbes++;
         if(ItemPtr item = itemFactory->createItemForDirEntry(itemcache, parID, cnid, e, macname))
             return item;
     }

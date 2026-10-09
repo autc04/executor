@@ -1,6 +1,7 @@
 #include "itemcache.h"
 #include "item.h"
 #include "cnidmapper.h"
+#include "stats.h"
 #include <OSUtil.h>
 #include <set>
 #include <iostream>
@@ -45,6 +46,7 @@ void ItemCache::cacheDirectory(DirectoryItemPtr dir)
     if(dir->isCached())
         return;
     cachedDirectories_.push_back({dir, std::chrono::steady_clock::now()});
+    localVolumeStats().directoryIterations++;
 
     std::vector<fs::directory_entry> entries;
     try
@@ -66,6 +68,8 @@ void ItemCache::cacheDirectory(DirectoryItemPtr dir)
         // which is not perfect, either.
     }
     
+    localVolumeStats().entriesSeen += entries.size();
+
     std::vector<CNIDMapper::Mapping> mappings =
         cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
 
@@ -82,7 +86,11 @@ void ItemCache::cacheDirectory(DirectoryItemPtr dir)
 
         assert(m.macname.size());
         if(!item)
+        {
             item = itemFactory_->createItemForDirEntry(*this, m.parID, m.cnid, m.entry, m.macname);
+            if(item)
+                localVolumeStats().itemsConstructed++;
+        }
 
         if(!item)
             continue;
@@ -157,6 +165,7 @@ ItemPtr ItemCache::tryResolve(CNID cnid)
     
     if(ItemPtr item = itemFactory_->createItemForDirEntry(*this, m.parID, m.cnid, m.entry, m.macname))
     {
+        localVolumeStats().itemsConstructed++;
         items_.emplace(item->cnid(), item);
         return item;
     }

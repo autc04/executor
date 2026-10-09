@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** plan / not started
+- **Status:** Phase 0 done (test harness + instrumentation); refactor not started
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -370,18 +370,42 @@ This removes the 1 s / 20-directory policy entirely.
 
 ## Phased plan
 
-### Phase 0 — Test harness and baseline (prerequisite)
+### Phase 0 — Test harness and baseline (prerequisite) — DONE
 
-Build the native test harness above (`tests/localvolume_ops.cpp` +
-`tests/localvolume_test_util.h`) covering listing, creation/deletion,
-move/rename, and interleaved sequences, and confirm the suite is green against
-**the current implementation**. Add instrumentation (directory_iterator calls,
-items constructed, classify calls) behind a debug flag and a synthetic
-large-directory benchmark. Deliverable: a green regression suite plus
-reproducible before/after numbers for F1/F3.
+Built the native harness:
 
-No production-code refactor happens before this phase is complete — the tests
-are the safety net for Phases 1–5.
+- `tests/localvolume_ops.cpp` + `tests/localvolume_test_util.h`, added to
+  `NATIVE_TEST_SOURCES`: listing, creation/deletion, move/rename, and interleaved
+  host/FileManager sequences.
+- Lightweight counters in `src/file/localvolume/stats.h`, wired into
+  `itemcache.cpp` / `localvolume.cpp` (`directoryIterations`, `entriesSeen`,
+  `itemsConstructed`, `factoryProbes`); `resetLocalVolumeStats()` for tests.
+- A `DISABLED_` large-directory benchmark.
+
+Result: `ctest --test-dir build -LE xfail` is green (153 tests, 4 new ones
+`DISABLED_`). The suite is the safety net for Phases 1–5, so no refactor starts
+until it is green — which it now is.
+
+Baseline (benchmark over an empty-file directory, `EXECUTOR_LV_BENCH_N=N`):
+listing N files costs 1 directory scan, N items constructed, and **6N** factory
+probes (all six factories are probed per file). At N=20000 the listing did not
+finish within 5 minutes: the 1 s cache TTL forces repeated re-enumeration and
+re-probing during a single listing — F4 in practice.
+
+### Phase 0 findings
+
+- **`PBCatMove` move-with-rename is broken.** `LocalVolume::PBCatMove`
+  (`localvolume.cpp:791`) resolves `pb->ioNewName` as the new *parent
+  directory*; `ioNewName` is actually the new item name. With a non-null
+  `ioNewName`, `resolve()` looks for an item of that name in the destination and
+  fails (`fnfErr`). Existing tests only ever pass `ioNewName = nullptr`.
+  Captured by `LocalVolumeFixture.MoveAndRename` (`xfail`).
+- **Listing a directory scans its subdirectories** (F3, confirmed): listing a
+  directory with two subdirectories performs **three** `directory_iterator`
+  scans, because `getInfoCommon` caches each returned child directory to read
+  `ioDrNmFls`. Captured by `DISABLED_ListingDoesNotEnumerateSubdirectories`.
+
+No production-code refactor happens before this phase is complete.
 
 ### Phase 1 — Path resolution without ancestor enumeration (fixes F1)
 
@@ -450,44 +474,47 @@ FileManager against the mounted-`/` `LocalVolume` and interleaves host
 (POSIX / `std::filesystem`) operations — the exact surface this refactor
 threatens.
 
-Shared native-only helpers in `tests/localvolume_test_util.h` (`#ifdef
-EXECUTOR`):
+Shared native-only helpers in `tests/localvolume_test_util.h`:
 
-- `LocalVolumeFixture` — per test, creates a unique host tree under
-  `fs::temp_directory_path()`, maps it with `nativePathToFSSpec`, and opens it as
-  a working directory (`PBOpenWD`), so tests are isolated; `TearDown` removes the
-  tree. (Self-contained; does not depend on `main_executor.cpp`'s temp dir.)
-- Host helpers: `hostFile(rel, contents)`, `hostDir(rel)`, `hostList(rel)`
-  (applying the `LocalVolume` hidden-name filter), `hostRead(rel)`.
+- `LocalVolumeFixture` — per test, asks the FileManager to create a unique
+  directory (`lvtest-…`) under the test environment's temporary working
+  directory (`ExecutorTestTempDir`, exposed from `main_executor.cpp`), then
+  builds a host tree inside it. All helpers take an explicit `(vRefNum, dirID)`
+  and never change the process default directory. (The directory is created
+  *through the FileManager*, not on the host, because host changes under an
+  already-cached parent are not observed — see *Caching*.)
+- Host helpers: `hostFile(rel, contents)`, `hostBytes(rel, bytes)`,
+  `hostDir(rel)`, `hostList(rel)` (applying the `LocalVolume` hidden-name
+  filter), `hostRead(rel)`.
 - FileManager helpers, all with explicit `(vRefNum, dirID)`:
-  `fmCreateFile`, `fmMakeDir`, `fmDelete`, `fmRename`, `fmMove`,
-  `fmGet(parentDirID, name) -> {name, cnid, isDir}`, `fmList(dirID)`
-  (`PBGetCatInfo` index loop, files + dirs), `fmListFiles(dirID)`
-  (`PBHGetFInfo` index loop), `fmCount(dirID)` (`ioDrNmFls`).
+  `fmGet(parentDirID, name) -> {name, cnid, isDir}`, `fmMakeDir`, `fmCreateFile`,
+  `fmDelete`, `fmRename`, `fmMove`, `fmList(dirID)` (`PBGetCatInfo` index loop,
+  files + dirs), `fmListFiles(dirID)` (`PBHGetFInfo` index loop),
+  `fmChildCount(dirID)` (`ioDrNmFls`).
 
 ### Coverage
 
 - **Listing**: empty and non-empty directories; `fmList` vs `fmListFiles` vs
-  `fmCount` consistency; `parID`/`dirID` relationships and CNID uniqueness;
+  `fmChildCount` consistency; `parID`/`dirID` relationships and CNID uniqueness;
   hidden sidecars (`._`, `%`, `.rsrc`, `.finf`) excluded from both listing and
-  count; listing reflects changes made on the host and changes made through a
-  previously populated cache.
-- **Creation / deletion**: both directions (host→FM and FM→host); new directory
-  CNID returned; duplicate name → `dupFNErr`; non-empty directory → `fBsyErr`;
-  missing entry → `fnfErr`.
+  count; host trees populated before first enumeration are visible; FileManager
+  mutations are reflected on the host.
+- **Creation / deletion**: both directions; new directory CNID returned;
+  duplicate name → `dupFNErr`; non-empty directory → `fBsyErr`; missing entry →
+  `fnfErr`.
 - **Move / rename**: `PBHRename` and `PBCatMove` keep the CNID; the source
   listing drops the entry and the destination gains it; counts on both sides
-  update; collisions → `dupFNErr`.
+  update; collisions → `dupFNErr`. (`MoveAndRename` is `xfail` — see *Phase 0
+  findings*.)
 - **Sequences**: interleavings of host and FileManager operations with
   assertions after each step (the strongest guard for caching/validation and
   CNID stability).
-- **CNID stability across lazy vs batch assignment** (open question 3): an
-  identity created before a directory is fully enumerated is reused by, not
-  duplicated by, the later enumeration.
-- **Count vs enumeration** (F3): `ioDrNmFls` agrees with the indexed listing.
-- **Forward-looking** tests encoding the refactor's target behaviour (MacBinary
-  `.bin` stripping, deterministic disambiguation order, lazy cluster naming);
-  initially `DISABLED_` or labelled `xfail` until the phases land.
+- **Instrumentation**: a directory is enumerated once and reused while cached
+  (`ListingEnumeratesOnceWhileCached`).
+- **Forward-looking** (`DISABLED_`, until the relevant phase): listing does not
+  enumerate subdirectories (F3), host-side changes become visible without
+  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 4), and the
+  large-directory benchmark.
 
 ### Benchmarks
 
