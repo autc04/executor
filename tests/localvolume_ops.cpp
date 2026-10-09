@@ -295,6 +295,21 @@ TEST_F(LocalVolumeFixture, MoveAndRename)
     EXPECT_TRUE(fmGet(dst->cnid, "g").has_value());
 }
 
+TEST_F(LocalVolumeFixture, CatMoveRenamesWithinDirectory)
+{
+    hostFile("orig");
+    auto before = fmGet(rootDirID_, "orig");
+    ASSERT_TRUE(before.has_value());
+
+    ASSERT_EQ(noErr, fmMove(rootDirID_, "orig", rootDirID_, "renamed"));
+
+    EXPECT_FALSE(fs::exists(host("orig")));
+    EXPECT_TRUE(fs::exists(host("renamed")));
+    auto after = fmGet(rootDirID_, "renamed");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+}
+
 TEST_F(LocalVolumeFixture, RenameCollisionFails)
 {
     hostFile("a");

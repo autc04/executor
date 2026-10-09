@@ -223,14 +223,20 @@ void ItemCache::renameItem(ItemPtr item, mac_string_view newName)
 
 }
 
-void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent)
+void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_view newName)
 {
     flushDirectoryCache(item->parID());
     flushDirectoryCache(newParent->cnid());
-    fs::path newPath = newParent->path() / item->path().filename();
-    cnidMapper_->moveCNID(item->cnid(), newParent->cnid(), mac_string_view(), 
+
+    fs::path newPath = newParent->path();
+    if(newName.empty())
+        newPath /= item->path().filename();
+    else
+        newPath /= toUnicodeFilename(newName);
+
+    cnidMapper_->moveCNID(item->cnid(), newParent->cnid(), newName, 
         [&] {
-            item->moveItem(newPath, mac_string_view());
+            item->moveItem(newPath, newName);
             return item->path();
         });
 }

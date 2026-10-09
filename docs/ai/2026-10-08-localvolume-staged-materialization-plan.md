@@ -382,9 +382,10 @@ Built the native harness:
   `itemsConstructed`, `factoryProbes`); `resetLocalVolumeStats()` for tests.
 - A `DISABLED_` large-directory benchmark.
 
-Result: `ctest --test-dir build -LE xfail` is green (153 tests, 4 new ones
+Result: `ctest --test-dir build -LE xfail` is green (155 tests, 4 new ones
 `DISABLED_`). The suite is the safety net for Phases 1–5, so no refactor starts
-until it is green — which it now is.
+until it is green — which it now is. One production bug surfaced in the process
+and was fixed (*Phase 0 findings*).
 
 Baseline (benchmark over an empty-file directory, `EXECUTOR_LV_BENCH_N=N`):
 listing N files costs 1 directory scan, N items constructed, and **6N** factory
@@ -394,12 +395,21 @@ re-probing during a single listing — F4 in practice.
 
 ### Phase 0 findings
 
-- **`PBCatMove` move-with-rename is broken.** `LocalVolume::PBCatMove`
-  (`localvolume.cpp:791`) resolves `pb->ioNewName` as the new *parent
-  directory*; `ioNewName` is actually the new item name. With a non-null
-  `ioNewName`, `resolve()` looks for an item of that name in the destination and
-  fails (`fnfErr`). Existing tests only ever pass `ioNewName = nullptr`.
-  Captured by `LocalVolumeFixture.MoveAndRename` (`xfail`).
+- **`PBCatMove` move-with-rename was broken — fixed.** `LocalVolume::PBCatMove`
+  resolved `pb->ioNewName` as the new *parent directory*; `ioNewName` is the new
+  item name and the destination directory is `ioNewDirID` (confirmed against
+  `C_FSpCatMove`, `src/file/fileHighlevel.cpp:351`, which sets
+  `ioNewName = dst->name`, `ioNewDirID = dst->parID`). With a non-null
+  `ioNewName`, `resolve()` looked for an item of that name in the destination and
+  failed (`fnfErr`); existing tests only ever passed `ioNewName = nullptr`. Fixed
+  by resolving the destination from `ioNewDirID` and treating `ioNewName` as the
+  optional new name (colon → `bdNamErr`, nil → keep), with the duplicate check
+  ignoring the item itself; `ItemCache::moveItem` gained an optional `newName`.
+  Covered by `LocalVolumeFixture.MoveAndRename` and `CatMoveRenamesWithinDirectory`.
+- **Related, unfixed: the HFS backend has the same shape.** `hfsPBCatMove`
+  (`src/hfs/hfsHier.cpp:266-270`) feeds `ioNewName` to `ROMlib_findvcbandfile`
+  as the name to look up, so `FSpCatMove`/`PBCatMove` with a non-null
+  `ioNewName` looks similarly broken there. Out of scope here (nothing tests it).
 - **Listing a directory scans its subdirectories** (F3, confirmed): listing a
   directory with two subdirectories performs **three** `directory_iterator`
   scans, because `getInfoCommon` caches each returned child directory to read
@@ -502,10 +512,10 @@ Shared native-only helpers in `tests/localvolume_test_util.h`:
 - **Creation / deletion**: both directions; new directory CNID returned;
   duplicate name → `dupFNErr`; non-empty directory → `fBsyErr`; missing entry →
   `fnfErr`.
-- **Move / rename**: `PBHRename` and `PBCatMove` keep the CNID; the source
-  listing drops the entry and the destination gains it; counts on both sides
-  update; collisions → `dupFNErr`. (`MoveAndRename` is `xfail` — see *Phase 0
-  findings*.)
+- **Move / rename**: `PBHRename` and `PBCatMove` (including move-with-rename
+  and rename-within-directory) keep the CNID; the source listing drops the entry
+  and the destination gains it; counts on both sides update; collisions →
+  `dupFNErr`.
 - **Sequences**: interleavings of host and FileManager operations with
   assertions after each step (the strongest guard for caching/validation and
   CNID stability).

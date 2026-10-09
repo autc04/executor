@@ -788,18 +788,22 @@ void LocalVolume::PBSetEOF(ParmBlkPtr pb)
 void LocalVolume::PBCatMove(CMovePBPtr pb)
 {
     ItemPtr item = resolve(pb->ioNamePtr, pb->ioVRefNum, pb->ioDirID);
-    auto newParent = std::dynamic_pointer_cast<DirectoryItem>(resolve(pb->ioNewName, pb->ioVRefNum, pb->ioNewDirID));
+    auto newParent = resolveDir(pb->ioVRefNum, pb->ioNewDirID);
 
-    if(!newParent)
-        throw OSErrorException(dirNFErr);   // check this?
+    // ioNewName is the item's new name (nil keeps the current one), not the
+    // destination; the destination directory is ioNewDirID.
+    mac_string_view newName = pb->ioNewName;
+    if(newName.find(':') != mac_string_view::npos)
+        throw OSErrorException(bdNamErr);
 
-    auto name = item->name();
+    mac_string_view finalName = newName.empty() ? mac_string_view(item->name()) : newName;
 
     itemCache->cacheDirectory(newParent);
-    if(newParent->tryResolve(mac_string_view(name.data(), name.size())))
-        throw OSErrorException(dupFNErr);
+    if(ItemPtr existing = newParent->tryResolve(finalName))
+        if(existing != item)
+            throw OSErrorException(dupFNErr);
 
-    itemCache->moveItem(item, newParent);
+    itemCache->moveItem(item, newParent, newName);
 }
 
 void LocalVolume::PBFlushFile(ParmBlkPtr pb)

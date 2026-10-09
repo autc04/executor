@@ -14,8 +14,4 @@ set_tests_properties(
 
             # MakeFSSpec should resolve current directory, Executor stores 0 in FSSpec
         FileTest.MakeFSSpec
-
-            # LocalVolume::PBCatMove resolves ioNewName as the new parent
-            # directory instead of the new item name, so move-with-rename fails.
-        LocalVolumeFixture.MoveAndRename
     APPEND PROPERTIES LABELS xfail)
