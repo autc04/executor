@@ -132,7 +132,10 @@ because batch mode is *possible* only as a consequence of always caching a
 directory whole. That batch requirement is an artifact, not an intrinsic need:
 assigning a single entry a CNID needs only its parent id and its host path, and
 a Mac name needs only the host basename plus, for `.bin` files, a one-file format
-check.
+check. The mapper already stores each mapping's host path and reuses it across
+enumerations, so identity itself is path-keyed; the enumeration dependency lives
+in `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`), which has no
+path → CNID index and must enumerate each ancestor to find the child.
 
 ## Decisions
 
@@ -142,8 +145,12 @@ check.
 2. **Sidecars are always hidden by name**, independent of whether they are
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
-3. **CNID identity is name-independent.** Mappings are keyed by host path; the
-   Mac name is stored alongside but is not part of the key.
+3. **CNID identity is path-determined and name-independent.** Identity is keyed by
+   `(parID, posixFilename)`; a mapping is reused whenever the same entry is seen
+   again. The Mac name does not determine the CNID and is **optional/undecided**
+   until Classify computes it. (The mapper already reuses by path today; what is
+   missing is the `(parID, posixFilename)` reverse index, not a change to identity
+   semantics.)
 4. **Name resolution is lazy and collision-scoped.** A `.bin` entry is classified
    when the name of **any entry in its collision cluster** is requested, not only
    its own.
@@ -152,8 +159,17 @@ check.
    (see *Collision clusters*). Over-grouping is harmless: it costs laziness only,
    never a wrong name. Under-grouping is what to avoid.
 6. **Disambiguation is assigned in catalog order**, making it deterministic; a
-   later iteration persists the numbers in the CNID database.
+   later iteration persists the numbers in the CNID database (Phase 7). (Today
+   the mapper assigns in host-path sort order — see open question 1.)
 7. **Caching is validation-based**, not timer-based (see *Caching* below).
+8. **Re-enumeration must not renumber or rename existing entries.** The current
+   mapper already has this property (mappings are reused by path, so deleting a
+   collision-set member leaves the survivors' names and CNIDs unchanged); the
+   staged design must preserve it.
+9. **Deciding a Mac name is a transaction.** Choosing final names is an atomic
+   read-modify-write over the conflicting set — first approximation: the whole
+   directory, refined later to a collision group. This is what lets concurrent
+   writers converge and keeps previously assigned numbers stable (Phase 7).
 
 ## Name model
 
@@ -182,8 +198,10 @@ key** derived from the host basename:
 2. strip a trailing `#<digits>` disambiguator;
 3. apply the same transform as Mac names (`toMacRomanFilename`) and case-fold
    (the name index uses `ROMlib_UprString`, `item.cpp:77`);
-4. truncate to leave room for a disambiguator — ~25–27 bytes, since the Mac name
-   limit is 31 and `#<N>` must still fit.
+4. truncate to the same cutoff `toMacRomanFilename` uses (`src/util/macstrings.cpp:204-268`):
+   30 bytes + ellipsis for a plain name, or `30 - len("#<N>")` bytes + ellipsis
+   + `#<N>` for a disambiguated one. Over-grouping from a fixed conservative
+   bound is harmless.
 
 Two entries are in the same cluster iff their base keys are equal. Stripping
 *both* `.bin` and `#N` is what merges the cases that can actually collide: `foo`,
@@ -205,7 +223,7 @@ Within a cluster the final names are jointly determined, so:
 
 When any cluster member's name is first requested: classify **all** members, then
 assign final names and `#N` numbers in **catalog order** (Decision 6; see open
-question 2 for the exact order). A lone `.bin` is a singleton cluster and
+question 1 for the exact order). A lone `.bin` is a singleton cluster and
 classifies only itself. Non-`.bin` entries never need Classify for naming.
 
 ## Proposed direction: the stage ladder
@@ -260,14 +278,18 @@ symlinks (`item.cpp:52`).
 
 ### CNID (per entry)
 
-Goal: path → CNID (and the reverse), assigned or looked up.
+Goal: assign or look up an item's CNID.
+
+The lookup key is `(parent CNID, posixFilename)` — **not** a full host path.
+Because traversal from the root always reaches the parent first, the parent's
+CNID is already assigned, so a per-directory index composes into path resolution
+without enumerating siblings; a direct posix-path → CNID index buys nothing on
+its own. The Mac name is not needed here (Decision 3), so this stage is name-free.
 
 Separate because the backend can be slow: `SimpleCNIDMapper` is in-memory, but a
 persistent `LMDBCNIDMapper` (currently disabled, `localvolume.cpp:63-64`) pays
 transaction cost per operation. Isolating it means the cost is paid only when a
 `dirID` is actually needed, not on every scan.
-
-Needs: parent CNID + host path. Does **not** need the name.
 
 ### Classify (per entry, or per collision cluster)
 
@@ -304,7 +326,7 @@ Split the two jobs the current LRU + 1 s timeout (`itemcache.cpp:26`) conflates:
     list only when the directory mtime moved; this catches add/remove/rename and
     in-place edits (which directory mtime alone does not).
   - **Realized item**: on access, `stat` the item; if `(mtime, size)` differ from
-    what was materialized, drop back to Identity/Classify.
+    what was materialized, drop back to CNID/Classify.
 
 This removes the 1 s / 20-directory policy entirely.
 
@@ -312,15 +334,29 @@ This removes the 1 s / 20-directory policy entirely.
 
 ### `CNIDMapper` (`cnidmapper.h`)
 
-- Add single-entry identity, e.g. `getOrCreateIdentity(CNID parID, const fs::path& path)`
-  — assigns a CNID without enumerating the parent. No name argument, per
-  Decision 3.
-- Make batch `mapDirectoryContents` an *optimization* used when a directory is
-  actually enumerated, reconciling against identities assigned lazily.
-- Add a path → CNID index. `SimpleCNIDMapper`: in-memory. `LMDBCNIDMapper`:
-  persisted secondary index.
-- Store the (possibly refined) Mac name and, later, disambiguation numbers
-  (open question 1).
+Backing store, per volume:
+
+- `cnid -> { parID, posixFilename, macFilename?, mtime, (dev, inode) }` — the item
+  record. Replace the cached `fs::directory_entry` with a plain path/filename and
+  an explicit `mtime` snapshot, so the mapper owns what it validated.
+  `macFilename` is **optional** until Classify decides it (Decisions 3/4).
+  `(dev, inode)` is stored now for future rename tracking (Phase 8).
+- `(parID, posixFilename) -> cnid` — the load-bearing index. It is also the
+  directory content/diff index: enumerate a directory by looking up each host
+  entry, and detect deletions as stored children not seen in the host scan. This
+  replaces the current path-sorted `directories_` vector (no sort-merge needed for
+  the diff).
+- `(parID, macFilename) -> cnid` — **deferred** (needs its own per-file staleness
+  rules; a Mac name can be reassigned between files). Until it exists, lookups by
+  Mac name force enumeration via the existing `tryResolve`.
+
+Operations:
+
+- `getOrCreate(parID, posixFilename)` — name-free, per Decision 3.
+- Batch re-enumeration reconciles against `(parID, posixFilename)`, reusing CNIDs
+  and keeping already-decided `macFilename`s (Decision 8).
+- Deciding `macFilename` is a **transaction** (Decision 9): an atomic
+  read-modify-write over the conflicting set.
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
@@ -352,21 +388,25 @@ This removes the 1 s / 20-directory policy entirely.
 
 ## Design challenges / open questions
 
-1. **Persistence of names / disambiguation.** Store the assignment in the CNID
-   DB (later iteration) so a member's name needs no cluster re-derivation and
-   numbering survives restarts.
-2. **Exact catalog order.** Define the deterministic order used for both listing
-   and disambiguation (HFS orders by name; confirm base-then-disambiguator is
-   right, and where in the pipeline the truncation is applied). `contents_` is
-   host-path order today.
-3. **CNID stability across lazy vs batch assignment.** Invariant + test: an
-   identity created lazily is reused by batch reconciliation; a mapping whose
-   path vanished is dropped.
-4. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
+1. **Exact catalog order.** Define the deterministic order used for both listing
+   and disambiguation (HFS orders by name; today the mapper assigns in host-path
+   sort order). Confirm base-then-disambiguator is right and where the truncation
+   is applied.
+2. **Disambiguation transaction scope.** Whole-directory is the first
+   approximation, a collision group the refinement. Define the read-modify-write
+   and the convergence/retry rules so concurrent instances agree (Phase 7).
+3. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
    currently flush whole directories; define how each invalidates Count /
    Enumerate / Classify while preserving CNID identity.
-5. **External modification.** Reconciliation now happens at validation time
+4. **External modification.** Reconciliation now happens at validation time
    (*Caching*) rather than only at the next full cache.
+
+*Not* open: CNID and name stability across re-enumeration is already provided by
+the mapper's match-by-path reuse, and is pinned by
+`DisambiguatedNamesStableAcrossDelete`, `MoveKeepsDisambiguatedNameAndPosixName`
+and `CnidStableAcrossRenameThenMove`. A new single-entry identity must simply
+preserve it, not introduce it. Persistence/sharing is Phase 7; inode-based rename
+tracking is Phase 8.
 
 ## Phased plan
 
@@ -424,7 +464,8 @@ No production-code refactor happens before this phase is complete.
 
 ### Phase 1 — Path resolution without ancestor enumeration (fixes F1)
 
-CNID stage with a path index, plus Classify for the final entry's name; route
+CNID stage with the `(parID, posixFilename) -> cnid` index, walking components
+from the root, plus Classify for the final entry's name; route
 `nativePathToFSSpec` / `resolve` through it. Deliverable: opening
 `/nix/store/…/Dialog.bin` no longer touches `/nix/store`.
 **Risk:** CNID assignment/name handling for lazily-identified entries.
@@ -459,6 +500,22 @@ MacBinary, then plain).
 
 Replace the LRU + timeout with the validation scheme; keep an LRU for memory
 only.
+
+### Phase 7 — CNID persistence, transactions, multi-instance sharing
+
+Re-enable `LMDBCNIDMapper` as the backing store: persist the `cnid -> record`
+table and the `(parID, posixFilename) -> cnid` index, and make disambiguation a
+**transactional read-modify-write** (whole directory first, collision group
+later — Decision 9). With LMDB's single-writer model this lets two Executor
+instances share CNID and disambiguation decisions for the same volume. Requires
+the earlier phases to be fast enough to absorb LMDB's per-operation cost.
+
+### Phase 8 — Inode-based rename tracking
+
+Use the stored `(dev, inode)` to keep an item's CNID when its host file is
+renamed outside the FileManager (an external rename currently looks like
+delete + create, so it loses identity). Nothing above depends on this; it is a
+separate phase.
 
 ## Testing
 
@@ -550,7 +607,7 @@ against regressing F1/F3.
 ## Out of scope
 
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
-- Re-enabling the LMDB mapper, except insofar as it affects open question 1.
+- Re-enabling the LMDB mapper, except insofar as it affects Phase 7.
 - HFS backend behaviour.
 
 ## References
