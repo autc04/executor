@@ -45,7 +45,9 @@ ItemPtr ExtensionItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID p
 {
     if(fs::is_regular_file(e.path()))
     {
-        return std::make_shared<PlainFileItem>(itemcache, parID, cnid, e.path(), macname);
+        auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
+        item->setRep(std::make_shared<PlainRep>(*item));
+        return item;
     }
     return nullptr;
 }

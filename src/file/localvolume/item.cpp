@@ -1,7 +1,9 @@
 #include "item.h"
 #include "itemcache.h"
+#include "openfile.h"
 
 #include <OSUtil.h>
+#include <cassert>
 #include <iostream>
 
 using namespace Executor;
@@ -44,6 +46,33 @@ void Item::setInfo(ItemInfo info)
     auto oldModTime = fs::last_write_time(path()) + macToUnixEpoch;
     if(oldModTime != (int64_t)info.modTime)
         fs::last_write_time(path(), info.modTime - macToUnixEpoch);
+}
+
+std::unique_ptr<OpenFile> FileItem::open(int8_t permission)
+{
+    assert(rep_);
+    return rep_->open(permission);
+}
+
+std::unique_ptr<OpenFile> FileItem::openRF(int8_t permission)
+{
+    assert(rep_);
+    return rep_->openRF(permission);
+}
+
+ItemInfo FileItem::getInfo()
+{
+    ItemInfo info = Item::getInfo();
+    if(rep_)
+        rep_->getInfo(info);
+    return info;
+}
+
+void FileItem::setInfo(ItemInfo info)
+{
+    Item::setInfo(info);
+    if(rep_)
+        rep_->setInfo(info);
 }
 
 ItemPtr DirectoryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,

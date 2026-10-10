@@ -109,18 +109,18 @@ size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 #endif
 
 
-std::unique_ptr<OpenFile> PlainFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> PlainRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path_, permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> PlainFileItem::openRF(int8_t permission)
+
+std::unique_ptr<OpenFile> PlainRep::openRF(int8_t permission)
 {
     return std::make_unique<EmptyFork>();
 }
 
-ItemInfo PlainFileItem::getInfo()
+void PlainRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     info.file.info = {
         "TEXT"_4,
         "ttxt"_4,
@@ -128,12 +128,10 @@ ItemInfo PlainFileItem::getInfo()
         { 0, 0 }, // fdLocation
         0 // fdFldr
     };
-    return info;
 }
 
-void PlainFileItem::setInfo(ItemInfo info)
+void PlainRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
     if(info.file.info.fdType != "TEXT"_4)
         throw UpgradeRequiredException();
 }

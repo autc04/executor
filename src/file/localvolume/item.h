@@ -39,6 +39,22 @@ struct ItemInfo
     unsigned long creationTime;
 };
 
+// The file-format concern, split out of FileItem so an Item can exist without
+// knowing its encoding. A FileRep knows where the forks/Finder info live and how
+// to open them. (delete/move still live on the Item classes for now.)
+class FileRep
+{
+public:
+    virtual ~FileRep() = default;
+
+    virtual std::unique_ptr<OpenFile> open(int8_t permission) = 0;
+    virtual std::unique_ptr<OpenFile> openRF(int8_t permission) = 0;
+    virtual void getInfo(ItemInfo& info) = 0;
+    virtual void setInfo(const ItemInfo& info) = 0;
+};
+
+using FileRepPtr = std::shared_ptr<FileRep>;
+
 class Item
 {
 protected:
@@ -120,12 +136,18 @@ class FileItem : public Item
     friend class Executor::LocalVolume;
     short dataWriteAccessRefNum = -1;
     short resWriteAccessRefNum = -1;
+    FileRepPtr rep_;
 
 public:
     using Item::Item;
 
-    virtual std::unique_ptr<OpenFile> open(int8_t permission) = 0;
-    virtual std::unique_ptr<OpenFile> openRF(int8_t permission) = 0;
+    void setRep(FileRepPtr rep) { rep_ = std::move(rep); }
+    const FileRepPtr& rep() const { return rep_; }
+
+    virtual std::unique_ptr<OpenFile> open(int8_t permission);
+    virtual std::unique_ptr<OpenFile> openRF(int8_t permission);
+    virtual ItemInfo getInfo() override;
+    virtual void setInfo(ItemInfo info) override;
 };
 
 }

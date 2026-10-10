@@ -6,16 +6,17 @@
 
 namespace Executor
 {
-class PlainFileItem : public FileItem
+class PlainRep : public FileRep
 {
-public:
-    using FileItem::FileItem;
+    FileItem& item_;
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+public:
+    explicit PlainRep(FileItem& item) : item_(item) {}
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
 };
 
 class PlainDataFork : public OpenFile
