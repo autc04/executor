@@ -60,6 +60,10 @@ public:
     virtual void getInfo(ItemInfo& info) = 0;
     virtual void setInfo(const ItemInfo& info) = 0;
 
+    // The filename the displayed Mac name is derived from. Reps that rename on
+    // materialization (MacBinary drops a trailing ".bin") override this.
+    virtual fs::path nameSource(const fs::path& filename) const;
+
     // Host-file mutation. The default handles a single host file; formats that
     // keep sidecars (AppleDouble, Basilisk) override.
     virtual void remove();

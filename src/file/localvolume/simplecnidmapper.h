@@ -33,10 +33,11 @@ class SimpleCNIDMapper : public CNIDMapper
 public:
     explicit SimpleCNIDMapper(fs::path root, mac_string volumeName);
 
-    virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<fs::directory_entry> realPaths) override;
+    virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> realPaths) override;
     virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
     virtual std::optional<Mapping> lookupChild(CNID parID, const fs::path& filename) override;
-    virtual Mapping getOrCreateChild(CNID parID, const fs::path& path, const fs::path& filename) override;
+    virtual Mapping getOrCreateChild(CNID parID, const fs::path& path, const fs::path& filename,
+        const fs::path& nameSource) override;
     virtual void deleteCNID(CNID cnid) override;
     virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) override;
 };

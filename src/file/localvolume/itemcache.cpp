@@ -6,6 +6,7 @@
 #include <set>
 #include <iostream>
 #include <algorithm>
+#include <cctype>
 
 using namespace Executor;
 
@@ -70,12 +71,12 @@ bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
     bool ok = true;
     for(int attempt = 0; attempt < 3; attempt++)
     {
-        std::vector<fs::directory_entry> entries;
+        std::vector<CNIDMapper::DirEntry> entries;
         try
         {
             for(const auto& e : fs::directory_iterator(dir->path()))
                 if(!itemFactory_->isHidden(e))
-                    entries.push_back(e);
+                    entries.push_back({ e, nameSourceFor(e.path()) });
         }
         catch(const boost::filesystem::filesystem_error& exc)
         {
@@ -280,7 +281,7 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         // the whole parent directory.
         auto mapping = cnidMapper_->lookupChild(dir->cnid(), elem);
         if(!mapping)
-            mapping = cnidMapper_->getOrCreateChild(dir->cnid(), childPath, elem);
+            mapping = cnidMapper_->getOrCreateChild(dir->cnid(), childPath, elem, nameSourceFor(childPath));
 
         item = itemForMapping(*mapping);
         if(!item)
@@ -300,6 +301,23 @@ ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)
     if(item)
         items_.emplace(mapping.cnid, item);
     return item;
+}
+
+fs::path ItemCache::nameSourceFor(const fs::path& path)
+{
+    fs::path filename = path.filename();
+
+    std::string ext = filename.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+        [](unsigned char c) { return (char)std::tolower(c); });
+    if(ext != ".bin")
+        return filename;
+
+    // Only ".bin" files can be MacBinary (and so rename); probe just those, so
+    // enumeration does not run the format gauntlet for every file.
+    FileItem probe(*this, 0, 0, path);
+    FileRepPtr rep = itemFactory_->createRepForFile(*this, probe, fs::directory_entry(path));
+    return rep ? rep->nameSource(filename) : filename;
 }
 
 ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name)

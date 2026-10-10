@@ -689,14 +689,23 @@ TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
 // once the relevant phase lands.
 // --------------------------------------------------------------------------
 
-// Phase 4 (Resolve/naming): a MacBinary "foo.bin" should be presented to the
-// guest as "foo".
-TEST_F(LocalVolumeFixture, DISABLED_MacBinaryStripsBinExtension)
+// Phase 4: a MacBinary "foo.bin" is presented to the guest as "foo".
+TEST_F(LocalVolumeFixture, MacBinaryStripsBinExtension)
 {
     hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
     hostFile("plain.txt", "hi");
 
     EXPECT_EQ((std::set<std::string> { "foo", "plain.txt" }), namesOf(fmList(rootDirID_)));
+}
+
+// Phase 4: a MacBinary-looking "foo.bin" with an AppleDouble sidecar is
+// AppleDouble, so it keeps its ".bin" (sidecars win over MacBinary).
+TEST_F(LocalVolumeFixture, SidecarNameWinsOverMacBinary)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    hostFile("%foo.bin", "appledouble");
+
+    EXPECT_EQ((std::set<std::string> { "foo.bin" }), namesOf(fmList(rootDirID_)));
 }
 
 // --------------------------------------------------------------------------

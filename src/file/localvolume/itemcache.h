@@ -48,6 +48,10 @@ class ItemCache
     // are neither a regular file nor a directory.
     ItemPtr makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name);
 
+    // The filename a child's Mac name is derived from (differs from the host
+    // filename only for MacBinary, whose ".bin" is dropped).
+    fs::path nameSourceFor(const fs::path& path);
+
 public:
     // Build and install the FileRep for a FileItem (the format gauntlet).
     // Idempotent; called lazily from FileItem on first access.

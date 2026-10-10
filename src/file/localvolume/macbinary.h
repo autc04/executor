@@ -84,6 +84,9 @@ public:
     virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
+
+    // A MacBinary file is presented without its ".bin" extension.
+    virtual fs::path nameSource(const fs::path& filename) const override;
 };
 
 class MacBinaryItemFactory : public ItemFactory

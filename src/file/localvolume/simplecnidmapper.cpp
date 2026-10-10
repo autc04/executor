@@ -69,13 +69,14 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupChild(CNID parID, con
         fs::directory_entry(mit->second.path), mit->second.macname };
 }
 
-CNIDMapper::Mapping SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::path& path, const fs::path& filename)
+CNIDMapper::Mapping SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::path& path,
+    const fs::path& filename, const fs::path& nameSource)
 {
     if(auto existing = lookupChild(parID, filename))
         return *existing;
 
     auto usedNames = namesInUse(parID);
-    mac_string macname = chooseMacName(filename, usedNames);
+    mac_string macname = chooseMacName(nameSource, usedNames);
     CNID cnid = nextCNID_++;
 
     mappings_.emplace(cnid, StoredMapping { parID, cnid, path, macname });
@@ -85,11 +86,12 @@ CNIDMapper::Mapping SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::pat
 }
 
 std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dirID,
-        std::vector<fs::directory_entry> realPaths)
+        std::vector<DirEntry> realPaths)
 {
     auto& children = children_[dirID];
 
-    std::sort(realPaths.begin(), realPaths.end());
+    std::sort(realPaths.begin(), realPaths.end(),
+        [](const DirEntry& a, const DirEntry& b) { return a.entry < b.entry; });
 
     // Names already assigned in this directory, including lazily-created
     // identities, so a new entry never takes an existing entry's name.
@@ -101,9 +103,9 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
     ChildIndex newChildren;
     newChildren.reserve(realPaths.size());
 
-    for(auto& entry : realPaths)
+    for(auto& de : realPaths)
     {
-        const std::string filename = entry.path().filename().string();
+        const std::string filename = de.entry.path().filename().string();
 
         CNID cnid;
         auto cit = children.find(filename);
@@ -116,13 +118,13 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
         {
             // new mapping
             cnid = nextCNID_++;
-            mac_string macname = chooseMacName(entry.path().filename(), usedNames);
-            mappings_.emplace(cnid, StoredMapping { dirID, cnid, entry.path(), macname });
+            mac_string macname = chooseMacName(de.nameSource, usedNames);
+            mappings_.emplace(cnid, StoredMapping { dirID, cnid, de.entry.path(), macname });
         }
 
         auto mit = mappings_.find(cnid);
         assert(mit != mappings_.end());
-        dirMappings.push_back({ dirID, cnid, std::move(entry), mit->second.macname });
+        dirMappings.push_back({ dirID, cnid, std::move(de.entry), mit->second.macname });
         newChildren.emplace(filename, cnid);
     }
 

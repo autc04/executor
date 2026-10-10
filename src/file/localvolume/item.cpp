@@ -53,6 +53,11 @@ void FileRep::remove()
     fs::remove(item_.path());
 }
 
+fs::path FileRep::nameSource(const fs::path& filename) const
+{
+    return filename;
+}
+
 void FileRep::move(const fs::path& newPath)
 {
     fs::rename(item_.path(), newPath);

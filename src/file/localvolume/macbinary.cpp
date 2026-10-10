@@ -424,6 +424,12 @@ void MacBinaryRep::setInfo(const ItemInfo& info)
     access(fsRdWrPerm)->writeFInfo(info);
 }
 
+fs::path MacBinaryRep::nameSource(const fs::path& filename) const
+{
+    // Present "foo.bin" to the guest as "foo".
+    return filename.stem();
+}
+
 FileRepPtr MacBinaryItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e)
 {
