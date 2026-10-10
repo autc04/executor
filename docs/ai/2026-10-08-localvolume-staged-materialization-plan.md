@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phase 0 done (test harness + instrumentation); refactor not started
+- **Status:** Phases 0–2 done; Phase 3 (object model) in design
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -13,26 +13,25 @@
 ## Summary
 
 Two performance problems in `LocalVolume` share one architectural cause: an
-`Item` is all-or-nothing, and an `ItemCache` directory is either "cached" (fully
-enumerated and every child realized as an `Item`) or "not cached". Everything —
-assigning a CNID, reporting a directory's item count, and listing a directory —
-collapses onto the single expensive "fully cache the whole directory" operation.
+`Item` is all-or-nothing (identity *and* file format), and an `ItemCache`
+directory is either "cached" (fully enumerated and every child realized) or "not
+cached". Assigning a CNID, reporting a directory's item count, and listing a
+directory all collapse onto one expensive "fully cache the whole directory"
+operation.
 
-This plan replaces the two-state model with a set of **independently triggerable
-stages**, each cheaper than the next and none requiring a later one:
+This plan separates the stages that have been conflated. Stages apply at three
+scopes:
 
-| Stage | Scope | Cost | Enables |
-|---|---|---|---|
-| **Count** | directory | readdir + name filter | `ioDrNmFls` |
-| **Enumerate** | directory | + name transforms | indexed listing, name candidates |
-| **CNID** | entry | backend-dependent (slow with LMDB) | `dirID` / `parID` identity |
-| **Classify** | entry, or collision cluster | `.bin` header / sidecar probes | final Mac name, winning factory |
-| **Materialize** | entry | full `Item`, `getInfo`, `open` | metadata, forks, sizes |
+| Scope | Stages |
+|---|---|
+| **Directory** | Instantiate → Count → Instantiate children → Fully resolved |
+| **File item by itself** | Instantiate → Materialize (= Classify) → Resolve |
+| **File item in a directory** | driven by its parent's Count / Instantiate children / Resolve |
 
-The headline fixes are that **path resolution must not require any directory to
-be enumerated**, and that **reporting a count must not require realizing the
-directory's contents**. The name model below is what makes Enumerate content-free
-and pushes classification to a lazy, collision-scoped stage.
+and it **splits the file-format concern out of `Item`** (into a `FileRep`), so an
+`Item` can exist without knowing its format. The headline fixes are that **path
+resolution must not enumerate any directory** and that **reporting a count must
+not realize the directory's contents**.
 
 ## Findings (current behaviour)
 
@@ -145,172 +144,140 @@ path → CNID index and must enumerate each ancestor to find the child.
 2. **Sidecars are always hidden by name**, independent of whether they are
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
-3. **CNID identity is path-determined and name-independent.** Identity is keyed by
-   `(parID, posixFilename)`; a mapping is reused whenever the same entry is seen
-   again. The Mac name does not determine the CNID and is **optional/undecided**
-   until Classify computes it. (The mapper already reuses by path today; what is
-   missing is the `(parID, posixFilename)` reverse index, not a change to identity
-   semantics.)
-4. **Name resolution is lazy and collision-scoped.** A `.bin` entry is classified
-   when the name of **any entry in its collision cluster** is requested, not only
-   its own.
-5. **Cluster detection is conservative**, via a base key that strips `.bin` and
-   any `#<digits>`, case-folds, and truncates to leave room for a disambiguator
-   (see *Collision clusters*). Over-grouping is harmless: it costs laziness only,
-   never a wrong name. Under-grouping is what to avoid.
-6. **Disambiguation is assigned in catalog order**, making it deterministic; a
-   later iteration persists the numbers in the CNID database (Phase 7). (Today
-   the mapper assigns in host-path sort order — see open question 1.)
-7. **Caching is validation-based**, not timer-based (see *Caching* below).
-8. **Re-enumeration must not renumber or rename existing entries.** The current
-   mapper already has this property (mappings are reused by path, so deleting a
-   collision-set member leaves the survivors' names and CNIDs unchanged); the
-   staged design must preserve it.
-9. **Deciding a Mac name is a transaction.** Choosing final names is an atomic
-   read-modify-write over the conflicting set — first approximation: the whole
-   directory, refined later to a collision group. This is what lets concurrent
-   writers converge and keeps previously assigned numbers stable (Phase 7).
+3. **Identity is path-determined and name-independent.** Identity is keyed by
+   `(parID, posixName)`; a mapping is reused whenever the same entry is seen
+   again. `macName` does not determine the CNID and is **optional/undecided**
+   until Resolve.
+4. **Name resolution is lazy and group-scoped.** Final names are decided when a
+   member of a `macNamePrefix` group is named, not eagerly.
+5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
+   Over-grouping costs only laziness; under-grouping would be a bug.
+6. **Disambiguation is assigned in catalog order** (open question 2), making it
+   deterministic; a later iteration persists the numbers (Phase 7).
+7. **Caching is validation-based**, not timer-based (see *Caching*).
+8. **Re-enumeration must not renumber or rename existing entries.** The mapper
+   already has this property (reuse by path); the staged design must preserve it.
+9. **Resolving names is a transaction.** Assigning `macName`/`CNID` is an atomic
+   read-modify-write over the group (first cut: the whole directory), so
+   concurrent writers converge and numbers stay stable (Phase 7).
+10. **Identity is split from format.** `Item` may be instantiated without knowing
+    its file format; the format lives in a `FileRep` (see *Object model*).
 
-## Name model
+## Names
 
-Because of Decisions 1–2, Enumerate can derive candidate names with **no file
-I/O**:
+### `macNamePrefix`
+
+At a file's Instantiate we know a grouping key, **not** the name:
 
 ```
-for each non-hidden entry:
-    f1 = toMacRomanFilename(basename)                      # identity transform
-    f2 = toMacRomanFilename(basename minus ".bin") if basename ends in ".bin"
-    candidates = { f1 } or { f1, f2 }
+macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
+                    stripDisambiguator(
+                        stripBin(
+                            toMacRoman(first31(posixName)))))
 ```
 
-The final name is `f1` or `f2`, chosen by the **winning factory** at Classify:
-MacBinary (magic check passes, and no sidecar/xattr backend won) → `f2`; every
-other factory → `f1`. This is why the rule belongs to the factory, not to a
-standalone extension check: a `foo.bin` with a `._foo.bin` companion is
-AppleDouble and keeps `foo.bin`.
+- `toMacRoman(x)` — raw conversion to MacRoman (not `toMacRomanFilename`'s
+  truncation logic).
+- `stripBin` — drop a trailing `.bin`, so a MacBinary `foo.bin` groups with a
+  plain `foo`.
+- `stripDisambiguator` — drop a trailing `#<digits>`.
+- `maxDisambiguatorDigits = 3`; truncate to `30 - 3 = 27` bytes to leave room for
+  a generated `#999`.
 
-### Collision clusters
+Entries with equal `macNamePrefix` are the ones that can collide (the **group**).
+This refines the earlier `f1`/`f2?` candidate-set idea into a single key.
 
-Rather than comparing candidate sets directly, cluster by a conservative **base
-key** derived from the host basename:
+### The final name
 
-1. strip a trailing `.bin` (case-insensitively);
-2. strip a trailing `#<digits>` disambiguator;
-3. apply the same transform as Mac names (`toMacRomanFilename`) and case-fold
-   (the name index uses `ROMlib_UprString`, `item.cpp:77`);
-4. truncate to the same cutoff `toMacRomanFilename` uses (`src/util/macstrings.cpp:204-268`):
-   30 bytes + ellipsis for a plain name, or `30 - len("#<N>")` bytes + ellipsis
-   + `#<N>` for a disambiguated one. Over-grouping from a fixed conservative
-   bound is harmless.
+The final Mac name is the raw name or the `.bin`-stripped name, chosen by the
+winning rep: MacBinary → stripped; every other rep → raw. The rule belongs to
+the rep, not a standalone extension check: a `foo.bin` with a `._foo.bin`
+companion is AppleDouble and keeps `foo.bin`. The mapper's `macFilename` field
+holds the chosen name and is **optional** until Resolve decides it.
 
-Two entries are in the same cluster iff their base keys are equal. Stripping
-*both* `.bin` and `#N` is what merges the cases that can actually collide: `foo`,
-`foo.bin`, and a literal `foo#1` all reduce to the base `foo`, so a MacBinary
-`foo.bin` that strips to `foo` is considered against both. Truncation is
-deliberate over-grouping: names differing only past the truncation point would be
-reduced to the same base once a disambiguator is appended. This also subsumes the
-earlier transitive-closure concern (a generated `foo#1` versus a literal
-`foo#1`), because the base key strips the `#N` from both sides.
+## Stage model
 
-Over-grouping is harmless — it can only force classification of a few extra
-entries (less laziness), never a wrong name.
+Stages are independently triggerable; none requires a later one unless stated.
 
-Within a cluster the final names are jointly determined, so:
+| Scope | Stages |
+|---|---|
+| Directory | Instantiate → Count → Instantiate children → Fully resolved |
+| File item by itself | Instantiate → Materialize (= Classify) → Resolve |
+| File item in a directory | driven by the parent's Count / Instantiate children / Resolve |
 
-> Classifying a `.bin` entry is required whenever the name of **any entry in its
-> cluster** is requested — not merely its own name. (An earlier "one bit, needed
-> only when that entry's own name is asked" was wrong.)
+### Directory
 
-When any cluster member's name is first requested: classify **all** members, then
-assign final names and `#N` numbers in **catalog order** (Decision 6; see open
-question 1 for the exact order). A lone `.bin` is a singleton cluster and
-classifies only itself. Non-`.bin` entries never need Classify for naming.
+1. **Instantiate.** The `DirectoryItem` exists with identity only.
+2. **Count.** Read the host directory once and store intermediate
+   **descriptors** `(host path, posixName, kind, macNamePrefix)` for the visible
+   children (sidecar names filtered). The descriptors are retained so the next
+   stage can reuse the scan. This is what answers `ioDrNmFls`.
+   `ioDrNmFls` is a snapshot by nature: HFS keeps a stored valence, and the host
+   directory is live, so a cheap readdir count (or a cached one, validated per
+   *Caching*) is no less correct than today's value. Document the staleness bound
+   rather than pretending to exactness.
+3. **Instantiate children.** Turn descriptors into child `Item`s. May be folded
+   into Count — open question Q1.
+4. **Fully resolved.** Every child is Resolved.
 
-## Proposed direction: the stage ladder
+### File item by itself
 
-Stages are independently triggerable and not a strict chain. In particular, path
-resolution needs only CNID + Classify, and Count needs neither Enumerate nor
-CNID.
+1. **Instantiate.** The `FileItem` exists. Known: `(parID, posixName,
+   macNamePrefix)`. **Not** known: `macName`, `CNID`.
+2. **Materialize.** Construct the `FileRep` (the format concern). See *Classify*.
+3. **Resolve.** Decide `macName` and `CNID`.
 
-```mermaid
-graph TD
-    Count["Count - readdir + filter"]
-    Enum["Enumerate - descriptors: path, kind, f1, f2?"]
-    CNID["CNID - path to id, backend-dependent"]
-    Classify["Classify - winning factory, final name"]
-    Materialize["Materialize - Item, getInfo, open"]
+Materialize does not read file data — it establishes the item's representation
+(which rep, where the forks live, Finder metadata), and does not imply reading a
+whole file.
 
-    Count --> Enum
-    Enum --> Classify
-    CNID --> Materialize
-    Classify --> Materialize
-```
+### File item in a directory
 
-### Count (per directory)
+Its parent drives it: Count produces its descriptor, Instantiate children gives
+it an `Item`, and the parent's Resolve names and numbers it.
 
-Goal: `ioDrNmFls` for a directory.
+### Classify
 
-Needs: one `directory_iterator` + the name-predicate filter. Does **not** need
-name transforms, CNID assignment, descriptors, `Item` construction, or factory
-probing. This is the cheapest stage and must be reachable on its own.
+For now Classify is just another name for Materialize: we decide the rep by
+building it. Keep the words distinct so that "deciding the rep" and "building the
+rep" can diverge later (more encodings, costlier decisions) — a far-future
+option, not now.
 
-`ioDrNmFls` is a snapshot by nature: HFS itself keeps a stored valence that can
-go stale, and `LocalVolume` mirrors a *live* host directory that other programs
-can change underneath it. Any consumer already races a
-time-of-check/time-of-use window, so a cheap single-readdir count (or a cached
-one, validated per *Caching*) is no less correct than today's value. Document the
-staleness bound rather than pretending to exactness.
+### Resolve
 
-### Enumerate (per directory)
+`Resolve` assigns an item's `macName` and `CNID`. It delegates to the parent
+`DirectoryItem`, which:
 
-Goal: indexed `PBGetCatInfo` listing (`DirectoryItem::resolve(index,
-includeDirectories)`, `item.cpp:111`), and the candidate sets Classify needs.
+1. **Classifies every `.bin` child** (a `.bin` child's final base name is only
+   known once its winning rep is known), then
+2. **Resolves the directory's children** — first cut: all of them; later, only
+   the group sharing the item's `macNamePrefix` —
 
-Needs: readdir + filter + name transforms. Output per entry:
+in **one CNID-mapper transaction** (Decision 9).
 
-```
-(host path, kind, f1, f2?)
-```
+Path resolution Resolves the components along the path individually; a collision
+can only involve same-`macNamePrefix` siblings, which in the common case is a
+singleton group.
 
-Still no CNID assignment, no factory probing, no `getInfo`, no fork layout. Kind
-is a cheap check (or free from the dirent type); note `fs::is_directory` follows
-symlinks (`item.cpp:52`).
+## Object model
 
-### CNID (per entry)
+The format concern is **split out of `Item`** so an `Item` can exist without
+knowing its file format (Variant B; see *Discarded alternatives*):
 
-Goal: assign or look up an item's CNID.
+- **`Item`** — identity only: `parID`, `cnid`, `path`, `name` (optional until
+  Resolve), plus the identity ops (`deleteItem`, `moveItem`). Instantiable at
+  Instantiate.
+- **`DirectoryItem : Item`** — the children (descriptors, then child `Item`s) and
+  the directory stages.
+- **`FileItem : Item`** — holds an optional `FileRep`.
+- **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`;
+  concrete `PlainRep`, `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`,
+  `MacBinaryRep`. Built at Materialize.
 
-The lookup key is `(parent CNID, posixFilename)` — **not** a full host path.
-Because traversal from the root always reaches the parent first, the parent's
-CNID is already assigned, so a per-directory index composes into path resolution
-without enumerating siblings; a direct posix-path → CNID index buys nothing on
-its own. The Mac name is not needed here (Decision 3), so this stage is name-free.
-
-Separate because the backend can be slow: `SimpleCNIDMapper` is in-memory, but a
-persistent `LMDBCNIDMapper` (currently disabled, `localvolume.cpp:63-64`) pays
-transaction cost per operation. Isolating it means the cost is paid only when a
-`dirID` is actually needed, not on every scan.
-
-### Classify (per entry, or per collision cluster)
-
-Goal: the final Mac name, and which factory wins.
-
-Needs: the entry's candidate set plus enough format detection to pick the winner
-— for `.bin`: AppleSingle magic, AppleDouble/Basilisk sidecar stats, MacBinary
-header + CRC (`macbinary.cpp:136`). Does **not** need `getInfo`, fork sizes, or a
-full `Item`. Classify is a lightweight projection of Materialize.
-
-Triggered when a cluster member's name is requested. Bounded to `.bin` files and
-collision clusters.
-
-### Materialize (per entry)
-
-Goal: `getInfo`, `open`, `openRF`, sizes, Finder metadata.
-
-Construct the concrete `Item` on demand and probe format-specific data on access
-— not while scanning the directory. Move the eager per-entry work out of
-`ItemFactory::createItemForDirEntry` (currently `localvolume.cpp:96`,
-`appledouble.cpp:30/117`, `basilisk.cpp:16`, `macbinary.cpp:430`).
+`ItemCache::items_` (`cnid -> weak_ptr<Item>`) stays the realization cache, so
+"find an already-realized child" is answered there, not by the parent.
+`upgradeItem` becomes a `FileRep` swap (it still rewrites the host file into the
+richer encoding).
 
 ## Caching
 
@@ -321,12 +288,13 @@ Split the two jobs the current LRU + 1 s timeout (`itemcache.cpp:26`) conflates:
 - **Staleness** becomes explicit validation, so correctness no longer depends on
   timing:
   - **Membership**: `stat` the directory itself; if its mtime is unchanged since
-    Enumerate, the entry list, candidate sets, and count are still valid — O(1).
+    Count, the descriptors, `macNamePrefix` groups, and count are still valid —
+    O(1).
   - **Per-entry**: escalate to re-reading the directory's `(filename, mtime)`
     list only when the directory mtime moved; this catches add/remove/rename and
     in-place edits (which directory mtime alone does not).
-  - **Realized item**: on access, `stat` the item; if `(mtime, size)` differ from
-    what was materialized, drop back to CNID/Classify.
+  - **Materialized item**: on access, `stat` the item; if `(mtime, size)` differ
+    from what was materialized, drop its `FileRep` (back to Instantiate).
 
 This removes the 1 s / 20-directory policy entirely.
 
@@ -336,268 +304,213 @@ This removes the 1 s / 20-directory policy entirely.
 
 Backing store, per volume:
 
-- `cnid -> { parID, posixFilename, macFilename?, mtime, (dev, inode) }` — the item
+- `cnid -> { parID, posixName, macName?, mtime, (dev, inode) }` — the item
   record. Replace the cached `fs::directory_entry` with a plain path/filename and
-  an explicit `mtime` snapshot, so the mapper owns what it validated.
-  `macFilename` is **optional** until Classify decides it (Decisions 3/4).
+  an explicit `mtime` snapshot. `macName` is optional until Resolve (Decision 3).
   `(dev, inode)` is stored now for future rename tracking (Phase 8).
-- `(parID, posixFilename) -> cnid` — the load-bearing index. It is also the
-  directory content/diff index: enumerate a directory by looking up each host
-  entry, and detect deletions as stored children not seen in the host scan. This
-  replaces the current path-sorted `directories_` vector (no sort-merge needed for
-  the diff).
-- `(parID, macFilename) -> cnid` — **deferred** (needs its own per-file staleness
-  rules; a Mac name can be reassigned between files). Until it exists, lookups by
-  Mac name force enumeration via the existing `tryResolve`.
+- `(parID, posixName) -> cnid` — the load-bearing index. It is also the
+  directory content/diff index (deletions = stored children not seen in the host
+  scan). Replaces the current path-sorted `directories_` vector.
+- `(parID, macName) -> cnid` — **deferred** (needs per-file staleness rules);
+  until then, lookup by Mac name forces enumeration via the existing `tryResolve`.
 
 Operations:
 
-- `getOrCreate(parID, posixFilename)` — name-free, per Decision 3.
-- Batch re-enumeration reconciles against `(parID, posixFilename)`, reusing CNIDs
-  and keeping already-decided `macFilename`s (Decision 8).
-- Deciding `macFilename` is a **transaction** (Decision 9): an atomic
-  read-modify-write over the conflicting set.
+- `getOrCreate(parID, posixName)` — assigns `CNID`; `macName` may be undecided.
+- Batch re-enumeration reconciles against `(parID, posixName)`, reusing CNIDs and
+  keeping decided `macName`s (Decision 8).
+- **Resolve** decides `macName` (and, when needed, allocates the CNID) as one
+  transaction over the group (Decision 9).
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
-- `ItemCache::tryResolve(fs::path)`: resolve via CNID only; do not call
-  `cacheDirectory` on ancestors.
+- `ItemCache::tryResolve(fs::path)`: resolve via CNID only; do not enumerate
+  ancestors. *(done — Phase 1)*
+- `getInfoCommon`'s directory branch: use Count instead of `cacheDirectory` +
+  `countItems()`. *(done — Phase 2)*
 - `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration;
-  name for the FSSpec comes from Classify of that one entry.
-- `getInfoCommon`'s directory branch (`localvolume.cpp:443-444`): use Count
-  instead of `cacheDirectory` + `countItems()`.
-- `resolve(name)` (`localvolume.cpp:170`): name lookup can no longer be a
-  prebuilt map. Try the identity transform directly first (cheap), then scan
-  candidates and Classify the relevant cluster.
+  the name for the FSSpec comes from Resolve of that one entry.
+- `resolve(name)` (`localvolume.cpp:170`): name lookup is no longer a prebuilt
+  map. Resolve the parent directory (or the name's group), then look up the name.
 
-### `Item` / `DirectoryItem` (`item.h`, `item.cpp`)
+### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
-- `countChildren()` → Count (readdir + filter), validated per *Caching*.
-- `enumerate()` → descriptors, replacing the eager
-  `contents_`/`files_`/`contents_by_name_` construction in `populateCache`.
-- `resolve(index, includeDirectories)` classifies/materializes only the
-  requested child (and its cluster).
-- Keep the HFS-compatible count semantics (files + directories).
+- `Item`: identity + optional name; instantiable without a format.
+- `DirectoryItem`: `countChildren()` (Count), descriptor storage + children
+  instantiation, `resolve(index, includeDirectories)` materializing only the
+  requested child; keep the HFS-compatible count semantics (files + dirs).
+- `FileItem`: holds the optional `FileRep`.
 
-### `ItemFactory` (`item.h`, per-format files)
+### `ItemFactory` (per-format files)
 
-- Give factories a naming hook (today `createItemForDirEntry` receives the
-  finished name and cannot rename — F5). MacBinary returns the stripped name.
-- Split "kind" (cheap) from "which fork layout" (expensive); the latter moves to
-  first access.
+- Split "kind" (cheap: regular file vs directory, no probing) from "which fork
+  layout" (the gauntlet: magic reads / sidecar stats / xattrs). The latter moves
+  into `FileRep` construction at Materialize.
+- Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
+  the host filename.
 
 ## Design challenges / open questions
 
-1. **Exact catalog order.** Define the deterministic order used for both listing
-   and disambiguation (HFS orders by name; today the mapper assigns in host-path
-   sort order). Confirm base-then-disambiguator is right and where the truncation
-   is applied.
-2. **Disambiguation transaction scope.** Whole-directory is the first
-   approximation, a collision group the refinement. Define the read-modify-write
-   and the convergence/retry rules so concurrent instances agree (Phase 7).
-3. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
+1. **Q1 — fold Instantiate children into Count?** Count already reads the
+   directory and builds descriptors; constructing child `Item`s from them
+   immediately may be free and avoids a second pass, or it may over-eagerly
+   allocate for directories that only wanted a count.
+2. **Exact catalog order.** Define the deterministic order used for listing and
+   disambiguation (HFS orders by name; today the mapper assigns in host-path sort
+   order). Confirm base-then-disambiguator and where truncation applies.
+3. **Resolve transaction scope.** Whole-directory first, `macNamePrefix` group
+   later. Define the read-modify-write and the convergence/retry rules (Phase 7).
+4. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
    currently flush whole directories; define how each invalidates Count /
-   Enumerate / Classify while preserving CNID identity.
-4. **External modification.** Reconciliation now happens at validation time
+   Instantiate / Materialize / Resolve while preserving identity.
+5. **External modification.** Reconciliation happens at validation time
    (*Caching*) rather than only at the next full cache.
 
 *Not* open: CNID and name stability across re-enumeration is already provided by
-the mapper's match-by-path reuse, and is pinned by
+the mapper's match-by-path reuse, pinned by
 `DisambiguatedNamesStableAcrossDelete`, `MoveKeepsDisambiguatedNameAndPosixName`
-and `CnidStableAcrossRenameThenMove`. A new single-entry identity must simply
-preserve it, not introduce it. Persistence/sharing is Phase 7; inode-based rename
-tracking is Phase 8.
+and `CnidStableAcrossRenameThenMove`. Phase 7 is persistence/sharing; Phase 8 is
+inode-based rename tracking.
 
 ## Phased plan
 
-### Phase 0 — Test harness and baseline (prerequisite) — DONE
+### Phase 0 — Test harness and baseline — DONE
 
 Built the native harness:
 
 - `tests/localvolume_ops.cpp` + `tests/localvolume_test_util.h`, added to
-  `NATIVE_TEST_SOURCES`: listing, creation/deletion, move/rename, and interleaved
-  host/FileManager sequences.
-- Lightweight counters in `src/file/localvolume/stats.h`, wired into
-  `itemcache.cpp` / `localvolume.cpp` (`directoryIterations`, `entriesSeen`,
-  `itemsConstructed`, `factoryProbes`); `resetLocalVolumeStats()` for tests.
+  `NATIVE_TEST_SOURCES`.
+- `src/file/localvolume/stats.h` counters, wired into `itemcache.cpp` /
+  `localvolume.cpp` (`directoryIterations`, `entriesSeen`, `itemsConstructed`,
+  `factoryProbes`); `resetLocalVolumeStats()` for tests.
 - A `DISABLED_` large-directory benchmark.
 
-Result: `ctest --test-dir build -LE xfail` is green (159 tests, 4 new ones
-`DISABLED_`). The suite is the safety net for Phases 1–5, so no refactor starts
-until it is green — which it now is. One production bug surfaced in the process
-and was fixed (*Phase 0 findings*).
-
-Baseline (benchmark over an empty-file directory, `EXECUTOR_LV_BENCH_N=N`):
-listing N files costs 1 directory scan, N items constructed, and **6N** factory
-probes (all six factories are probed per file). At N=20000 the listing did not
-finish within 5 minutes: the 1 s cache TTL forces repeated re-enumeration and
-re-probing during a single listing — F4 in practice.
+Baseline (empty-file directory, `EXECUTOR_LV_BENCH_N=N`): listing N files costs
+1 directory scan, N items constructed, and **6N** factory probes. At N=20000 the
+listing did not finish within 5 minutes — F4 in practice.
 
 ### Phase 0 findings
 
 - **`PBCatMove` move-with-rename was broken — fixed.** `LocalVolume::PBCatMove`
-  resolved `pb->ioNewName` as the new *parent directory*; `ioNewName` is the new
-  item name and the destination directory is `ioNewDirID` (confirmed against
-  `C_FSpCatMove`, `src/file/fileHighlevel.cpp:351`, which sets
-  `ioNewName = dst->name`, `ioNewDirID = dst->parID`). With a non-null
-  `ioNewName`, `resolve()` looked for an item of that name in the destination and
-  failed (`fnfErr`); existing tests only ever passed `ioNewName = nullptr`. Fixed
-  by resolving the destination from `ioNewDirID` and treating `ioNewName` as the
-  optional new name (colon → `bdNamErr`, nil → keep), with the duplicate check
-  ignoring the item itself; `ItemCache::moveItem` gained an optional `newName`.
-  Covered by `LocalVolumeFixture.MoveAndRename` and `CatMoveRenamesWithinDirectory`.
-- **Related, unfixed: the HFS backend has the same shape.** `hfsPBCatMove`
-  (`src/hfs/hfsHier.cpp:266-270`) feeds `ioNewName` to `ROMlib_findvcbandfile`
-  as the name to look up, so `FSpCatMove`/`PBCatMove` with a non-null
-  `ioNewName` looks similarly broken there. Out of scope here (nothing tests it).
-- **Listing a directory scans its subdirectories** (F3, confirmed): listing a
-  directory with two subdirectories performs **three** `directory_iterator`
-  scans, because `getInfoCommon` caches each returned child directory to read
-  `ioDrNmFls`. Captured by `DISABLED_ListingDoesNotEnumerateSubdirectories`.
+  resolved `pb->ioNewName` as the new *parent directory*; it is the new item name
+  (destination is `ioNewDirID`, confirmed against `C_FSpCatMove`,
+  `src/file/fileHighlevel.cpp:351`). Fixed; `ItemCache::moveItem` gained an
+  optional `newName`. Covered by `MoveAndRename` and `CatMoveRenamesWithinDirectory`.
+- **Related, unfixed: the HFS backend has the same shape** — `hfsPBCatMove`
+  (`src/hfs/hfsHier.cpp:266-270`) feeds `ioNewName` to `ROMlib_findvcbandfile`.
+  Out of scope here.
 - **Name disambiguation is already stable across deletion** (contrary to
-  expectation): with a collision set, deleting any member leaves the survivors'
-  Mac names and CNIDs unchanged, because `SimpleCNIDMapper` keys mappings by
-  host path and reuses them on re-enumeration. Covered by
-  `LocalVolumeFixture.DisambiguatedNamesStableAcrossDelete`.
+  expectation): the mapper reuses mappings by path. Covered by
+  `DisambiguatedNamesStableAcrossDelete`.
 
-No production-code refactor happens before this phase is complete.
+### Phase 1 — Path resolution without ancestor enumeration (F1) — DONE
 
-### Phase 1 — Path resolution without ancestor enumeration (fixes F1)
+`SimpleCNIDMapper` stores per-directory children as `(host filename → cnid)`
+(the `(parID, posixName)` lookup + diff index); added `lookupChild` /
+`getOrCreateChild`; `ItemCache::tryResolve(path)` walks components through them
+instead of `cacheDirectory` on each ancestor. Guard:
+`ResolvePathDoesNotEnumerate` (zero directory scans).
 
-CNID stage with the `(parID, posixFilename) -> cnid` index, walking components
-from the root, plus Classify for the final entry's name; route
-`nativePathToFSSpec` / `resolve` through it. Deliverable: opening
-`/nix/store/…/Dialog.bin` no longer touches `/nix/store`.
-**Risk:** CNID assignment/name handling for lazily-identified entries.
+### Phase 2 — Count without materialization (F3) — DONE
 
-### Phase 2 — Count without realization (fixes F3)
+`ItemCache::countChildren` (readdir + hidden filter, no CNID/item/factory work)
+used for `ioDrNmFls`. Guard: `ListingDoesNotMaterializeSubdirectories`.
 
-Count stage used for `ioDrNmFls`. Deliverable: listing a folder with many
-subfolders no longer realizes each subfolder.
-**Risk:** staleness policy for the count.
+### Phase 3 — Object model + descriptor enumeration
 
-### Phase 3 — Enumerate descriptors without realization
+Split the format concern out of `Item` into `FileRep` (Variant B); DirectoryItem
+Count stores descriptors; children are Instantiated as identity `Item`s without
+probing. Deliverable: scanning a directory no longer probes every file's format.
+**Risk:** wide but mechanical; touches `item.{h,cpp}`, `itemcache.{h,cpp}`,
+`localvolume.cpp`, and every format backend.
 
-Enumerate returns `(path, kind, f1, f2?)`; CNID assignment deferred out of
-enumeration. Deliverable: scanning a directory no longer probes every file's
-format.
-**Risk:** the mapper no longer receives a whole-directory batch by default.
+### Phase 4 — Materialize (Classify)
 
-### Phase 4 — Classify and cluster-scoped naming
+Build the `FileRep` on first access: move the factory gauntlet out of
+`createItemForDirEntry` behind Materialize; keep the plain fallback and the
+ordering rules from `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
+(sidecar backends, then MacBinary, then plain).
 
-Implement Classify, the conservative base-key clustering, catalog-order
-disambiguation, and the factory naming hook (MacBinary `.bin` stripping).
-**Risk:** correctness of lazy name assignment; see open questions 1–2.
+### Phase 5 — Resolve and group-scoped naming
 
-### Phase 5 — Lazy materialize
-
-Split the factory gauntlet so format probing happens on access; keep the plain
-fallback and the ordering rules from
-`docs/ai/2026-10-04-macbinary-localvolume-backend.md` (sidecar backends, then
-MacBinary, then plain).
+Implement `macNamePrefix` grouping, transactional Resolve (whole directory first,
+group later), catalog-order disambiguation, and the rep naming rule (MacBinary
+`.bin` stripping). **Risk:** correctness of lazy name assignment; see open
+questions 2–3.
 
 ### Phase 6 — Caching redesign
 
-Replace the LRU + timeout with the validation scheme; keep an LRU for memory
-only.
+Replace the LRU + timeout with the validation scheme; keep an LRU for memory only.
 
 ### Phase 7 — CNID persistence, transactions, multi-instance sharing
 
-Re-enable `LMDBCNIDMapper` as the backing store: persist the `cnid -> record`
-table and the `(parID, posixFilename) -> cnid` index, and make disambiguation a
-**transactional read-modify-write** (whole directory first, collision group
-later — Decision 9). With LMDB's single-writer model this lets two Executor
-instances share CNID and disambiguation decisions for the same volume. Requires
-the earlier phases to be fast enough to absorb LMDB's per-operation cost.
+Re-enable `LMDBCNIDMapper`: persist the `cnid -> record` table and the
+`(parID, posixName) -> cnid` index, and make Resolve a **transactional
+read-modify-write** (Decision 9). LMDB's single-writer model then lets two
+Executor instances share CNID and naming decisions for the same volume.
 
 ### Phase 8 — Inode-based rename tracking
 
 Use the stored `(dev, inode)` to keep an item's CNID when its host file is
-renamed outside the FileManager (an external rename currently looks like
-delete + create, so it loses identity). Nothing above depends on this; it is a
-separate phase.
+renamed outside the FileManager (currently an external rename looks like
+delete + create). Nothing above depends on this.
 
 ## Testing
 
 ### Existing infrastructure
 
-- `tests/files.cpp` — dual-mode: compiled natively (against the FileManager
-  implementation) and under Retro68 (against Apple's headers). It must stay free
-  of Executor internals, so it uses only the Mac FileManager ABI plus
-  `compat.h`; its `FileTest` fixture creates/deletes one file in the default
-  directory.
-- `tests/files_internal.cpp` — native-only; uses ROMlib entry points
-  (`nativePathToFSSpec`, `cmdlinePathToFSSpec`).
-- `tests/localvolume_macbinary.cpp` — native-only; exercises backend functions
-  directly, without the FileManager.
-- `tests/main_executor.cpp` — global test environment: initialises Executor,
-  calls `ROMlib_fileinit()` (which mounts `/` as a `LocalVolume`), and creates a
-  temp directory opened as the default working directory. This is what makes a
-  native test able to drive a real FileManager over a host tree.
+- `tests/files.cpp` — dual-mode (native + Retro68); Mac ABI only, no Executor
+  internals; `FileTest` creates/deletes one file in the default directory.
+- `tests/files_internal.cpp` — native-only; uses `nativePathToFSSpec` /
+  `cmdlinePathToFSSpec`.
+- `tests/localvolume_macbinary.cpp` — native-only; backend functions, no
+  FileManager.
+- `tests/main_executor.cpp` — global environment: initialises Executor,
+  `ROMlib_fileinit()` (mounts `/`), creates a temp dir opened as the default WD.
 - Build split: `NATIVE_TEST_SOURCES` vs `TEST_SOURCES` in `tests/CMakeLists.txt`;
   expected failures are labelled `xfail` in `tests/test-properties.cmake`.
-- Suites: `ctest --test-dir build`; the Retro68 Mac-app suite is separate
-  (`tests/build`, run `build/executor tests/build/tests.ad`).
+- Suites: `ctest --test-dir build`; the Retro68 Mac-app suite is separate.
 
-### New native test module (prerequisite for the refactor)
+### New native test module
 
-Add `tests/localvolume_ops.cpp` to `NATIVE_TEST_SOURCES`. It drives the
-FileManager against the mounted-`/` `LocalVolume` and interleaves host
-(POSIX / `std::filesystem`) operations — the exact surface this refactor
-threatens.
-
-Shared native-only helpers in `tests/localvolume_test_util.h`:
+`tests/localvolume_ops.cpp` drives the FileManager against the mounted-`/`
+`LocalVolume` and interleaves host (`std::filesystem`) operations. Helpers in
+`tests/localvolume_test_util.h`:
 
 - `LocalVolumeFixture` — per test, asks the FileManager to create a unique
-  directory (`lvtest-…`) under the test environment's temporary working
-  directory (`ExecutorTestTempDir`, exposed from `main_executor.cpp`), then
-  builds a host tree inside it. All helpers take an explicit `(vRefNum, dirID)`
-  and never change the process default directory. (The directory is created
-  *through the FileManager*, not on the host, because host changes under an
-  already-cached parent are not observed — see *Caching*.)
-- Host helpers: `hostFile(rel, contents)`, `hostBytes(rel, bytes)`,
-  `hostDir(rel)`, `hostList(rel)` (applying the `LocalVolume` hidden-name
-  filter), `hostRead(rel)`.
-- FileManager helpers, all with explicit `(vRefNum, dirID)`:
-  `fmGet(parentDirID, name) -> {name, cnid, isDir}`, `fmMakeDir`, `fmCreateFile`,
-  `fmDelete`, `fmRename`, `fmMove`, `fmList(dirID)` (`PBGetCatInfo` index loop,
-  files + dirs), `fmListFiles(dirID)` (`PBHGetFInfo` index loop),
-  `fmChildCount(dirID)` (`ioDrNmFls`).
+  directory under `ExecutorTestTempDir`, then builds a host tree inside it. All
+  helpers take an explicit `(vRefNum, dirID)`.
+- Host helpers: `hostFile`, `hostBytes`, `hostDir`, `hostList`, `hostRead`.
+- FileManager helpers: `fmGet`, `fmMakeDir`, `fmCreateFile`, `fmDelete`,
+  `fmRename`, `fmMove`, `fmList`, `fmListFiles`, `fmChildCount`.
 
 ### Coverage
 
-- **Listing**: empty and non-empty directories; `fmList` vs `fmListFiles` vs
-  `fmChildCount` consistency; `parID`/`dirID` relationships and CNID uniqueness;
-  hidden sidecars (`._`, `%`, `.rsrc`, `.finf`) excluded from both listing and
+- **Listing**: empty/non-empty; `fmList` vs `fmListFiles` vs `fmChildCount`;
+  `parID`/`dirID` and CNID uniqueness; hidden sidecars excluded from listing and
   count; host trees populated before first enumeration are visible; FileManager
-  mutations are reflected on the host.
+  mutations reflected on the host.
 - **Creation / deletion**: both directions; new directory CNID returned;
-  duplicate name → `dupFNErr`; non-empty directory → `fBsyErr`; missing entry →
-  `fnfErr`.
-- **Move / rename**: `PBHRename` and `PBCatMove` (including move-with-rename
-  and rename-within-directory) keep the CNID; the source listing drops the entry
-  and the destination gains it; counts on both sides update; collisions →
-  `dupFNErr`.
-- **CNIDs and name disambiguation**: CNID survives rename → move
-  (`CnidStableAcrossRenameThenMove`). A *truncation*-collision set (host names
-  >31 bytes sharing a 30-byte prefix; the Mac name is 30 bytes + ellipsis, and a
-  `#N` suffix shrinks the base to `30 - len("#N")`) is used so the tests do not
-  depend on a case-sensitive host filesystem. Deleting any member leaves the
-  survivors' names and CNIDs unchanged (`DisambiguatedNamesStableAcrossDelete`,
-  all three deletion targets). Moving a disambiguated member with
+  `dupFNErr` / `fBsyErr` / `fnfErr`.
+- **Move / rename**: `PBHRename` and `PBCatMove` (incl. move-with-rename and
+  rename-within-directory) keep the CNID; source drops, destination gains; counts
+  update; collisions → `dupFNErr`.
+- **CNIDs and name disambiguation**: CNID survives rename → move; a
+  *truncation*-collision set (host names >31 bytes sharing a 30-byte prefix) so
+  the tests do not depend on a case-sensitive host FS; deleting any member leaves
+  survivors' names/CNIDs unchanged; moving a disambiguated member with
   `ioNewName = nil` preserves the POSIX name, the disambiguated Mac name, and the
-  CNID (`MoveKeepsDisambiguatedNameAndPosixName`). Case-only ambiguity is covered
-  once and `GTEST_SKIP()`ped on a case-insensitive host FS
-  (`CaseInsensitiveAmbiguity`).
-- **Sequences**: interleavings of host and FileManager operations with
-  assertions after each step (the strongest guard for caching/validation and
-  CNID stability).
-- **Instrumentation**: a directory is enumerated once and reused while cached
+  CNID; case-only ambiguity is covered once and `GTEST_SKIP()`ped on a
+  case-insensitive host FS.
+- **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — a path resolve
+  performs zero directory scans.
+- **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
+  with two subdirectories constructs only those two items.
+- **Instrumentation**: a directory is enumerated once and reused
   (`ListingEnumeratesOnceWhileCached`).
-- **Forward-looking** (`DISABLED_`, until the relevant phase): listing does not
-  enumerate subdirectories (F3), host-side changes become visible without
-  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 4), and the
-  large-directory benchmark.
+- **Forward-looking** (`DISABLED_`): host-side changes visible without
+  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 5), large-directory
+  benchmark.
 
 ### Benchmarks
 
@@ -610,15 +523,30 @@ against regressing F1/F3.
 - Re-enabling the LMDB mapper, except insofar as it affects Phase 7.
 - HFS backend behaviour.
 
+## Discarded alternatives
+
+Two object-model variants were considered and dropped in favour of the split
+above (Variant B):
+
+- **Variant A — fused `Item` with in-place promotion.** Keep one class per format
+  and promote a cheap placeholder to the concrete class on first access
+  (generalizing `upgradeItem`). Smallest change, but it keeps identity and format
+  fused and mutates an item's dynamic type under callers holding a `shared_ptr`.
+- **Variant C — descriptor-first directory.** `DirectoryItem` stores descriptors
+  and no `Item` exists until Materialize. Most faithful to the stages, but it
+  forces the listing/metadata API (`resolve`, `getInfoCommon`) onto descriptors
+  and rewrites every `dynamic_cast` site.
+
 ## References
 
-- `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, `cacheDirectory`, LRU.
+- `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, `cacheDirectory`,
+  `countChildren`, LRU.
 - `src/file/localvolume/localvolume.cpp` — `nativePathToFSSpec`, `getInfoCommon`,
   `createItemForDirEntry`, `resolve`, `MountLocalVolumes`.
 - `src/file/localvolume/item.cpp` / `item.h` — `DirectoryItem::populateCache`,
   `resolve`, `countItems`.
 - `src/file/localvolume/simplecnidmapper.cpp` /
-  `lmdbcnidmapper.cpp` — batch mapping, `toMacRomanFilename`.
+  `lmdbcnidmapper.cpp` — mapping, `toMacRomanFilename`.
 - `src/file/localvolume/macbinary.cpp` — `isMacBinaryFile` (the `.bin` check).
 - `src/hfs/hfsBtree.cpp` — `dirVal` / `ioDrNmFls` semantics.
 - `src/util/macstrings.cpp` — `toMacRomanFilename`.
