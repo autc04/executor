@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–3 done (object model + deferred materialization); Phases 4–7 planned
+- **Status:** Phases 0–3 and 5 done; Phase 4 sub-step 1 done (rep naming rule); Phase 4 sub-step 2 and Phases 6–7 planned
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -458,7 +458,7 @@ Operations:
 - `resolve(name)` (`localvolume.cpp:170`): name lookup is no longer a prebuilt
   map. Resolve the parent directory (or the name's group), then look up the name.
 - `cacheDirectory` → `ensureEnumerated` (L0 stamp check, L1 re-enumerate); LRU by
-  total items, root pinned. *(Phase 5)*
+  total items, root pinned. *(done — Phase 5)*
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
@@ -478,7 +478,7 @@ Operations:
   `ItemCache::makeItem` makes the kind decision; `ItemFactory::createRepForFile`
   runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
-  the host filename.
+  the host filename. *(done — Phase 4 sub-step 1: `FileRep::nameSource`.)*
 
 ## Phased plan
 
@@ -552,27 +552,34 @@ Implement `macNamePrefix` grouping, transactional Resolve, catalog-order
 disambiguation, and the rep naming rule (MacBinary `.bin` stripping). Two
 sub-steps, each independently testable:
 
-1. **Whole-directory Resolve** — one transaction over the directory (the simplest
-   correct scope; Decision 9).
-2. **Group-scoped Resolve** — narrow the transaction to the `macNamePrefix` group
-   that can actually conflict.
+1. **DONE — rep naming rule / whole-directory Resolve.** `FileRep::nameSource()`
+   lets the rep decide the displayed name (MacBinary drops `.bin`);
+   `CNIDMapper::mapDirectoryContents` / `getOrCreateChild` take the name source,
+   and the whole directory is named in one pass. Covered by
+   `MacBinaryStripsBinExtension` and `SidecarNameWinsOverMacBinary`.
+2. **TODO — group-scoped, lazy Resolve.** Make the name pass lazy and narrow it to
+   the `macNamePrefix` group that can conflict, so `.bin` files are Materialized
+   only when a name is actually needed (today every `.bin` entry is probed during
+   Enumerate).
 
 **Risk:** correctness of lazy name assignment.
 
-### Phase 5 — Caching redesign
+### Phase 5 — Caching redesign — DONE
 
 Replace the LRU + 1 s timeout with validation-based staleness and a memory-only
 LRU (see *Caching*). Sub-steps:
 
-1. **Directory stamps + `ensureEnumerated`.** `(mtime, size)` from a raw `stat`;
-   L0 validate / L1 re-enumerate; drop the TTL. Enable
-   `HostChangeVisibleWithoutInvalidation` (bump the stamp deterministically in the
-   fixture rather than sleeping).
-2. **Memory-bound LRU** by total items (default 500 K), root pinned.
-3. **Count caching.** `count_` + stamp, so a repeated `ioDrNmFls` is O(1).
-4. **Per-item rep revalidation** on `(mtime, size)` change.
-5. **Reconciliation correctness:** kind changes; the read-error policy; external
-   rename = delete + create (documented behaviour).
+1. **DONE — directory stamps + `ensureEnumerated`.** `(mtime, size)` from a raw
+   `stat`; L0 validate / L1 re-enumerate; the TTL is gone.
+   `HostChangeVisibleWithoutInvalidation` is enabled.
+2. **DONE — memory-bound LRU** by total items (default 500 K, root pinned);
+   `EvictionPreservesIdentity`.
+3. **DONE — Count caching** (`count_` + stamp); `CountScansOnceWhileValid`.
+4. **DONE — per-item rep revalidation** on `(mtime, size)` change;
+   `RepStalenessRebuilds`.
+5. **DONE — reconciliation correctness:** kind changes (`KindChangeRebuildsItem`),
+   the read-error policy, external rename = delete + create
+   (`ExternalRenameIsDeleteCreate`).
 
 ### Phase 6 — CNID persistence, transactions, multi-instance sharing
 
@@ -640,17 +647,17 @@ delete + create). Nothing above depends on this.
   with two subdirectories constructs only those two items; counting a
   subdirectory does not enumerate it.
 - **Instrumentation**: a directory is enumerated once and reused
-  (`ListingEnumeratesOnceWhileCached`); Phase 5 adds validation / re-enumeration
-  counters.
+  (`ListingEnumeratesOnceWhileCached`), and the `countScans` counter backs
+  `CountScansOnceWhileValid`.
 - **Validation (Phase 5)**: an external add/remove/rename inside an enumerated
   directory is visible on the next access; unchanged names keep their CNID and
   `macName`; a repeated listing validates but does not re-enumerate (stats);
   eviction under the item budget, then re-access, preserves CNIDs/names; an
   in-place edit of a MacBinary header is reflected by `getInfo`; a file↔directory
   kind change is handled.
-- **Forward-looking** (`DISABLED_`): host-side changes visible without
-  invalidation (*Caching*, Phase 5), MacBinary `.bin` stripping (Phase 4),
-  large-directory benchmark.
+- **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
+  `--gtest_also_run_disabled_tests`). The validation and naming tests above are
+  enabled.
 
 ### Benchmarks
 
