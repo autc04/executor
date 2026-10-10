@@ -3,6 +3,7 @@
 #include <util/macstrings.h>
 #include <rsys/filesystem.h>
 #include <FileMgr.h>
+#include "filestamp.h"
 
 #include <memory>
 #include <map>
@@ -119,10 +120,11 @@ class DirectoryItem : public Item
     std::vector<ItemPtr>    files_;
     std::map<mac_string, ItemPtr> contents_by_name_;
     bool    cache_valid_ = false;
+    FileStamp stamp_;
 
     friend class ItemCache;
     void clearCache();
-    void populateCache(std::vector<ItemPtr> items);
+    void populateCache(std::vector<ItemPtr> items, FileStamp stamp);
     bool isCached() const { return cache_valid_; }
 public:
     using Item::Item;

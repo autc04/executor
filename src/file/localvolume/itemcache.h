@@ -34,11 +34,11 @@ class ItemCache
     struct CachedDirectory
     {
         DirectoryItemPtr directory;
-        std::chrono::steady_clock::time_point timestamp;
     };
     std::list<CachedDirectory> cachedDirectories_;
 
-    void cleanDirectoryCache();
+    void evictCachedDirectories();
+    void touchCachedDirectory(const DirectoryItemPtr& dir);
     ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
 
     // Construct an identity Item (DirectoryItem or bare FileItem) from a host
@@ -63,7 +63,7 @@ public:
     ItemPtr tryResolve(fs::path path);
 
 
-    void cacheDirectory(DirectoryItemPtr item);
+    void ensureEnumerated(const DirectoryItemPtr& item);
     // Number of visible children, without enumerating/constructing them.
     int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);

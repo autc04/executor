@@ -184,6 +184,9 @@ set(file_sources
     file/localvolume/itemcache.h
     file/localvolume/itemcache.cpp
 
+    file/localvolume/filestamp.h
+    file/localvolume/filestamp.cpp
+
     file/localvolume/basilisk.h
     file/localvolume/basilisk.cpp
     file/localvolume/appledouble.h

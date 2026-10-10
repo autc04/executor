@@ -561,17 +561,17 @@ TEST_F(LocalVolumeFixture, HostMoveVisibleOnFreshEnumeration)
     EXPECT_TRUE(fmGet(dst->cnid, "f").has_value());
 }
 
-// Phase 5: host-side changes should become visible without going through
-// the FileManager (validation-based caching), rather than only after the 1s
-// timeout. Disabled until that lands.
-TEST_F(LocalVolumeFixture, DISABLED_HostChangeVisibleWithoutInvalidation)
+// Host-side changes become visible without going through the FileManager, via
+// validation-based caching, rather than only after a timeout.
+TEST_F(LocalVolumeFixture, HostChangeVisibleWithoutInvalidation)
 {
     hostDir("a");
     auto a = fmGet(rootDirID_, "a");
     ASSERT_TRUE(a.has_value());
-    EXPECT_TRUE(fmList(a->cnid).empty()); // 'a' is now cached, and empty
+    EXPECT_TRUE(fmList(a->cnid).empty()); // 'a' is now enumerated, and empty
 
     hostFile("a/late", "x");
+    bumpMtime("a"); // make the change deterministic on coarse-timestamp hosts
 
     EXPECT_EQ((std::set<std::string> { "late" }), namesOf(fmList(a->cnid)));
 }

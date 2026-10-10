@@ -24,78 +24,91 @@ ItemCache::~ItemCache()
 {
 }
 
-void ItemCache::cleanDirectoryCache()
+void ItemCache::evictCachedDirectories()
 {
-    using namespace std::chrono_literals;
-    const auto cacheExpiryTime = 1s;
+    // Memory-only policy for now: bound the number of enumerated directories.
+    // Phase 5 sub-step 2 replaces this with a total-item budget.
     const size_t maxCachedDirectories = 20;
-    const auto now = std::chrono::steady_clock::now();
-    
-    while(!cachedDirectories_.empty()
-        && (cachedDirectories_.front().timestamp + cacheExpiryTime < now
-            || cachedDirectories_.size() > maxCachedDirectories))
+    while(cachedDirectories_.size() > maxCachedDirectories)
     {
         cachedDirectories_.front().directory->clearCache();
         cachedDirectories_.pop_front();
     }
 }
 
-void ItemCache::cacheDirectory(DirectoryItemPtr dir)
+void ItemCache::touchCachedDirectory(const DirectoryItemPtr& dir)
 {
-    cleanDirectoryCache();
-    if(dir->isCached())
-        return;
-    cachedDirectories_.push_back({dir, std::chrono::steady_clock::now()});
-    localVolumeStats().directoryIterations++;
+    cachedDirectories_.remove_if([&](const auto& p) { return p.directory == dir; });
+    cachedDirectories_.push_back({dir});
+    evictCachedDirectories();
+}
 
-    std::vector<fs::directory_entry> entries;
-    try
+void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
+{
+    FileStamp stamp = statFile(dir->path());
+    if(dir->isCached() && dir->stamp_ == stamp)
+        return;   // L0: the stamp is unchanged, so everything is still valid
+
+    touchCachedDirectory(dir);
+
+    // L1: re-scan. Re-stat after the readdir and only accept a *consistent*
+    // (before == after) stamp, so a change racing our own scan is caught.
+    for(int attempt = 0; attempt < 3; attempt++)
     {
-        for(const auto& e : fs::directory_iterator(dir->path()))
+        std::vector<fs::directory_entry> entries;
+        try
         {
-            if(!itemFactory_->isHidden(e))
-                entries.push_back(e);
+            for(const auto& e : fs::directory_iterator(dir->path()))
+                if(!itemFactory_->isHidden(e))
+                    entries.push_back(e);
         }
+        catch(const boost::filesystem::filesystem_error& exc)
+        {
+            std::cerr << exc.what() << std::endl;
+            // TODO: report this error the right way (see plan, *Caching*).
+            // throwing here makes listing the *parent* directory fail,
+            // which is not what we want.
+            // ignoring this error makes inaccessible directories look empty,
+            // which is not perfect, either.
+        }
+
+        FileStamp after = statFile(dir->path());
+        if(after == stamp || attempt == 2)
+        {
+            localVolumeStats().directoryIterations++;
+            localVolumeStats().entriesSeen += entries.size();
+
+            std::vector<CNIDMapper::Mapping> mappings =
+                cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
+
+            std::vector<ItemPtr> items;
+            items.reserve(mappings.size());
+
+            for(auto& m : mappings)
+            {
+                ItemPtr item;
+
+                auto itemIt = items_.find(m.cnid);
+                if(itemIt != items_.end())
+                    item = itemIt->second.lock();
+
+                assert(m.macname.size());
+                if(!item)
+                    item = makeItem(m.parID, m.cnid, m.entry, m.macname);
+
+                if(!item)
+                    continue;
+
+                items.push_back(item);
+                items_.emplace(m.cnid, item);
+            }
+
+            dir->populateCache(std::move(items), after);
+            return;
+        }
+
+        stamp = after;
     }
-    catch(const boost::filesystem::filesystem_error& exc)
-    {
-        std::cerr << exc.what() << std::endl;
-        //throw OSErrorException(ioErr);
-        // TODO: report this error the right way.
-        // throwing here makes listing the *parent* directory fail,
-        // which is not what we want.
-        // ignoring this error makes inaccessible directories look empty,
-        // which is not perfect, either.
-    }
-    
-    localVolumeStats().entriesSeen += entries.size();
-
-    std::vector<CNIDMapper::Mapping> mappings =
-        cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
-
-    std::vector<ItemPtr> items;
-    items.reserve(mappings.size());
-
-    for(auto& m : mappings)
-    {
-        ItemPtr item;
-
-        auto itemIt = items_.find(m.cnid);
-        if(itemIt != items_.end())
-            item = itemIt->second.lock();
-
-        assert(m.macname.size());
-        if(!item)
-            item = makeItem(m.parID, m.cnid, m.entry, m.macname);
-
-        if(!item)
-            continue;
-        
-        items.push_back(item);
-        items_.emplace(m.cnid, item);
-    }
-
-    dir->populateCache(std::move(items));
 }
 
 int ItemCache::countChildren(const DirectoryItemPtr& dir)
@@ -109,7 +122,7 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     }
     catch(const boost::filesystem::filesystem_error&)
     {
-        // Same policy as cacheDirectory: report what we saw rather than fail
+        // Same policy as ensureEnumerated: report what we saw rather than fail
         // the caller.
     }
     return count;

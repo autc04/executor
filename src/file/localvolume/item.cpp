@@ -111,17 +111,17 @@ void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
 void DirectoryItem::clearCache()
 {
     cache_valid_ = false;
+    stamp_ = {};
     contents_.clear();
     contents_by_name_.clear();
     files_.clear();
 }
 
-void DirectoryItem::populateCache(std::vector<ItemPtr> items)
+void DirectoryItem::populateCache(std::vector<ItemPtr> items, FileStamp stamp)
 {
-    if(cache_valid_)
-        return;
-
     contents_ = std::move(items);
+    contents_by_name_.clear();
+    files_.clear();
 
     for(const ItemPtr& item : contents_)
     {
@@ -137,6 +137,7 @@ void DirectoryItem::populateCache(std::vector<ItemPtr> items)
     }
 
     cache_valid_ = true;
+    stamp_ = stamp;
 }
 
 ItemPtr DirectoryItem::tryResolve(mac_string_view name)

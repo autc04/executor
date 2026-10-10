@@ -12,13 +12,10 @@
 // inside it. All FileManager helpers take an explicit (vRefNum, dirID) and
 // never touch the process-global default directory.
 //
-// Note on staleness: the current LocalVolume only invalidates a directory's
-// cache when a mutation goes *through* the FileManager (create/delete/rename/
-// move all flush the parent). Host-side changes made after a directory has been
-// enumerated are therefore not observed until the 1s cache timeout. Tests below
-// either populate a directory on the host before its first enumeration, or
-// interleave a FileManager mutation before re-listing. The desired
-// validation-based behaviour is captured by a DISABLED_ test.
+// Note on staleness: LocalVolume validates an enumerated directory against a
+// host (mtime, size) stamp, so a host-side change is observed on the next access
+// without going through the FileManager. The stamp has native resolution; tests
+// that need a deterministic change call bumpMtime().
 
 #include "compat.h"
 
@@ -140,6 +137,15 @@ protected:
         fs::ifstream in(host(rel), std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(in),
                            std::istreambuf_iterator<char>());
+    }
+
+    // Nudge a path's mtime forward by one second so a host change is visible to
+    // the stamp check even on filesystems whose timestamp granularity would hide
+    // a same-tick modification.
+    void bumpMtime(std::string_view rel)
+    {
+        auto p = host(rel);
+        fs::last_write_time(p, fs::last_write_time(p) + 1);
     }
 
     // Mirrors LocalVolume's name-only hidden predicate (AppleDouble `._`/`%`,

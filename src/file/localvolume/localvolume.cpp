@@ -169,7 +169,7 @@ ItemPtr LocalVolume::resolve(mac_string_view name, short vRef, long dirID)
     else
     {
         std::shared_ptr<DirectoryItem> dir = resolveDir(vRef, dirID);
-        itemCache->cacheDirectory(dir);
+        itemCache->ensureEnumerated(dir);
         if(auto file = dir->tryResolve(name))
             return file;
         else
@@ -199,7 +199,7 @@ ItemPtr LocalVolume::resolveRelative(const std::shared_ptr<DirectoryItem>& base,
     }
     else
     {
-        itemCache->cacheDirectory(base);
+        itemCache->ensureEnumerated(base);
         item = base->tryResolve(mac_string_view(p, colon));
         if(!item)
         {
@@ -225,7 +225,7 @@ ItemPtr LocalVolume::resolveForInfo(mac_string_view name, short vRef, long dirID
     if(index > 0)
     {
         auto dir = resolveDir(vRef, dirID);
-        itemCache->cacheDirectory(dir);
+        itemCache->ensureEnumerated(dir);
         return dir->resolve(index, includeDirectories);
     }
     else if(index == 0 && !name.empty())
@@ -561,7 +561,7 @@ LocalVolume::NonexistentFile LocalVolume::resolveForCreate(mac_string_view name,
         name = mac_string_view(name.begin() + colon+1, name.end());
     }
 
-    itemCache->cacheDirectory(parent);
+    itemCache->ensureEnumerated(parent);
     if(parent->tryResolve(name))
         throw OSErrorException(dupFNErr);
     
@@ -591,7 +591,7 @@ void LocalVolume::PBDirCreate(HParmBlkPtr pb)
 
     itemCache->flushDirectoryCache(parent);
 
-    itemCache->cacheDirectory(parent);
+    itemCache->ensureEnumerated(parent);
     auto item = parent->tryResolve(name);
     if(!item)
         throw OSErrorException(ioErr);
@@ -619,7 +619,7 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(bdNamErr);
 
     auto parent = resolveDir(item->parID());
-    itemCache->cacheDirectory(parent);
+    itemCache->ensureEnumerated(parent);
     if(parent->tryResolve(newName))
         throw OSErrorException(dupFNErr);
     
@@ -796,7 +796,7 @@ void LocalVolume::PBCatMove(CMovePBPtr pb)
 
     mac_string_view finalName = newName.empty() ? mac_string_view(item->name()) : newName;
 
-    itemCache->cacheDirectory(newParent);
+    itemCache->ensureEnumerated(newParent);
     if(ItemPtr existing = newParent->tryResolve(finalName))
         if(existing != item)
             throw OSErrorException(dupFNErr);
