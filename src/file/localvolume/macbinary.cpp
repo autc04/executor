@@ -393,37 +393,34 @@ size_t MacBinaryFork::write(size_t offset, void *p, size_t n)
     return file->write(fork, offset, p, n);
 }
 
-std::shared_ptr<MacBinaryFile> MacBinaryFileItem::access(int8_t permission)
+std::shared_ptr<MacBinaryFile> MacBinaryRep::access(int8_t permission)
 {
     std::shared_ptr<MacBinaryFile> p;
     if((p = openedFile.lock()))
         return p;
 
-    p = std::make_shared<MacBinaryFile>(std::make_unique<PlainDataFork>(path(), permission));
+    p = std::make_shared<MacBinaryFile>(std::make_unique<PlainDataFork>(item_.path(), permission));
     openedFile = p;
     return p;
 }
 
-std::unique_ptr<OpenFile> MacBinaryFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> MacBinaryRep::open(int8_t permission)
 {
     return std::make_unique<MacBinaryFork>(access(permission), MacBinaryFile::Fork::data);
 }
 
-std::unique_ptr<OpenFile> MacBinaryFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> MacBinaryRep::openRF(int8_t permission)
 {
     return std::make_unique<MacBinaryFork>(access(permission), MacBinaryFile::Fork::resource);
 }
 
-ItemInfo MacBinaryFileItem::getInfo()
+void MacBinaryRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->readFInfo(info);
-    return info;
 }
 
-void MacBinaryFileItem::setInfo(ItemInfo info)
+void MacBinaryRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
     access(fsRdWrPerm)->writeFInfo(info);
 }
 
@@ -435,5 +432,7 @@ ItemPtr MacBinaryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID p
     if(!isMacBinaryFile(e.path()))
         return nullptr;
 
-    return std::make_shared<MacBinaryFileItem>(itemcache, parID, cnid, e.path(), macname);
+    auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
+    item->setRep(std::make_shared<MacBinaryRep>(*item));
+    return item;
 }

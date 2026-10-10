@@ -71,17 +71,17 @@ public:
     virtual size_t write(size_t offset, void *p, size_t n) override;
 };
 
-class MacBinaryFileItem : public FileItem
+class MacBinaryRep : public FileRep
 {
     std::weak_ptr<MacBinaryFile> openedFile;
 
     std::shared_ptr<MacBinaryFile> access(int8_t permission);
 
 public:
-    using FileItem::FileItem;
+    explicit MacBinaryRep(FileItem& item) : FileRep(item) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
 };
