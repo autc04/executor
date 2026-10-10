@@ -61,8 +61,14 @@ void FileRep::move(const fs::path& newPath)
 void FileItem::ensureMaterialized()
 {
     if(rep_)
-        return;
+    {
+        // The rep is a function of the host file; rebuild it if that changed.
+        if(statFile(path_) == repStamp_)
+            return;
+        rep_.reset();
+    }
     itemcache_.materialize(*this);
+    repStamp_ = statFile(path_);
     assert(rep_);
 }
 

@@ -626,6 +626,24 @@ TEST_F(LocalVolumeFixture, CountScansOnceWhileValid)
     EXPECT_EQ(first, localVolumeStats().countScans.load());
 }
 
+// Phase 5.4: a stale rep is rebuilt - a plain ".bin" that later becomes a valid
+// MacBinary takes on the MacBinary FInfo.
+TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
+{
+    hostFile("foo.bin", "not a macbinary header at all");
+
+    auto before = fmGetType(rootDirID_, "foo.bin");
+    ASSERT_TRUE(before.has_value());
+    EXPECT_EQ(0x54455854u, *before); // the plain default ("TEXT")
+
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    bumpMtime("foo.bin");
+
+    auto after = fmGetType(rootDirID_, "foo.bin");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(0u, *after); // from the (zeroed) MacBinary header
+}
+
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with
 //   --gtest_also_run_disabled_tests

@@ -323,6 +323,23 @@ protected:
         return result;
     }
 
+    // fdType reported for a file (PBGetCatInfo).
+    std::optional<uint32_t> fmGetType(long parentDirID, std::string_view name)
+    {
+        CInfoPBRec ipb;
+        std::memset(&ipb, 42, sizeof(ipb));
+        ipb.hFileInfo.ioCompletion = nullptr;
+        ipb.hFileInfo.ioVRefNum = vRefNum_;
+        ipb.hFileInfo.ioDirID = parentDirID;
+        auto n = str255(name);
+        ipb.hFileInfo.ioNamePtr = n.data();
+        ipb.hFileInfo.ioFDirIndex = 0;
+        PBGetCatInfoSync(&ipb);
+        if(ipb.hFileInfo.ioResult != noErr)
+            return std::nullopt;
+        return (uint32_t)ipb.hFileInfo.ioFlFndrInfo.fdType;
+    }
+
     std::optional<int> fmChildCount(long dirID)
     {
         Str255 buffer;

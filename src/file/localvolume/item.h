@@ -149,6 +149,7 @@ class FileItem : public Item
     short dataWriteAccessRefNum = -1;
     short resWriteAccessRefNum = -1;
     FileRepPtr rep_;
+    FileStamp repStamp_;   // (mtime, size) the rep was built from
 
 public:
     using Item::Item;
