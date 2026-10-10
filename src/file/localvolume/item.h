@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <map>
+#include <optional>
 
 namespace Executor
 {
@@ -121,6 +122,8 @@ class DirectoryItem : public Item
     std::map<mac_string, ItemPtr> contents_by_name_;
     bool    cache_valid_ = false;
     FileStamp stamp_;
+    std::optional<int> count_;   // Counted: a tally, without the children
+    FileStamp countStamp_;       // the stamp that tally is valid for
 
     friend class ItemCache;
     void clearCache();

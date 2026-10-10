@@ -610,6 +610,22 @@ TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)
     EXPECT_EQ(known->cnid, rebuilt->cnid);
 }
 
+// Phase 5.3: a counted subdirectory is not re-scanned while its stamp is valid.
+TEST_F(LocalVolumeFixture, CountScansOnceWhileValid)
+{
+    hostDir("a");
+    hostFile("a/x");
+    hostFile("a/y");
+
+    resetLocalVolumeStats();
+    (void)fmList(rootDirID_); // counts 'a'
+    auto first = localVolumeStats().countScans.load();
+    ASSERT_GT(first, 0u);
+
+    (void)fmList(rootDirID_); // 'a' is still valid, so no rescan
+    EXPECT_EQ(first, localVolumeStats().countScans.load());
+}
+
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with
 //   --gtest_also_run_disabled_tests

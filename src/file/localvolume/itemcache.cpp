@@ -131,19 +131,39 @@ void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
 
 int ItemCache::countChildren(const DirectoryItemPtr& dir)
 {
-    int count = 0;
-    try
+    // Enumerate implies Count.
+    if(dir->isCached())
+        return dir->countItems();
+
+    for(int attempt = 0; attempt < 3; attempt++)
     {
-        for(const auto& e : fs::directory_iterator(dir->path()))
-            if(!itemFactory_->isHidden(e))
-                ++count;
+        FileStamp before = statFile(dir->path());
+        if(dir->count_ && dir->countStamp_ == before)
+            return *dir->count_;
+
+        int count = 0;
+        localVolumeStats().countScans++;
+        try
+        {
+            for(const auto& e : fs::directory_iterator(dir->path()))
+                if(!itemFactory_->isHidden(e))
+                    ++count;
+        }
+        catch(const boost::filesystem::filesystem_error&)
+        {
+            // Same policy as ensureEnumerated: report what we saw rather than
+            // fail the caller.
+        }
+
+        FileStamp after = statFile(dir->path());
+        if(after == before || attempt == 2)
+        {
+            dir->count_ = count;
+            dir->countStamp_ = after;
+            return count;
+        }
     }
-    catch(const boost::filesystem::filesystem_error&)
-    {
-        // Same policy as ensureEnumerated: report what we saw rather than fail
-        // the caller.
-    }
-    return count;
+    return 0; // unreachable
 }
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)

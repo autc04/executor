@@ -112,6 +112,8 @@ void DirectoryItem::clearCache()
 {
     cache_valid_ = false;
     stamp_ = {};
+    count_.reset();
+    countStamp_ = {};
     contents_.clear();
     contents_by_name_.clear();
     files_.clear();
