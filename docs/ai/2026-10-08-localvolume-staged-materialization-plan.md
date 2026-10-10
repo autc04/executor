@@ -155,16 +155,25 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
    member of a `macNamePrefix` group is named, not eagerly.
 5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug.
-6. **Disambiguation is assigned in catalog order** (open question 1), making it
-   deterministic; a later iteration persists the numbers (Phase 6).
+6. **Disambiguation is assigned in catalog order**, making it deterministic; a
+   later iteration persists the numbers (Phase 6). (Catalog order is defined by
+   Decision 11.)
 7. **Caching is validation-based**, not timer-based (see *Caching*).
 8. **Re-enumeration must not renumber or rename existing entries.** The mapper
    already has this property (reuse by path); the staged design must preserve it.
-9. **Resolving names is a transaction.** Assigning `macName`/`CNID` is an atomic
-   read-modify-write over the group (first cut: the whole directory), so
-   concurrent writers converge and numbers stay stable (Phase 6).
+9. **Resolving names is a transaction.** Assigning `macName`/`CNID` is one atomic
+   read-modify-write, scoped to the whole directory first and then narrowed to the
+   `macNamePrefix` group (Phase 4, sub-steps 1–2), so concurrent writers converge
+   and numbers stay stable.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
+11. **Catalog order is host-path sort order, for now.** The mapper assigns in the
+    order the host lists the directory (path-sorted). This can look unexpected to
+    a Mac user; ordering by Mac name would instead force Resolve a little earlier.
+    Revisit if the native order proves objectionable.
+12. **delete/rename/move update the mapper and flush the whole directory.**
+    `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
+    stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
 
 ## Names
 
@@ -239,9 +248,8 @@ Construct the `FileRep` (the format concern). See *Classify*.
 ### Classify
 
 For now Classify is just another name for Materialize: we decide the rep by
-building it. Keep the words distinct so that "deciding the rep" and "building the
-rep" can diverge later (more encodings, costlier decisions) — a far-future
-option, not now.
+building it. The two words are kept distinct so they *could* be split later
+(*Future Ideas*).
 
 ### Resolve (FileItem, or a DirectoryItem's children)
 
@@ -356,24 +364,15 @@ Operations:
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
   the host filename.
 
-## Design challenges / open questions
+## Open questions
 
-1. **Exact catalog order.** Define the deterministic order used for listing and
-   disambiguation (HFS orders by name; today the mapper assigns in host-path sort
-   order). Confirm base-then-disambiguator and where truncation applies.
-2. **Resolve transaction scope.** Whole-directory first, `macNamePrefix` group
-   later. Define the read-modify-write and the convergence/retry rules (Phase 6).
-3. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
-   currently flush whole directories; define how each invalidates Enumerate /
-   Materialize / Resolve while preserving identity.
-4. **External modification.** Reconciliation happens at validation time
-   (*Caching*) rather than only at the next full cache.
+1. **External modification.** Reconciliation happens at validation time
+   (*Caching*), not only at the next full cache.
 
-*Not* open: CNID and name stability across re-enumeration is already provided by
-the mapper's match-by-path reuse, pinned by
-`DisambiguatedNamesStableAcrossDelete`, `MoveKeepsDisambiguatedNameAndPosixName`
-and `CnidStableAcrossRenameThenMove`. Phase 6 is persistence/sharing; Phase 7 is
-inode-based rename tracking.
+*Not* open: CNID and name stability across re-enumeration is provided by the
+mapper's match-by-path reuse, pinned by `DisambiguatedNamesStableAcrossDelete`,
+`MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove`.
+Phase 6 is persistence/sharing; Phase 7 is inode-based rename tracking.
 
 ## Phased plan
 
@@ -442,10 +441,16 @@ no longer probes every file's format. **Risk:** wide but mechanical; touched
 
 ### Phase 4 — Resolve and group-scoped naming
 
-Implement `macNamePrefix` grouping, transactional Resolve (whole directory first,
-group later), catalog-order disambiguation, and the rep naming rule (MacBinary
-`.bin` stripping). **Risk:** correctness of lazy name assignment; see open
-questions 1–2.
+Implement `macNamePrefix` grouping, transactional Resolve, catalog-order
+disambiguation, and the rep naming rule (MacBinary `.bin` stripping). Two
+sub-steps, each independently testable:
+
+1. **Whole-directory Resolve** — one transaction over the directory (the simplest
+   correct scope; Decision 9).
+2. **Group-scoped Resolve** — narrow the transaction to the `macNamePrefix` group
+   that can actually conflict.
+
+**Risk:** correctness of lazy name assignment.
 
 ### Phase 5 — Caching redesign
 
@@ -531,6 +536,16 @@ against regressing F1/F3.
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
 - Re-enabling the LMDB mapper, except insofar as it affects Phase 6.
 - HFS backend behaviour.
+
+## Future Ideas
+
+- **Smarter invalidation after delete/rename/move.** Those operations update the
+  CNID mapping and flush the whole parent directory in the `ItemCache`.
+  Invalidating only the affected descriptors/groups would avoid re-enumerating
+  the directory.
+- **Split Classify from Materialize.** Deciding an item's rep and building it are
+  the same step today; separating them would let cheap decisions (and more
+  encodings) be added without pre-paying construction cost.
 
 ## Discarded alternatives
 
