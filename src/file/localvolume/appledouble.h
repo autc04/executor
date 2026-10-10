@@ -23,22 +23,22 @@ public:
 
 class AppleSingleDoubleFile;
 
-class AppleDoubleFileItem : public FileItem
+class AppleDoubleRep : public FileRep
 {
     std::weak_ptr<AppleSingleDoubleFile> openedFile;
     AppleDoubleScheme scheme;
 
     std::shared_ptr<AppleSingleDoubleFile> access(int8_t permission);
 public:
-    AppleDoubleFileItem(AppleDoubleScheme scheme, ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, mac_string_view name = {});
+    AppleDoubleRep(AppleDoubleScheme scheme, FileItem& item) : FileRep(item), scheme(scheme) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
 
-    virtual void deleteItem() override;
-    virtual void moveItem(const fs::path& newPath, mac_string_view newName) override;
+    virtual void remove() override;
+    virtual void move(const fs::path& newPath) override;
 };
 
 class AppleSingleItemFactory : public ItemFactory

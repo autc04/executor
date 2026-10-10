@@ -35,7 +35,11 @@ ItemPtr AppleDoubleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID
         for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
         {
             if(fs::is_regular_file(makeADPath(scheme, e.path())))
-                return std::make_shared<AppleDoubleFileItem>(scheme, itemcache, parID, cnid, e.path(), macname);
+            {
+                auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
+                item->setRep(std::make_shared<AppleDoubleRep>(scheme, *item));
+                return item;
+            }
         }
     }
     return nullptr;
@@ -50,68 +54,54 @@ void AppleDoubleItemFactory::createFile(const fs::path& path)
                                 AppleSingleDoubleFile::create_double);
 }
 
-AppleDoubleFileItem::AppleDoubleFileItem(AppleDoubleScheme scheme, ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, mac_string_view name)
-    : FileItem(itemcache, parID, cnid, p, name), scheme(scheme)
-{
-}
-
-std::shared_ptr<AppleSingleDoubleFile> AppleDoubleFileItem::access(int8_t permission)
+std::shared_ptr<AppleSingleDoubleFile> AppleDoubleRep::access(int8_t permission)
 {
     std::shared_ptr<AppleSingleDoubleFile> p;
     if((p = openedFile.lock()))
         return p;
     else
     {
-        fs::path adpath = makeADPath(scheme, path());
+        fs::path adpath = makeADPath(scheme, item_.path());
         p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(adpath, permission));
         openedFile = p;
         return p;
     }
 }
-std::unique_ptr<OpenFile> AppleDoubleFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> AppleDoubleRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path_, permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> AppleDoubleFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> AppleDoubleRep::openRF(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 2);
 }
 
-ItemInfo AppleDoubleFileItem::getInfo()
+void AppleDoubleRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->read(9, 0, &info, sizeof(info.file));
-
-    return info;
 }
 
-void AppleDoubleFileItem::setInfo(ItemInfo info)
+void AppleDoubleRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    access(fsRdWrPerm)->write(9, 0, &info, sizeof(info.file));
+    access(fsRdWrPerm)->write(9, 0, const_cast<ItemInfo*>(&info), sizeof(info.file));
 }
 
-void AppleDoubleFileItem::deleteItem()
+void AppleDoubleRep::remove()
 {
-    fs::remove(path());
-    fs::path adpath = makeADPath(scheme, path());
+    fs::remove(item_.path());
     boost::system::error_code ec;
-    fs::remove(adpath, ec);
+    fs::remove(makeADPath(scheme, item_.path()), ec);
 }
 
-void AppleDoubleFileItem::moveItem(const fs::path& newPath, mac_string_view newName)
+void AppleDoubleRep::move(const fs::path& newPath)
 {
-    fs::path adpathOld = makeADPath(scheme, path());
+    fs::path adpathOld = makeADPath(scheme, item_.path());
     fs::path adpathNew = makeADPath(scheme, newPath);
 
-    fs::rename(path(), newPath);
+    fs::rename(item_.path(), newPath);
 
     boost::system::error_code ec;
     fs::rename(adpathOld, adpathNew, ec);
-
-    path_ = newPath;
-    if(!newName.empty())
-        name_ = newName;
 }
 
 ItemPtr AppleSingleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
