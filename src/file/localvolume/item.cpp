@@ -48,6 +48,16 @@ void Item::setInfo(ItemInfo info)
         fs::last_write_time(path(), info.modTime - macToUnixEpoch);
 }
 
+void FileRep::remove()
+{
+    fs::remove(item_.path());
+}
+
+void FileRep::move(const fs::path& newPath)
+{
+    fs::rename(item_.path(), newPath);
+}
+
 std::unique_ptr<OpenFile> FileItem::open(int8_t permission)
 {
     assert(rep_);
@@ -73,6 +83,21 @@ void FileItem::setInfo(ItemInfo info)
     Item::setInfo(info);
     if(rep_)
         rep_->setInfo(info);
+}
+
+void FileItem::deleteItem()
+{
+    assert(rep_);
+    rep_->remove();
+}
+
+void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
+{
+    assert(rep_);
+    rep_->move(newPath);
+    path_ = newPath;
+    if(!newName.empty())
+        name_ = newName;
 }
 
 ItemPtr DirectoryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,

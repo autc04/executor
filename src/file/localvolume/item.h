@@ -40,17 +40,28 @@ struct ItemInfo
 };
 
 // The file-format concern, split out of FileItem so an Item can exist without
-// knowing its encoding. A FileRep knows where the forks/Finder info live and how
-// to open them. (delete/move still live on the Item classes for now.)
+// knowing its encoding. A FileRep knows where the forks/Finder info live, how to
+// open them, and which host files a delete/move must touch. The delete/move entry
+// points stay on FileItem (the Item API); the rep supplies the format-specific
+// host-file mutation so it can be deferred until Materialize.
 class FileRep
 {
+protected:
+    FileItem& item_;
+
 public:
+    explicit FileRep(FileItem& item) : item_(item) {}
     virtual ~FileRep() = default;
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission) = 0;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) = 0;
     virtual void getInfo(ItemInfo& info) = 0;
     virtual void setInfo(const ItemInfo& info) = 0;
+
+    // Host-file mutation. The default handles a single host file; formats that
+    // keep sidecars (AppleDouble, Basilisk) override.
+    virtual void remove();
+    virtual void move(const fs::path& newPath);
 };
 
 using FileRepPtr = std::shared_ptr<FileRep>;
@@ -148,6 +159,9 @@ public:
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission);
     virtual ItemInfo getInfo() override;
     virtual void setInfo(ItemInfo info) override;
+
+    virtual void deleteItem() override;
+    virtual void moveItem(const fs::path& newPath, mac_string_view newName) override;
 };
 
 }

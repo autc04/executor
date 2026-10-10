@@ -8,10 +8,8 @@ namespace Executor
 {
 class PlainRep : public FileRep
 {
-    FileItem& item_;
-
 public:
-    explicit PlainRep(FileItem& item) : item_(item) {}
+    explicit PlainRep(FileItem& item) : FileRep(item) {}
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
