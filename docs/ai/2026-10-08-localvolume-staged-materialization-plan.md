@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–3 and 5 done; Phase 4 sub-step 1 done (rep naming rule); Phase 4 sub-step 2 and Phases 6–7 planned
+- **Status:** Phases 0–3 and 5 done; Phase 4 sub-step 1 done (rep naming rule); Phase 4 sub-steps 2–4 and Phases 6–7 planned
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -548,21 +548,25 @@ no longer probes every file's format. **Risk:** wide but mechanical; touched
 
 ### Phase 4 — Resolve and group-scoped naming
 
-Implement `macNamePrefix` grouping, transactional Resolve, catalog-order
-disambiguation, and the rep naming rule (MacBinary `.bin` stripping). Two
-sub-steps, each independently testable:
+Decide an item's `macName` separately from its identity, at the right time and
+at the right granularity. Four sub-steps:
 
-1. **DONE — rep naming rule / whole-directory Resolve.** `FileRep::nameSource()`
-   lets the rep decide the displayed name (MacBinary drops `.bin`);
-   `CNIDMapper::mapDirectoryContents` / `getOrCreateChild` take the name source,
-   and the whole directory is named in one pass. Covered by
-   `MacBinaryStripsBinExtension` and `SidecarNameWinsOverMacBinary`.
-2. **TODO — group-scoped, lazy Resolve.** Make the name pass lazy and narrow it to
-   the `macNamePrefix` group that can conflict, so `.bin` files are Materialized
-   only when a name is actually needed (today every `.bin` entry is probed during
-   Enumerate).
+1. **DONE — rep naming rule.** `FileRep::nameSource()` lets the rep decide the
+   displayed name (MacBinary drops `.bin`), applied within the existing eager,
+   whole-directory naming pass. Covered by `MacBinaryStripsBinExtension` and
+   `SidecarNameWinsOverMacBinary`.
+2. **Model and responsibility split for lazy Resolve.** Let a name be
+   *undecided*; move naming out of the mapper's enumeration into an explicit
+   whole-directory **Resolve**. Resolve is still triggered at the end of
+   Enumerate, so observable behaviour is unchanged — this step only prepares the
+   structure.
+3. **Whole-directory lazy Resolve.** Trigger Resolve where names are actually
+   needed, not at Enumerate, so that Enumerate alone (count, path-keyed identity)
+   never decides names.
+4. **Group-scoped Resolve.** Narrow a Resolve to the `macNamePrefix` group that
+   can actually conflict, instead of the whole directory.
 
-**Risk:** correctness of lazy name assignment.
+**Risk:** correctness of lazy / undecided names.
 
 ### Phase 5 — Caching redesign — DONE
 
