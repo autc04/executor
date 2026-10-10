@@ -57,16 +57,17 @@ void ItemCache::touchCachedDirectory(const DirectoryItemPtr& dir)
     cachedDirectories_.push_back({dir});
 }
 
-void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
+bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
 {
     FileStamp stamp = statFile(dir->path());
     if(dir->isCached() && dir->stamp_ == stamp)
-        return;   // L0: the stamp is unchanged, so everything is still valid
+        return true;   // L0: the stamp is unchanged, so everything is still valid
 
     touchCachedDirectory(dir);
 
     // L1: re-scan. Re-stat after the readdir and only accept a *consistent*
     // (before == after) stamp, so a change racing our own scan is caught.
+    bool ok = true;
     for(int attempt = 0; attempt < 3; attempt++)
     {
         std::vector<fs::directory_entry> entries;
@@ -79,11 +80,10 @@ void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
         catch(const boost::filesystem::filesystem_error& exc)
         {
             std::cerr << exc.what() << std::endl;
-            // TODO: report this error the right way (see plan, *Caching*).
-            // throwing here makes listing the *parent* directory fail,
-            // which is not what we want.
-            // ignoring this error makes inaccessible directories look empty,
-            // which is not perfect, either.
+            ok = false;
+            // An unreadable directory looks empty rather than failing the
+            // caller here; the caller decides whether this directory was the
+            // one requested (see LocalVolume::resolveForInfo) or incidental.
         }
 
         FileStamp after = statFile(dir->path());
@@ -104,7 +104,22 @@ void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
 
                 auto itemIt = items_.find(m.cnid);
                 if(itemIt != items_.end())
+                {
                     item = itemIt->second.lock();
+
+                    // A kind change (file <-> directory at the same name) keeps
+                    // the mapping but must rebuild the Item as the new type.
+                    if(item)
+                    {
+                        bool wantDir = fs::is_directory(m.entry.path());
+                        bool isDir = std::dynamic_pointer_cast<DirectoryItem>(item) != nullptr;
+                        if(wantDir != isDir)
+                        {
+                            items_.erase(itemIt);
+                            item.reset();
+                        }
+                    }
+                }
 
                 assert(m.macname.size());
                 if(!item)
@@ -122,11 +137,13 @@ void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
             dir->populateCache(std::move(items), after);
             cachedItemCount_ += (size_t)dir->countItems();
             evictCachedDirectories(dir);
-            return;
+            return ok;
         }
 
         stamp = after;
     }
+
+    return false; // unreachable
 }
 
 int ItemCache::countChildren(const DirectoryItemPtr& dir)

@@ -644,6 +644,45 @@ TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
     EXPECT_EQ(0u, *after); // from the (zeroed) MacBinary header
 }
 
+// Phase 5.5: a file replaced by a directory (same name) is rebuilt as a
+// directory, keeping its CNID.
+TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
+{
+    hostFile("x", "data");
+    auto before = fmGet(rootDirID_, "x");
+    ASSERT_TRUE(before.has_value());
+    EXPECT_FALSE(before->isDir);
+    long cnid = before->cnid;
+
+    fs::remove(host("x"));
+    hostDir("x");
+    hostFile("x/inner", "y");
+    bumpMtime("");
+
+    auto after = fmGet(rootDirID_, "x");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_TRUE(after->isDir);
+    EXPECT_EQ(cnid, after->cnid); // identity is keyed by (parID, posixName)
+    EXPECT_EQ((std::set<std::string> { "inner" }), namesOf(fmList(after->cnid)));
+}
+
+// Phase 5.5: an external rename is seen as delete + create (a fresh CNID) until
+// Phase 7 inode tracking.
+TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
+{
+    hostFile("old", "data");
+    auto before = fmGet(rootDirID_, "old");
+    ASSERT_TRUE(before.has_value());
+
+    fs::rename(host("old"), host("new"));
+    bumpMtime("");
+
+    EXPECT_FALSE(fmGet(rootDirID_, "old").has_value());
+    auto after = fmGet(rootDirID_, "new");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_NE(before->cnid, after->cnid);
+}
+
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with
 //   --gtest_also_run_disabled_tests

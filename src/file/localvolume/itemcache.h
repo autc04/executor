@@ -65,7 +65,9 @@ public:
     ItemPtr tryResolve(fs::path path);
 
 
-    void ensureEnumerated(const DirectoryItemPtr& item);
+    // Ensure `dir` is enumerated and valid; re-enumerates if the host changed.
+    // Returns false if a fresh scan failed (the directory could not be read).
+    bool ensureEnumerated(const DirectoryItemPtr& item);
     // Number of visible children, without enumerating/constructing them.
     int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);

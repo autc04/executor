@@ -225,7 +225,8 @@ ItemPtr LocalVolume::resolveForInfo(mac_string_view name, short vRef, long dirID
     if(index > 0)
     {
         auto dir = resolveDir(vRef, dirID);
-        itemCache->ensureEnumerated(dir);
+        if(!itemCache->ensureEnumerated(dir))
+            throw OSErrorException(ioErr);   // the requested directory is unreadable
         return dir->resolve(index, includeDirectories);
     }
     else if(index == 0 && !name.empty())
