@@ -24,15 +24,30 @@ ItemCache::~ItemCache()
 {
 }
 
-void ItemCache::evictCachedDirectories()
+void ItemCache::clearCachedDirectory(const DirectoryItemPtr& dir)
 {
-    // Memory-only policy for now: bound the number of enumerated directories.
-    // Phase 5 sub-step 2 replaces this with a total-item budget.
-    const size_t maxCachedDirectories = 20;
-    while(cachedDirectories_.size() > maxCachedDirectories)
+    if(dir->isCached())
+        cachedItemCount_ -= (size_t)dir->countItems();
+    dir->clearCache();
+}
+
+void ItemCache::evictCachedDirectories(const DirectoryItemPtr& protect)
+{
+    // Memory-only policy: bound the total number of enumerated items. The root
+    // and the directory currently in use are never evicted; if they alone exceed
+    // the budget, we simply keep them.
+    const size_t maxCachedItems = localVolumeItemBudget();
+    while(cachedItemCount_ > maxCachedItems)
     {
-        cachedDirectories_.front().directory->clearCache();
-        cachedDirectories_.pop_front();
+        auto it = std::find_if(cachedDirectories_.begin(), cachedDirectories_.end(),
+            [&](const auto& p) {
+                return p.directory != rootDirItem_ && p.directory != protect;
+            });
+        if(it == cachedDirectories_.end())
+            break;
+
+        clearCachedDirectory(it->directory);
+        cachedDirectories_.erase(it);
     }
 }
 
@@ -40,7 +55,6 @@ void ItemCache::touchCachedDirectory(const DirectoryItemPtr& dir)
 {
     cachedDirectories_.remove_if([&](const auto& p) { return p.directory == dir; });
     cachedDirectories_.push_back({dir});
-    evictCachedDirectories();
 }
 
 void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
@@ -103,7 +117,11 @@ void ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
                 items_.emplace(m.cnid, item);
             }
 
+            if(dir->isCached())
+                cachedItemCount_ -= (size_t)dir->countItems();
             dir->populateCache(std::move(items), after);
+            cachedItemCount_ += (size_t)dir->countItems();
+            evictCachedDirectories(dir);
             return;
         }
 
@@ -132,7 +150,7 @@ void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
 {
     if(item->isCached())
     {
-        item->clearCache();
+        clearCachedDirectory(item);
         cachedDirectories_.remove_if([&](const auto& p) { return p.directory == item; });
     }
 }

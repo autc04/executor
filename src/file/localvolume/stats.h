@@ -10,6 +10,7 @@
 // cost) so a stock build can be measured.
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 namespace Executor
@@ -31,6 +32,14 @@ inline LocalVolumeStats& localVolumeStats()
 {
     static LocalVolumeStats stats;
     return stats;
+}
+
+// The enumerated-item budget for the directory LRU (Phase 5). Exposed so tests
+// can force eviction without building half a million entries.
+inline size_t& localVolumeItemBudget()
+{
+    static size_t budget = 500000;
+    return budget;
 }
 
 inline void resetLocalVolumeStats()

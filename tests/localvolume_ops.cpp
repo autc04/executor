@@ -576,6 +576,40 @@ TEST_F(LocalVolumeFixture, HostChangeVisibleWithoutInvalidation)
     EXPECT_EQ((std::set<std::string> { "late" }), namesOf(fmList(a->cnid)));
 }
 
+// Phase 5.2: eviction under the item budget is transparent - re-accessing an
+// evicted directory rebuilds the same names and CNIDs from the mapper.
+TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)
+{
+    hostDir("a");
+    for(int i = 0; i < 20; i++)
+        hostFile("a/f" + std::to_string(i));
+
+    auto a = fmGet(rootDirID_, "a");
+    ASSERT_TRUE(a.has_value());
+
+    auto first = fmList(a->cnid);
+    auto known = fmGet(a->cnid, "f3");
+    ASSERT_TRUE(known.has_value());
+
+    size_t saved = localVolumeItemBudget();
+    localVolumeItemBudget() = 3; // force eviction of 'a' on the next enumeration
+
+    hostDir("b");
+    for(int i = 0; i < 20; i++)
+        hostFile("b/g" + std::to_string(i));
+    auto b = fmGet(rootDirID_, "b");
+    ASSERT_TRUE(b.has_value());
+    (void)fmList(b->cnid); // evicts the least-recently-used directory ('a')
+
+    localVolumeItemBudget() = saved;
+
+    // 'a' is rebuilt on demand, but its names and CNIDs are unchanged.
+    EXPECT_EQ(namesOf(first), namesOf(fmList(a->cnid)));
+    auto rebuilt = fmGet(a->cnid, "f3");
+    ASSERT_TRUE(rebuilt.has_value());
+    EXPECT_EQ(known->cnid, rebuilt->cnid);
+}
+
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with
 //   --gtest_also_run_disabled_tests

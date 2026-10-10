@@ -36,9 +36,11 @@ class ItemCache
         DirectoryItemPtr directory;
     };
     std::list<CachedDirectory> cachedDirectories_;
+    size_t cachedItemCount_ = 0; // total items retained across enumerated dirs
 
-    void evictCachedDirectories();
+    void evictCachedDirectories(const DirectoryItemPtr& protect);
     void touchCachedDirectory(const DirectoryItemPtr& dir);
+    void clearCachedDirectory(const DirectoryItemPtr& dir);
     ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
 
     // Construct an identity Item (DirectoryItem or bare FileItem) from a host
