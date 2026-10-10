@@ -124,8 +124,8 @@ size_t MacResourceFork::write(size_t offset, void *p, size_t n)
     return n;
 }
 
-ItemPtr MacItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr MacItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(fs::is_regular_file(e.path()))
     {
@@ -133,12 +133,10 @@ ItemPtr MacItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, 
         if(getxattr(fn, XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0
             || getxattr(fn, XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0)
         {
-            auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-            item->setRep(std::make_shared<MacRep>(*item));
-            return item;
+            return std::make_shared<MacRep>(item);
         }
     }
-    return nullptr;
+    return {};
 }
 
 void MacItemFactory::createFile(const fs::path& path)

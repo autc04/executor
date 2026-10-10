@@ -97,24 +97,20 @@ public:
 };
 
 
+// The format gauntlet. A factory inspects a host file and, if it claims it,
+// returns a FileRep for the (already-instantiated) FileItem. Directories are not
+// handled here; ItemCache constructs them directly from the cheap "kind"
+// decision. This runs at Materialize, not at Enumerate.
 class ItemFactory
 {
 public:
     virtual ~ItemFactory() = default;
 
     virtual bool isHidden(const fs::directory_entry& e) { return false; }
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) = 0;
+    virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
+        const fs::directory_entry& e) { return {}; }
     virtual void createFile(const fs::path& newPath)
         { throw std::logic_error("createFile unimplemented"); }
-};
-
-
-class DirectoryItemFactory : public ItemFactory
-{
-public:
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) override;
 };
 
 class DirectoryItem : public Item
@@ -154,6 +150,9 @@ public:
 
     void setRep(FileRepPtr rep) { rep_ = std::move(rep); }
     const FileRepPtr& rep() const { return rep_; }
+
+    // Build the rep on first use (the format gauntlet). Idempotent.
+    void ensureMaterialized();
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission);
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission);

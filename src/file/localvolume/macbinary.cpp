@@ -424,15 +424,13 @@ void MacBinaryRep::setInfo(const ItemInfo& info)
     access(fsRdWrPerm)->writeFInfo(info);
 }
 
-ItemPtr MacBinaryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr MacBinaryItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(!fs::is_regular_file(e.path()))
-        return nullptr;
+        return {};
     if(!isMacBinaryFile(e.path()))
-        return nullptr;
+        return {};
 
-    auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-    item->setRep(std::make_shared<MacBinaryRep>(*item));
-    return item;
+    return std::make_shared<MacBinaryRep>(item);
 }

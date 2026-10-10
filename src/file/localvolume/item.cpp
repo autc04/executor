@@ -58,56 +58,54 @@ void FileRep::move(const fs::path& newPath)
     fs::rename(item_.path(), newPath);
 }
 
+void FileItem::ensureMaterialized()
+{
+    if(rep_)
+        return;
+    itemcache_.materialize(*this);
+    assert(rep_);
+}
+
 std::unique_ptr<OpenFile> FileItem::open(int8_t permission)
 {
-    assert(rep_);
+    ensureMaterialized();
     return rep_->open(permission);
 }
 
 std::unique_ptr<OpenFile> FileItem::openRF(int8_t permission)
 {
-    assert(rep_);
+    ensureMaterialized();
     return rep_->openRF(permission);
 }
 
 ItemInfo FileItem::getInfo()
 {
+    ensureMaterialized();
     ItemInfo info = Item::getInfo();
-    if(rep_)
-        rep_->getInfo(info);
+    rep_->getInfo(info);
     return info;
 }
 
 void FileItem::setInfo(ItemInfo info)
 {
+    ensureMaterialized();
     Item::setInfo(info);
-    if(rep_)
-        rep_->setInfo(info);
+    rep_->setInfo(info);
 }
 
 void FileItem::deleteItem()
 {
-    assert(rep_);
+    ensureMaterialized();
     rep_->remove();
 }
 
 void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
 {
-    assert(rep_);
+    ensureMaterialized();
     rep_->move(newPath);
     path_ = newPath;
     if(!newName.empty())
         name_ = newName;
-}
-
-ItemPtr DirectoryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
-{
-    if(fs::is_directory(e.path()))
-    {
-        return std::make_shared<DirectoryItem>(itemcache, parID, cnid, e.path(), macname);
-    }
-    return nullptr;
 }
 
 void DirectoryItem::clearCache()

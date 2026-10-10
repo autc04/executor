@@ -13,8 +13,8 @@ bool BasiliskItemFactory::isHidden(const fs::directory_entry& e)
 }
 
 
-ItemPtr BasiliskItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr BasiliskItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(fs::is_regular_file(e.path()))
     {
@@ -22,13 +22,9 @@ ItemPtr BasiliskItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID pa
         fs::path finf = e.path().parent_path() / ".finf" / e.path().filename();
         
         if(fs::is_regular_file(rsrc) || fs::is_regular_file(finf))
-        {
-            auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-            item->setRep(std::make_shared<BasiliskRep>(*item));
-            return item;
-        }
+            return std::make_shared<BasiliskRep>(item);
     }
-    return nullptr;
+    return {};
 }
 
 void BasiliskItemFactory::createFile(const fs::path& newPath)

@@ -19,8 +19,8 @@ public:
 
 class MacItemFactory : public ItemFactory
 {
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) override;
+    virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
+        const fs::directory_entry& e) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 }

@@ -12,6 +12,7 @@
 namespace Executor
 {
 class Item;
+class FileItem;
 class ItemFactory;
 class CNIDMapper;
 class DirectoryItem;
@@ -39,7 +40,17 @@ class ItemCache
 
     void cleanDirectoryCache();
     ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
+
+    // Construct an identity Item (DirectoryItem or bare FileItem) from a host
+    // entry, without running the format gauntlet. Returns null for entries that
+    // are neither a regular file nor a directory.
+    ItemPtr makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name);
+
 public:
+    // Build and install the FileRep for a FileItem (the format gauntlet).
+    // Idempotent; called lazily from FileItem on first access.
+    void materialize(FileItem& item);
+
     ItemCache(fs::path root, mac_string_view volumeName,
                 std::unique_ptr<CNIDMapper> cnidMapper,
                 ItemFactory *itemFactory

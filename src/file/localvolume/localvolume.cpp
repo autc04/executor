@@ -40,16 +40,12 @@ static void setFCBName(filecontrolblock *fcb, const mac_string& name)
     fcb->fcbCName[0] = (uint8_t)n;
 }
 
-ItemPtr ExtensionItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr ExtensionItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(fs::is_regular_file(e.path()))
-    {
-        auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-        item->setRep(std::make_shared<PlainRep>(*item));
-        return item;
-    }
-    return nullptr;
+        return std::make_shared<PlainRep>(item);
+    return {};
 }
 
 void ExtensionItemFactory::createFile(const fs::path& newPath)
@@ -68,7 +64,6 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
             static_cast<ItemFactory*>(this)
         );
 
-    itemFactories.push_back(std::make_unique<DirectoryItemFactory>());
     itemFactories.push_back(std::make_unique<AppleSingleItemFactory>());
     itemFactories.push_back(std::make_unique<AppleDoubleItemFactory>());
     upgradedItemFactory = itemFactories.back().get();
@@ -96,16 +91,18 @@ bool LocalVolume::isHidden(const fs::directory_entry& e)
     return false;
 }
 
-ItemPtr LocalVolume::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr LocalVolume::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     for(auto& itemFactory : itemFactories)
     {
         localVolumeStats().factoryProbes++;
-        if(ItemPtr item = itemFactory->createItemForDirEntry(itemcache, parID, cnid, e, macname))
-            return item;
+        if(FileRepPtr rep = itemFactory->createRepForFile(itemcache, item, e))
+            return rep;
     }
-    return {};
+    // ExtensionItemFactory is the plain fallback and claims every regular file,
+    // so the loop normally returns above. Keep a safety net.
+    return std::make_shared<PlainRep>(item);
 }
 
 std::shared_ptr<DirectoryItem> LocalVolume::resolveDir(long dirID)

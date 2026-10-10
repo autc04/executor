@@ -86,11 +86,7 @@ void ItemCache::cacheDirectory(DirectoryItemPtr dir)
 
         assert(m.macname.size());
         if(!item)
-        {
-            item = itemFactory_->createItemForDirEntry(*this, m.parID, m.cnid, m.entry, m.macname);
-            if(item)
-                localVolumeStats().itemsConstructed++;
-        }
+            item = makeItem(m.parID, m.cnid, m.entry, m.macname);
 
         if(!item)
             continue;
@@ -180,9 +176,8 @@ ItemPtr ItemCache::tryResolve(CNID cnid)
         return {};
     auto& m = *optionalMapping;
     
-    if(ItemPtr item = itemFactory_->createItemForDirEntry(*this, m.parID, m.cnid, m.entry, m.macname))
+    if(ItemPtr item = makeItem(m.parID, m.cnid, m.entry, m.macname))
     {
-        localVolumeStats().itemsConstructed++;
         items_.emplace(item->cnid(), item);
         return item;
     }
@@ -233,10 +228,33 @@ ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)
         if(ItemPtr item = it->second.lock())
             return item;
 
-    ItemPtr item = itemFactory_->createItemForDirEntry(*this, mapping.parID, mapping.cnid, mapping.entry, mapping.macname);
+    ItemPtr item = makeItem(mapping.parID, mapping.cnid, mapping.entry, mapping.macname);
     if(item)
         items_.emplace(mapping.cnid, item);
     return item;
+}
+
+ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name)
+{
+    ItemPtr item;
+
+    if(fs::is_directory(e.path()))
+        item = std::make_shared<DirectoryItem>(*this, parID, cnid, e.path(), name);
+    else if(fs::is_regular_file(e.path()))
+        item = std::make_shared<FileItem>(*this, parID, cnid, e.path(), name);
+    else
+        return {};
+
+    localVolumeStats().itemsConstructed++;
+    return item;
+}
+
+void ItemCache::materialize(FileItem& item)
+{
+    if(item.rep())
+        return;
+
+    item.setRep(itemFactory_->createRepForFile(*this, item, fs::directory_entry(item.path())));
 }
 
 void ItemCache::deleteItem(ItemPtr item)

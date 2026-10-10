@@ -27,22 +27,18 @@ bool AppleDoubleItemFactory::isHidden(const fs::directory_entry& e)
     return false;
 }
 
-ItemPtr AppleDoubleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr AppleDoubleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(fs::is_regular_file(e.path()))
     {
         for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
         {
             if(fs::is_regular_file(makeADPath(scheme, e.path())))
-            {
-                auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-                item->setRep(std::make_shared<AppleDoubleRep>(scheme, *item));
-                return item;
-            }
+                return std::make_shared<AppleDoubleRep>(scheme, item);
         }
     }
-    return nullptr;
+    return {};
 }
 
 void AppleDoubleItemFactory::createFile(const fs::path& path)
@@ -104,22 +100,18 @@ void AppleDoubleRep::move(const fs::path& newPath)
     fs::rename(adpathOld, adpathNew, ec);
 }
 
-ItemPtr AppleSingleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr AppleSingleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e)
 {
     if(!fs::is_regular_file(e.path()))
-        return nullptr;
+        return {};
     GUEST<uint64_t> magic = 0;
     fs::ifstream(e.path(), std::ios::binary).read((char*)&magic, 8);
 
     if(magic == 0x0005160000020000)
-    {
-        auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
-        item->setRep(std::make_shared<AppleSingleRep>(*item));
-        return item;
-    }
+        return std::make_shared<AppleSingleRep>(item);
     else
-        return nullptr;
+        return {};
 }
 
 void AppleSingleItemFactory::createFile(const fs::path& path)
