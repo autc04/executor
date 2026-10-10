@@ -17,7 +17,8 @@ translating Mac file-system calls into `std::filesystem` operations. It maintain
 - `root`: the host directory path that is the Mac volume root.
 - `ItemCache`: a cache of `Item` objects keyed by catalog node ID (CNID).
 - `itemFactories`: an ordered list of `ItemFactory` instances tried in priority order
-  to decide which `Item` subclass to create for a given directory entry.
+  to decide which `FileRep` (storage format) a file gets. The gauntlet runs at
+  Materialize, not during a directory scan.
 
 **`Item` / `FileItem` / `DirectoryItem`**: the in-memory representation of a single
 Mac file or directory. Each `Item` holds its CNID, parent CNID, host path, and Mac
@@ -42,8 +43,17 @@ fallback used when LMDB is unavailable.
   128-byte header. Detected last (just before the plain fallback), so a sidecar
   pair describing a file named `foo.bin` wins over the MacBinary interpretation.
 
-**`ItemCache`**: caches `Item` objects and manages CNID assignment. Cache misses scan
-the parent directory and call `createItemForDirEntry` on each registered `ItemFactory`.
+**`ItemCache`**: caches `Item` objects and manages CNID assignment. A cache miss
+scans the parent directory and constructs an identity `Item` per entry
+(`makeItem`: `DirectoryItem` for a directory, bare `FileItem` otherwise); the
+file's storage format is only decided later, on first access, by
+`materialize()`.
+
+**Materialization**: `FileItem` holds an optional `FileRep`; `open()`, `openRF()`,
+`getInfo()`, `setInfo()`, `deleteItem()` and `moveItem()` call
+`ensureMaterialized()` first, which runs the `ItemFactory` gauntlet
+(`createRepForFile`) exactly once. Scanning a directory therefore does not probe
+every entry; only entries actually touched are classified.
 
 **`FCBExtension`**: a host-side extension to the guest FCB (File Control Block). It
 stores the `OpenFile` pointer and the fork selector for an open file descriptor. The

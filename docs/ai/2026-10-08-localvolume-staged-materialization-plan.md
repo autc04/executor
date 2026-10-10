@@ -343,13 +343,16 @@ Operations:
 - `DirectoryItem`: `countChildren()` (the count half of Enumerate), descriptor
   storage + child instantiation, `resolve(index, includeDirectories)` materializing
   only the requested child; keep the HFS-compatible count semantics (files + dirs).
-- `FileItem`: holds the optional `FileRep`.
+- `FileItem`: holds the optional `FileRep` and builds it lazily via
+  `ensureMaterialized()` (called from `open`/`openRF`/`getInfo`/`setInfo`/
+  `deleteItem`/`moveItem`). *(done — Phase 3)*
 
 ### `ItemFactory` (per-format files)
 
 - Split "kind" (cheap: regular file vs directory, no probing) from "which fork
-  layout" (the gauntlet: magic reads / sidecar stats / xattrs). The latter moves
-  into `FileRep` construction at Materialize.
+  layout" (the gauntlet: magic reads / sidecar stats / xattrs). *(done — Phase 3:
+  `ItemCache::makeItem` makes the kind decision; `ItemFactory::createRepForFile`
+  runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
   the host filename.
 
@@ -431,18 +434,21 @@ Deliverable: scanning a directory no longer probes every file's format.
   `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`, `MacBinaryRep`, `MacRep`.
   `FileItem::deleteItem`/`moveItem` remain the Item-level API but delegate the
   host-file mutation to the rep, so the format decision can be deferred.
-- **TODO (sub-step 3, the payoff):** Enumerate stores descriptors and instantiates
-  identity `Item`s without running the factory gauntlet; rep construction moves
-  behind Materialize. Split `ItemFactory` into "kind" (cheap file-vs-dir) and
-  "which fork layout" (the probing gauntlet). Adjust the `itemsConstructed` /
-  `factoryProbes` guard tests, whose meaning changes once Enumerate stops probing.
+- **DONE (sub-step 3, the payoff):** Enumerate makes only the cheap kind
+  decision (`ItemCache::makeItem`) and instantiates identity `Item`s; the factory
+  gauntlet moved behind `ItemCache::materialize` / `FileItem::ensureMaterialized`.
+  `DirectoryItemFactory` was removed and `ItemFactory` now exposes
+  `createRepForFile`. Verified with the benchmark: 100 entries →
+  `directoryIterations=1, itemsConstructed=100, factoryProbes=500` (probes happen
+  only when an entry is actually accessed, not during the scan).
 
 ### Phase 4 — Materialize (Classify)
 
-Build the `FileRep` on first access: move the factory gauntlet out of
-`createItemForDirEntry` behind Materialize; keep the plain fallback and the
-ordering rules from `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
-(sidecar backends, then MacBinary, then plain).
+Largely realized by Phase 3 sub-step 3: the `FileRep` is built on first access,
+and the factory gauntlet lives in `createRepForFile` behind Materialize. What
+remains is only the (far-future) Classify split — separating "decide the rep"
+from "build the rep" — and the rep naming rule (MacBinary `.bin` stripping) from
+Phase 5.
 
 ### Phase 5 — Resolve and group-scoped naming
 
@@ -555,7 +561,7 @@ above (Variant B):
 - `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, `cacheDirectory`,
   `countChildren`, LRU.
 - `src/file/localvolume/localvolume.cpp` — `nativePathToFSSpec`, `getInfoCommon`,
-  `createItemForDirEntry`, `resolve`, `MountLocalVolumes`.
+  `createRepForFile`, `resolve`, `MountLocalVolumes`.
 - `src/file/localvolume/item.cpp` / `item.h` — `DirectoryItem::populateCache`,
   `resolve`, `countItems`.
 - `src/file/localvolume/simplecnidmapper.cpp` /

@@ -8,6 +8,13 @@
 - **Status:** implemented (2026-10-04)
 - **Area:** `src/file/localvolume/`
 
+> **Later refactor note.** The staged-materialization work
+> (`docs/ai/2026-10-08-localvolume-staged-materialization-plan.md`) renamed the
+> per-format `*FileItem` classes to `*Rep : FileRep` and replaced
+> `ItemFactory::createItemForDirEntry` with `createRepForFile`, run lazily at
+> Materialize. The class names and factory signature below describe the state on
+> 2026-10-04; the format precedence rules are unchanged.
+
 ## Summary
 
 `LocalVolume` exposes a host file with a `.bin` extension that carries a valid
