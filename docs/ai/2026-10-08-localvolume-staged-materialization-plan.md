@@ -25,7 +25,8 @@ orthogonal **states of an object**, not a pipeline:
 | Object | State | Meaning |
 |---|---|---|
 | DirectoryItem | Instantiated | identity only |
-| DirectoryItem | **Enumerated** | its children have been instantiated |
+| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
+| DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
 | FileItem | Instantiated | identity only |
 | FileItem | **Materialized** | it has a `FileRep` |
 | FileItem | **Resolved** | it has a `CNID` and a `macName` |
@@ -33,7 +34,7 @@ orthogonal **states of an object**, not a pipeline:
 and it **splits the file-format concern out of `Item`** (into a `FileRep`), so an
 `Item` can exist without knowing its format. The headline fixes are that **path
 resolution must not enumerate any directory** and that **reporting a count must
-not realize the directory's contents**.
+not enumerate or materialize the directory's contents**.
 
 ## Findings (motivation)
 
@@ -174,6 +175,14 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
 12. **delete/rename/move update the mapper and flush the whole directory.**
     `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
     stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
+13. **Count and Enumerate are separate directory stages.** Count keeps only a
+    tally (no `Item`s, no mapper work); Enumerate builds the children and yields
+    the count for free (see *Stage model*). Counts vastly outnumber enumerations
+    (`ioDrNmFls` is requested for every directory a listing shows), and Enumerate
+    costs memory, so the two must not be conflated.
+14. **Staleness is validation-based**, via a directory stamp of `(mtime, size)`
+    taken from one raw `stat`; external changes are reconciled at access, not on
+    a timer (see *Caching*).
 
 ## Names
 
@@ -208,23 +217,29 @@ the chosen name and is **optional** until Resolve decides it.
 
 ## Stage model
 
-These are optional, orthogonal **states** of an object — not a pipeline, and with
-no implied ordering between them. The one exception is `.bin` files, below.
+These are optional, orthogonal **states** of an object — not a pipeline, with no
+implied ordering except where noted: Enumerate implies Count, and a `.bin` file
+must be Materialized before it can be Resolved.
 
 | Object | State | Meaning |
 |---|---|---|
 | DirectoryItem | Instantiated | identity only |
-| DirectoryItem | **Enumerated** | its children have been instantiated (one readdir; sidecar names filtered) |
+| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
+| DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
 | FileItem | Instantiated | identity only; `(parID, posixName, macNamePrefix)` known |
 | FileItem | **Materialized** | it has a `FileRep` |
 | FileItem | **Resolved** | it has a `CNID` and a `macName` |
 
-Enumerate is both the count and the child instantiation: the number of visible
-descriptors answers `ioDrNmFls`, and the descriptors become child `FileItem`s.
+Count and Enumerate are separate directory stages. `ioDrNmFls` is queried for
+*every* directory a listing displays, so counts vastly outnumber enumerations;
+and while Enumerate is only slightly more expensive than Count in *time*, it
+retains one `Item` per child and so costs far more *memory*. Hence a cheap Count
+that keeps only a tally, and a heavier Enumerate that keeps the children.
+
 `ioDrNmFls` is a snapshot by nature (HFS keeps a stored valence; the host
-directory is live), so a cheap readdir count is no less correct than counting the
-same live directory eagerly — document the staleness bound rather than pretending
-to exactness.
+directory is live), so a readdir tally is no less correct than counting the same
+live directory eagerly — document the staleness bound rather than pretending to
+exactness.
 
 Materialized and Resolved are independent: a file can be **Resolved without being
 Materialized**. The exception is a `.bin` file, whose final name depends on the
@@ -234,12 +249,21 @@ Materialize does not read file data — it establishes the item's representation
 (which rep, where the forks live, Finder metadata), and does not imply reading a
 whole file.
 
+### Count (DirectoryItem)
+
+Read the host directory once, apply the hidden-name filter, and keep only the
+tally plus a validation stamp. No descriptors, no CNID-mapper work, no `Item`s —
+so a Counted directory costs O(1) memory. A Count-only directory has no CNIDs for
+its children; a later name lookup Enumerates it (or uses the mapper's
+`(parID, posixName)` index) to build them.
+
 ### Enumerate (DirectoryItem)
 
 Read the host directory once and store intermediate **descriptors** `(host path,
 posixName, kind, macNamePrefix)` for the visible children (sidecar names filtered
-by name), then instantiate child `FileItem`s from them. The descriptors are
-retained so a following operation reuses the scan.
+by name), run the CNID-mapper diff, and instantiate child `FileItem`s. The
+descriptors are retained so a following operation reuses the scan, and the count
+is `contents_.size()` — Enumerate implies Count.
 
 ### Materialize (FileItem)
 
@@ -277,8 +301,9 @@ knowing its file format (Variant B; see *Discarded alternatives*):
   Instantiate. `deleteItem`/`moveItem` stay the public API here, but delegate the
   host-file mutation to the rep (see below) so that a file's format need not be
   known until it is Materialized.
-- **`DirectoryItem : Item`** — the children (descriptors, then child `Item`s) and
-  the directory stages.
+- **`DirectoryItem : Item`** — the two directory stages: an optional `count_`
+  (+ validation stamp) and an optional enumeration (`contents_`/`files_`/
+  `contents_by_name_` + stamp).
 - **`FileItem : Item`** — holds an optional `FileRep`.
 - **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`, and
   the host-file mutation `remove`/`move` (default = a single host file; the
@@ -293,20 +318,107 @@ richer encoding).
 
 ## Caching
 
-Split the two jobs the current LRU + 1 s timeout (`itemcache.cpp:26`) conflates:
+Three jobs are conflated in the current LRU + 1 s timeout (`itemcache.cpp:26`):
+realizing items, bounding memory, and staying fresh. Split them.
 
-- **Memory bound** stays an LRU over realized items / enumerated directories.
-  Eviction is now a pure memory concern.
-- **Staleness** becomes explicit validation, so correctness no longer depends on
-  timing:
-  - **Membership**: `stat` the directory itself; if its mtime is unchanged since
-    Enumerate, the descriptors, `macNamePrefix` groups, and count are still valid —
-    O(1).
-  - **Per-entry**: escalate to re-reading the directory's `(filename, mtime)`
-    list only when the directory mtime moved; this catches add/remove/rename and
-    in-place edits (which directory mtime alone does not).
-  - **Materialized item**: on access, `stat` the item; if `(mtime, size)` differ
-    from what was materialized, drop its `FileRep` (back to Instantiate).
+### Two directory stages to cache
+
+`DirectoryItem` carries two optional pieces of state and one shared validation
+stamp:
+
+```cpp
+std::optional<int> count_;                  // Counted: a tally only
+std::vector<ItemPtr> contents_, files_;     // Enumerated: the children
+std::map<mac_string, ItemPtr> contents_by_name_;
+bool enumerated_ = false;
+DirStamp stamp_;                            // (mtime, size) at the last scan
+```
+
+- `enumerated_` implies the count (`contents_.size()`); `count_` is then dropped.
+- `count_` alone means Counted but not Enumerated.
+- Both payloads are valid iff `stat(dir) == stamp_`. When validation fails, *both*
+  are dropped before rescanning, so a stale enumeration is never served merely
+  because a fresh count was taken.
+
+### Validation (staleness), independent of wall-clock time
+
+`cacheDirectory` becomes `ensureEnumerated(dir)`:
+
+```
+if enumerated_ and stat(dir) == stamp_: return   # L0, O(1)
+reenumerate(dir)                                 # L1
+```
+
+- **L0 (O(1))**: `stat` the directory itself; if the stamp is unchanged, the
+  descriptors, `macNamePrefix` groups, and count are all still valid.
+- **L1**: re-readdir and re-run the mapper diff (reusing CNIDs, assigning new
+  ones, `deleteCNID`ing children no longer present).
+
+The stamp is `(mtime, size)` taken from **one raw `stat`**, with a before/after
+re-stat around the `readdir` so a change racing our own scan is caught (retry on
+mismatch). Do **not** use `fs::last_write_time()` for this: this project's `fs`
+is Boost.Filesystem, whose `last_write_time()` returns `std::time_t` — one-second
+resolution, which would miss same-second changes and make the validation test
+flaky. `ino` (and rename detection) is deferred to Phase 7; `nlink` is not used.
+
+Counting caches the same way: `Count(dir)` returns `contents_.size()` if
+Enumerated and valid, else a cached `count_` if its stamp is valid, else rescans.
+A repeated `ioDrNmFls` request is O(1) after the first scan.
+
+There is deliberately **no per-entry `(filename, mtime)` level**: per-entry
+metadata is not cached — `Item::getInfo` stats live, and fork/Finder-info reads
+hit the rep live — so the only per-entry staleness is the materialized rep, below.
+
+### Reconciliation of external changes
+
+Reconciliation *is* L1: a host change is observed on the next access to the
+affected directory, with no FileManager operation. The mapper's filename diff
+decides the outcome: an unchanged filename keeps its CNID and decided `macName`;
+a new name gets a new CNID; a vanished name is `deleteCNID`ed (recursively).
+
+- An **external rename** is therefore seen as delete + create (new CNID) until
+  Phase 7 inode tracking. This is the documented consequence, not a bug.
+- A **kind change** (file ↔ directory at the same name) keeps the
+  `(parID, posixName)` identity but must rebuild the `Item` as the new type:
+  `ensureEnumerated` must discard a live `items_[cnid]` whose kind no longer
+  matches the fresh descriptor.
+- **Path resolution is unaffected**: `tryResolve(path)` uses `lookupChild`/
+  `getOrCreateChild` and checks `fs::exists`, so it neither enumerates nor
+  resurrects deleted entries.
+- **Read errors**: an unreadable *ancestor* scan degrades to empty (as today); an
+  unreadable *requested* directory reports `ioErr`.
+- The staleness bound is "as of the last access". Changes racing the guest's
+  other traps are inherently un-transactional (HFS is not transactional either).
+
+CNID changes made cross-instance through LMDB, with no host change, are invisible
+to the stamp; that is Phase 6. Identity stability across re-enumeration (CNIDs and
+decided names survive) is already provided by the mapper's match-by-path reuse,
+pinned by `DisambiguatedNamesStableAcrossDelete`,
+`MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove` —
+*not* an open question.
+
+### Materialized-rep staleness
+
+A rep caches parsed state (`MacBinaryFile::header_`,
+`AppleSingleDoubleFile::descriptors`) and can outlive the enumeration that built
+it. Record the primary host file's `(mtime, size)` on the `FileItem` at
+Materialize; at the start of `open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`,
+drop the rep if the stamp changed (it rematerializes). Do not revalidate a rep
+whose fork is currently open — the guest holds it, so the change surfaces on
+reopen.
+
+### Memory bound
+
+An LRU over *enumerated* directories bounds memory; eviction clears the
+enumeration and is safe because re-enumeration rebuilds from the mapper. Charge
+**total items** (Σ `contents_.size()`) rather than directory count — the risk is
+one huge directory (e.g. `/nix/store`), not many small ones. Default budget:
+**500,000 items**. Pin the root (`resolveDir(2)`), which is tiny.
+
+Evicting a directory frees its children and their reps (the parent holds them
+strongly via `contents_`); items still referenced by an open FCB survive, and
+re-enumeration rebinds them by CNID through `items_`. `count_`/`stamp_` are O(1)
+per live `DirectoryItem` and add no meaningful pressure.
 
 This removes the 1 s / 20-directory policy entirely.
 
@@ -338,19 +450,23 @@ Operations:
 
 - `ItemCache::tryResolve(fs::path)`: resolve via CNID only; do not enumerate
   ancestors. *(done — Phase 1)*
-- `getInfoCommon`'s directory branch: use Enumerate's count instead of
-  `cacheDirectory` + `countItems()`. *(done — Phase 2)*
+- `getInfoCommon`'s directory branch: use **Count** (`countChildren`) instead of
+  `cacheDirectory` + `countItems()`. *(Phase 2; validation-stamp caching is
+  Phase 5.)*
 - `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration;
   the name for the FSSpec comes from Resolve of that one entry.
 - `resolve(name)` (`localvolume.cpp:170`): name lookup is no longer a prebuilt
   map. Resolve the parent directory (or the name's group), then look up the name.
+- `cacheDirectory` → `ensureEnumerated` (L0 stamp check, L1 re-enumerate); LRU by
+  total items, root pinned. *(Phase 5)*
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
 - `Item`: identity + optional name; instantiable without a format.
-- `DirectoryItem`: `countChildren()` (the count half of Enumerate), descriptor
-  storage + child instantiation, `resolve(index, includeDirectories)` materializing
-  only the requested child; keep the HFS-compatible count semantics (files + dirs).
+- `DirectoryItem`: the two stages — `count_`/`stamp_` (Counted) and
+  `contents_`/`files_`/`contents_by_name_` (Enumerated) — plus
+  `resolve(index, includeDirectories)`; keep the HFS-compatible count semantics
+  (files + dirs).
 - `FileItem`: holds the optional `FileRep` and builds it lazily via
   `ensureMaterialized()` (called from `open`/`openRF`/`getInfo`/`setInfo`/
   `deleteItem`/`moveItem`). *(done — Phase 3)*
@@ -363,16 +479,6 @@ Operations:
   runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
   the host filename.
-
-## Open questions
-
-1. **External modification.** Reconciliation happens at validation time
-   (*Caching*), not only at the next full cache.
-
-*Not* open: CNID and name stability across re-enumeration is provided by the
-mapper's match-by-path reuse, pinned by `DisambiguatedNamesStableAcrossDelete`,
-`MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove`.
-Phase 6 is persistence/sharing; Phase 7 is inode-based rename tracking.
 
 ## Phased plan
 
@@ -412,11 +518,12 @@ listing did not finish within 5 minutes — F4 in practice.
 instead of `cacheDirectory` on each ancestor. Guard:
 `ResolvePathDoesNotEnumerate` (zero directory scans).
 
-### Phase 2 — Enumerate: count without materialization (F3) — DONE
+### Phase 2 — Count without enumerating (F3) — DONE
 
-`ItemCache::countChildren` (readdir + hidden filter, no CNID/item/factory work)
-used for `ioDrNmFls` (the count half of Enumerate). Guard:
-`ListingDoesNotMaterializeSubdirectories`.
+`ItemCache::countChildren` (readdir + hidden filter; no CNID/item/factory work),
+used for `ioDrNmFls` as the **Count** stage, distinct from Enumerate. Guard:
+`ListingDoesNotMaterializeSubdirectories`. Count's validation-stamp caching is
+Phase 5.
 
 ### Phase 3 — Object model + deferred materialization — DONE
 
@@ -454,7 +561,18 @@ sub-steps, each independently testable:
 
 ### Phase 5 — Caching redesign
 
-Replace the LRU + timeout with the validation scheme; keep an LRU for memory only.
+Replace the LRU + 1 s timeout with validation-based staleness and a memory-only
+LRU (see *Caching*). Sub-steps:
+
+1. **Directory stamps + `ensureEnumerated`.** `(mtime, size)` from a raw `stat`;
+   L0 validate / L1 re-enumerate; drop the TTL. Enable
+   `HostChangeVisibleWithoutInvalidation` (bump the stamp deterministically in the
+   fixture rather than sleeping).
+2. **Memory-bound LRU** by total items (default 500 K), root pinned.
+3. **Count caching.** `count_` + stamp, so a repeated `ioDrNmFls` is O(1).
+4. **Per-item rep revalidation** on `(mtime, size)` change.
+5. **Reconciliation correctness:** kind changes; the read-error policy; external
+   rename = delete + create (documented behaviour).
 
 ### Phase 6 — CNID persistence, transactions, multi-instance sharing
 
@@ -518,13 +636,21 @@ delete + create). Nothing above depends on this.
   case-insensitive host FS.
 - **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — a path resolve
   performs zero directory scans.
-- **Enumerate (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
-  with two subdirectories constructs only those two items.
+- **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
+  with two subdirectories constructs only those two items; counting a
+  subdirectory does not enumerate it.
 - **Instrumentation**: a directory is enumerated once and reused
-  (`ListingEnumeratesOnceWhileCached`).
+  (`ListingEnumeratesOnceWhileCached`); Phase 5 adds validation / re-enumeration
+  counters.
+- **Validation (Phase 5)**: an external add/remove/rename inside an enumerated
+  directory is visible on the next access; unchanged names keep their CNID and
+  `macName`; a repeated listing validates but does not re-enumerate (stats);
+  eviction under the item budget, then re-access, preserves CNIDs/names; an
+  in-place edit of a MacBinary header is reflected by `getInfo`; a file↔directory
+  kind change is handled.
 - **Forward-looking** (`DISABLED_`): host-side changes visible without
-  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 4), large-directory
-  benchmark.
+  invalidation (*Caching*, Phase 5), MacBinary `.bin` stripping (Phase 4),
+  large-directory benchmark.
 
 ### Benchmarks
 
