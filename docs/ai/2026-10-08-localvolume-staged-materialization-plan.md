@@ -266,13 +266,17 @@ knowing its file format (Variant B; see *Discarded alternatives*):
 
 - **`Item`** — identity only: `parID`, `cnid`, `path`, `name` (optional until
   Resolve), plus the identity ops (`deleteItem`, `moveItem`). Instantiable at
-  Instantiate.
+  Instantiate. `deleteItem`/`moveItem` stay the public API here, but delegate the
+  host-file mutation to the rep (see below) so that a file's format need not be
+  known until it is Materialized.
 - **`DirectoryItem : Item`** — the children (descriptors, then child `Item`s) and
   the directory stages.
 - **`FileItem : Item`** — holds an optional `FileRep`.
-- **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`;
-  concrete `PlainRep`, `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`,
-  `MacBinaryRep`. Built at Materialize.
+- **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`, and
+  the host-file mutation `remove`/`move` (default = a single host file; the
+  sidecar formats AppleDouble and Basilisk override). Concrete `PlainRep`,
+  `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`, `MacBinaryRep`, `MacRep`.
+  Built at Materialize.
 
 `ItemCache::items_` (`cnid -> weak_ptr<Item>`) stays the realization cache, so
 "find an already-realized child" is answered there, not by the parent.
@@ -420,6 +424,18 @@ stores descriptors and instantiates children as identity `Item`s without probing
 Deliverable: scanning a directory no longer probes every file's format.
 **Risk:** wide but mechanical; touches `item.{h,cpp}`, `itemcache.{h,cpp}`,
 `localvolume.cpp`, and every format backend.
+
+- **DONE (sub-step 1):** the `FileRep` seam (`open`/`openRF`/`getInfo`/`setInfo`
+  plus `remove`/`move`) and the Plain backend.
+- **DONE (sub-step 2):** all remaining backends migrated to reps —
+  `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`, `MacBinaryRep`, `MacRep`.
+  `FileItem::deleteItem`/`moveItem` remain the Item-level API but delegate the
+  host-file mutation to the rep, so the format decision can be deferred.
+- **TODO (sub-step 3, the payoff):** Enumerate stores descriptors and instantiates
+  identity `Item`s without running the factory gauntlet; rep construction moves
+  behind Materialize. Split `ItemFactory` into "kind" (cheap file-vs-dir) and
+  "which fork layout" (the probing gauntlet). Adjust the `itemsConstructed` /
+  `factoryProbes` guard tests, whose meaning changes once Enumerate stops probing.
 
 ### Phase 4 — Materialize (Classify)
 

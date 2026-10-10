@@ -21,9 +21,10 @@ translating Mac file-system calls into `std::filesystem` operations. It maintain
 
 **`Item` / `FileItem` / `DirectoryItem`**: the in-memory representation of a single
 Mac file or directory. Each `Item` holds its CNID, parent CNID, host path, and Mac
-name. Concrete subclasses (`PlainFileItem`, `AppleDoubleFileItem`,
-`AppleSingleFileItem`, `BasiliskFileItem`) implement `getInfo()`, `setInfo()`, `open()`,
-and `openRF()` for each storage format.
+name. A `FileItem` owns an optional `FileRep` (its storage-format concern): the
+concrete reps (`PlainRep`, `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`,
+`MacBinaryRep`, `MacRep`) implement `open()`, `openRF()`, `getInfo()`,
+`setInfo()` and the sidecar-aware `remove()`/`move()` for each format.
 
 **CNID mapping**: Mac HFS uses catalog node IDs (CNIDs) to identify files and
 directories. `LocalVolume` uses LMDB (via `lmdbcnidmapper.h`) to persist the
@@ -91,7 +92,7 @@ reference number.
   fallback; otherwise a `._foo.bin` companion would never be seen. See
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`.
 - **`upgradeItem`**: when a plain item's sidecar is discovered to contain valid
-  AppleDouble data, the item is upgraded to an `AppleDoubleFileItem` in place so
+  AppleDouble data, a richer `FileRep` is installed on the item in place so
   subsequent opens use the richer format.
 - The `LocalVolume` constructor takes a `VCB&` reference; the VCB must remain valid
   for the lifetime of the volume object.
