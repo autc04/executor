@@ -27,9 +27,8 @@ orthogonal **states of an object**, not a pipeline:
 | DirectoryItem | Instantiated | identity only |
 | DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
 | DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
-| FileItem | Instantiated | identity only |
+| FileItem | Instantiated | identity only; `CNID` and `macName` assigned |
 | FileItem | **Materialized** | it has a `FileRep` |
-| FileItem | **Resolved** | it has a `CNID` and a `macName` |
 
 and it **splits the file-format concern out of `Item`** (into a `FileRep`), so an
 `Item` can exist without knowing its format. The headline fixes are that **path
@@ -149,29 +148,25 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
 3. **Identity is path-determined and name-independent.** Identity is keyed by
-   `(parID, posixName)`; a mapping is reused whenever the same entry is seen
-   again. `macName` does not determine the CNID and is **optional/undecided**
-   until Resolve.
-4. **Name resolution is lazy and group-scoped.** Final names are decided when a
-   member of a `macNamePrefix` group is named, not eagerly.
+   `(parID, posixName)` and reused whenever the same entry is seen again. `CNID`
+   and `macName` are assigned together when the identity is created; `macName`
+   does not determine the `CNID`, and neither is optional.
+4. **Naming avoids known conflicts.** Creating an identity assigns a `macName`
+   that does not collide with any name the mapper already knows for that
+   directory.
 5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug.
-6. **Disambiguation is assigned in catalog order**, making it deterministic; a
-   later iteration persists the numbers (Phase 6). (Catalog order is defined by
-   Decision 11.)
 7. **Caching is validation-based**, not timer-based (see *Caching*).
 8. **Re-enumeration must not renumber or rename existing entries.** The mapper
    already has this property (reuse by path); the staged design must preserve it.
-9. **Resolving names is a transaction.** Assigning `macName`/`CNID` is one atomic
-   read-modify-write, scoped to the whole directory first and then narrowed to the
-   `macNamePrefix` group (Phase 4, sub-steps 1–2), so concurrent writers converge
-   and numbers stay stable.
+9. **Batch assignment is a transaction.** Creating identities for a directory
+   (`Resolve` / `mapDirectoryContents`) is one atomic read-modify-write, so
+   concurrent writers converge and numbers stay stable.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
 11. **Catalog order is host-path sort order, for now.** The mapper assigns in the
     order the host lists the directory (path-sorted). This can look unexpected to
-    a Mac user; ordering by Mac name would instead force Resolve a little earlier.
-    Revisit if the native order proves objectionable.
+    a Mac user. Revisit if the native order proves objectionable.
 12. **delete/rename/move update the mapper and flush the whole directory.**
     `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
     stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
@@ -213,22 +208,20 @@ The final Mac name is the raw name or the `.bin`-stripped name, chosen by the
 winning rep: MacBinary → stripped; every other rep → raw. The rule belongs to
 the rep, not a standalone extension check: a `foo.bin` with a `._foo.bin`
 companion is AppleDouble and keeps `foo.bin`. The mapper's `macName` field holds
-the chosen name and is **optional** until Resolve decides it.
+the chosen name.
 
 ## Stage model
 
 These are optional, orthogonal **states** of an object — not a pipeline, with no
-implied ordering except where noted: Enumerate implies Count, and a `.bin` file
-must be Materialized before it can be Resolved.
+implied ordering except where noted: Enumerate implies Count.
 
 | Object | State | Meaning |
 |---|---|---|
 | DirectoryItem | Instantiated | identity only |
 | DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
 | DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
-| FileItem | Instantiated | identity only; `(parID, posixName, macNamePrefix)` known |
+| FileItem | Instantiated | identity only; `CNID` and `macName` assigned |
 | FileItem | **Materialized** | it has a `FileRep` |
-| FileItem | **Resolved** | it has a `CNID` and a `macName` |
 
 Count and Enumerate are separate directory stages. `ioDrNmFls` is queried for
 *every* directory a listing displays, so counts vastly outnumber enumerations;
@@ -241,9 +234,9 @@ directory is live), so a readdir tally is no less correct than counting the same
 live directory eagerly — document the staleness bound rather than pretending to
 exactness.
 
-Materialized and Resolved are independent: a file can be **Resolved without being
-Materialized**. The exception is a `.bin` file, whose final name depends on the
-winning rep, so it must be Materialized (Classify) before it can be Resolved.
+An item's name is assigned when its identity is created, whether or not it has
+been Materialized; a `.bin` file's name comes from its winning rep, so naming it
+consults that rep without necessarily materializing the item.
 
 Materialize does not read file data — it establishes the item's representation
 (which rep, where the forks live, Finder metadata), and does not imply reading a
@@ -275,32 +268,27 @@ For now Classify is just another name for Materialize: we decide the rep by
 building it. The two words are kept distinct so they *could* be split later
 (*Future Ideas*).
 
-### Resolve (FileItem, or a DirectoryItem's children)
+### Resolve (a DirectoryItem's children)
 
-`Resolve` assigns an item's `macName` and `CNID`. It delegates to the parent
-`DirectoryItem`, which:
+`Resolve` is the batch form of identity creation: `getOrCreate` in a loop over a
+directory's children, plus deletion of mappings whose entries are gone. The
+mapper assigns each child a `CNID` and a `macName` that does not conflict with
+names it already knows for that directory (Decision 9).
 
-1. **Classifies every `.bin` child** (a `.bin` child's final base name is only
-   known once its winning rep is known), then
-2. **Resolves the directory's children** — first cut: all of them; later, only
-   the group sharing the item's `macNamePrefix` —
-
-in **one CNID-mapper transaction** (Decision 9).
-
-Path resolution Resolves the components along the path individually; a collision
-can only involve same-`macNamePrefix` siblings, which in the common case is a
-singleton group.
+Path resolution creates identities for the components along the path
+individually, calling `getOrCreate` for each.
 
 ## Object model
 
 The format concern is **split out of `Item`** so an `Item` can exist without
 knowing its file format (Variant B; see *Discarded alternatives*):
 
-- **`Item`** — identity only: `parID`, `cnid`, `path`, `name` (optional until
-  Resolve), plus the identity ops (`deleteItem`, `moveItem`). Instantiable at
-  Instantiate. `deleteItem`/`moveItem` stay the public API here, but delegate the
-  host-file mutation to the rep (see below) so that a file's format need not be
-  known until it is Materialized.
+- **`Item`** — identity: `parID`, `cnid`, `path`, `macName`, plus the identity ops
+  (`deleteItem`, `moveItem`). `cnid` and `macName` are assigned together when the
+  mapper creates the identity (see *CNIDMapper*); neither is optional, and there
+  is no separate "undecided" state. `deleteItem`/`moveItem` stay the public API
+  here, but delegate the host-file mutation to the rep (see below) so that a
+  file's format need not be known until it is Materialized.
 - **`DirectoryItem : Item`** — the two directory stages: an optional `count_`
   (+ validation stamp) and an optional enumeration (`contents_`/`files_`/
   `contents_by_name_` + stamp).
@@ -428,9 +416,9 @@ This removes the 1 s / 20-directory policy entirely.
 
 Backing store, per volume:
 
-- `cnid -> { parID, posixName, macName?, mtime, (dev, inode) }` — the item
-  record. Replace the cached `fs::directory_entry` with a plain path/filename and
-  an explicit `mtime` snapshot. `macName` is optional until Resolve (Decision 3).
+- `cnid -> { parID, posixName, macName, mtime, (dev, inode) }` — the item record.
+  Replace the cached `fs::directory_entry` with a plain path/filename and an
+  explicit `mtime` snapshot. `macName` is set with the identity (Decision 3).
   `(dev, inode)` is stored now for future rename tracking (Phase 7).
 - `(parID, posixName) -> cnid` — the load-bearing index. It is also the
   directory content/diff index (deletions = stored children not seen in the host
@@ -440,11 +428,13 @@ Backing store, per volume:
 
 Operations:
 
-- `getOrCreate(parID, posixName)` — assigns `CNID`; `macName` may be undecided.
-- Batch re-enumeration reconciles against `(parID, posixName)`, reusing CNIDs and
-  keeping decided `macName`s (Decision 8).
-- **Resolve** decides `macName` (and, when needed, allocates the CNID) as one
-  transaction over the group (Decision 9).
+- `getOrCreate(parID, posixName)` — assigns `CNID` and `macName` together,
+  choosing a `macName` that does not conflict with anything the mapper already
+  knows for that directory.
+- `mapDirectoryContents` (the batch form, "Resolve") is `getOrCreate` in a loop
+  over the directory's entries, plus deletion of mappings for entries no longer
+  present. It reconciles against `(parID, posixName)`, reusing CNIDs and `macName`s
+  (Decision 8).
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
