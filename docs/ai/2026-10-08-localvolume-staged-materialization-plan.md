@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–2 done; Phase 3 (object model) in design
+- **Status:** Phases 0–3 done (object model + deferred materialization); Phases 4–7 planned
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -156,13 +156,13 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
 5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug.
 6. **Disambiguation is assigned in catalog order** (open question 1), making it
-   deterministic; a later iteration persists the numbers (Phase 7).
+   deterministic; a later iteration persists the numbers (Phase 6).
 7. **Caching is validation-based**, not timer-based (see *Caching*).
 8. **Re-enumeration must not renumber or rename existing entries.** The mapper
    already has this property (reuse by path); the staged design must preserve it.
 9. **Resolving names is a transaction.** Assigning `macName`/`CNID` is an atomic
    read-modify-write over the group (first cut: the whole directory), so
-   concurrent writers converge and numbers stay stable (Phase 7).
+   concurrent writers converge and numbers stay stable (Phase 6).
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
 
@@ -311,7 +311,7 @@ Backing store, per volume:
 - `cnid -> { parID, posixName, macName?, mtime, (dev, inode) }` — the item
   record. Replace the cached `fs::directory_entry` with a plain path/filename and
   an explicit `mtime` snapshot. `macName` is optional until Resolve (Decision 3).
-  `(dev, inode)` is stored now for future rename tracking (Phase 8).
+  `(dev, inode)` is stored now for future rename tracking (Phase 7).
 - `(parID, posixName) -> cnid` — the load-bearing index. It is also the
   directory content/diff index (deletions = stored children not seen in the host
   scan). Replaces the current path-sorted `directories_` vector.
@@ -362,7 +362,7 @@ Operations:
    disambiguation (HFS orders by name; today the mapper assigns in host-path sort
    order). Confirm base-then-disambiguator and where truncation applies.
 2. **Resolve transaction scope.** Whole-directory first, `macNamePrefix` group
-   later. Define the read-modify-write and the convergence/retry rules (Phase 7).
+   later. Define the read-modify-write and the convergence/retry rules (Phase 6).
 3. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
    currently flush whole directories; define how each invalidates Enumerate /
    Materialize / Resolve while preserving identity.
@@ -372,7 +372,7 @@ Operations:
 *Not* open: CNID and name stability across re-enumeration is already provided by
 the mapper's match-by-path reuse, pinned by
 `DisambiguatedNamesStableAcrossDelete`, `MoveKeepsDisambiguatedNameAndPosixName`
-and `CnidStableAcrossRenameThenMove`. Phase 7 is persistence/sharing; Phase 8 is
+and `CnidStableAcrossRenameThenMove`. Phase 6 is persistence/sharing; Phase 7 is
 inode-based rename tracking.
 
 ## Phased plan
@@ -420,13 +420,18 @@ instead of `cacheDirectory` on each ancestor. Guard:
 used for `ioDrNmFls` (the count half of Enumerate). Guard:
 `ListingDoesNotMaterializeSubdirectories`.
 
-### Phase 3 — Object model + Enumerate
+### Phase 3 — Object model + deferred materialization — DONE
 
-Split the format concern out of `Item` into `FileRep` (Variant B); Enumerate
-stores descriptors and instantiates children as identity `Item`s without probing.
-Deliverable: scanning a directory no longer probes every file's format.
-**Risk:** wide but mechanical; touches `item.{h,cpp}`, `itemcache.{h,cpp}`,
-`localvolume.cpp`, and every format backend.
+Split the format concern out of `Item` into `FileRep` (Variant B) and defer the
+format gauntlet from Enumerate to Materialize. Deliverable: scanning a directory
+no longer probes every file's format.
+
+This phase absorbed the former *Phase 4 (Materialize)*: once the `FileRep` seam
+exists, "build the rep on first access" is the same deliverable as deferring the
+gauntlet, not separate work. (The `Classify` split — deciding a rep versus
+building it — remains a far-future option recorded in the Stage model; it is not
+a phase.) **Risk:** wide but mechanical; touched `item.{h,cpp}`,
+`itemcache.{h,cpp}`, `localvolume.cpp`, and every format backend.
 
 - **DONE (sub-step 1):** the `FileRep` seam (`open`/`openRF`/`getInfo`/`setInfo`
   plus `remove`/`move`) and the Plain backend.
@@ -442,33 +447,25 @@ Deliverable: scanning a directory no longer probes every file's format.
   `directoryIterations=1, itemsConstructed=100, factoryProbes=500` (probes happen
   only when an entry is actually accessed, not during the scan).
 
-### Phase 4 — Materialize (Classify)
-
-Largely realized by Phase 3 sub-step 3: the `FileRep` is built on first access,
-and the factory gauntlet lives in `createRepForFile` behind Materialize. What
-remains is only the (far-future) Classify split — separating "decide the rep"
-from "build the rep" — and the rep naming rule (MacBinary `.bin` stripping) from
-Phase 5.
-
-### Phase 5 — Resolve and group-scoped naming
+### Phase 4 — Resolve and group-scoped naming
 
 Implement `macNamePrefix` grouping, transactional Resolve (whole directory first,
 group later), catalog-order disambiguation, and the rep naming rule (MacBinary
 `.bin` stripping). **Risk:** correctness of lazy name assignment; see open
 questions 1–2.
 
-### Phase 6 — Caching redesign
+### Phase 5 — Caching redesign
 
 Replace the LRU + timeout with the validation scheme; keep an LRU for memory only.
 
-### Phase 7 — CNID persistence, transactions, multi-instance sharing
+### Phase 6 — CNID persistence, transactions, multi-instance sharing
 
 Re-enable `LMDBCNIDMapper`: persist the `cnid -> record` table and the
 `(parID, posixName) -> cnid` index, and make Resolve a **transactional
 read-modify-write** (Decision 9). LMDB's single-writer model then lets two
 Executor instances share CNID and naming decisions for the same volume.
 
-### Phase 8 — Inode-based rename tracking
+### Phase 7 — Inode-based rename tracking
 
 Use the stored `(dev, inode)` to keep an item's CNID when its host file is
 renamed outside the FileManager (currently an external rename looks like
@@ -528,7 +525,7 @@ delete + create). Nothing above depends on this.
 - **Instrumentation**: a directory is enumerated once and reused
   (`ListingEnumeratesOnceWhileCached`).
 - **Forward-looking** (`DISABLED_`): host-side changes visible without
-  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 5), large-directory
+  invalidation (*Caching*), MacBinary `.bin` stripping (Phase 4), large-directory
   benchmark.
 
 ### Benchmarks
@@ -539,7 +536,7 @@ against regressing F1/F3.
 ## Out of scope
 
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
-- Re-enabling the LMDB mapper, except insofar as it affects Phase 7.
+- Re-enabling the LMDB mapper, except insofar as it affects Phase 6.
 - HFS backend behaviour.
 
 ## Discarded alternatives

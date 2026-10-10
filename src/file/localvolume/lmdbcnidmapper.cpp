@@ -345,7 +345,7 @@ std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
 
 std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupChild(CNID parID, const fs::path& filename)
 {
-    // Phase 7 will add the (parID, posixFilename) index to this backend.
+    // Phase 6 will add the (parID, posixFilename) index to this backend.
     throw std::logic_error("LMDBCNIDMapper::lookupChild not implemented");
 }
 

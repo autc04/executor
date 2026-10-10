@@ -561,7 +561,7 @@ TEST_F(LocalVolumeFixture, HostMoveVisibleOnFreshEnumeration)
     EXPECT_TRUE(fmGet(dst->cnid, "f").has_value());
 }
 
-// Phase 4/6: host-side changes should become visible without going through
+// Phase 5: host-side changes should become visible without going through
 // the FileManager (validation-based caching), rather than only after the 1s
 // timeout. Disabled until that lands.
 TEST_F(LocalVolumeFixture, DISABLED_HostChangeVisibleWithoutInvalidation)
@@ -582,7 +582,8 @@ TEST_F(LocalVolumeFixture, DISABLED_HostChangeVisibleWithoutInvalidation)
 // once the relevant phase lands.
 // --------------------------------------------------------------------------
 
-// Phase 4: a MacBinary "foo.bin" should be presented to the guest as "foo".
+// Phase 4 (Resolve/naming): a MacBinary "foo.bin" should be presented to the
+// guest as "foo".
 TEST_F(LocalVolumeFixture, DISABLED_MacBinaryStripsBinExtension)
 {
     hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
