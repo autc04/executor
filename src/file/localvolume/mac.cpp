@@ -133,7 +133,9 @@ ItemPtr MacItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, 
         if(getxattr(fn, XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0
             || getxattr(fn, XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0)
         {
-            return std::make_shared<MacFileItem>(itemcache, parID, cnid, e.path(), macname);
+            auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
+            item->setRep(std::make_shared<MacRep>(*item));
+            return item;
         }
     }
     return nullptr;
@@ -144,28 +146,24 @@ void MacItemFactory::createFile(const fs::path& path)
     MacResourceFork data(path, MacResourceFork::create);
 }
 
-std::unique_ptr<OpenFile> MacFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> MacRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path(), permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> MacFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> MacRep::openRF(int8_t permission)
 {
-    return std::make_unique<MacResourceFork>(path(), permission);
-}
-
-ItemInfo MacFileItem::getInfo()
-{
-    ItemInfo info = FileItem::getInfo();
-    getxattr(path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
-
-    return info;
+    return std::make_unique<MacResourceFork>(item_.path(), permission);
 }
 
-void MacFileItem::setInfo(ItemInfo info)
+void MacRep::getInfo(ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    setxattr(path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
-    
+    getxattr(item_.path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+}
+
+void MacRep::setInfo(const ItemInfo& info)
+{
+    setxattr(item_.path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+
     // TODO: errors
 }
 #endif
