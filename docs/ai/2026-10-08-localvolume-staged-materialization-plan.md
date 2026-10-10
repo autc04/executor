@@ -35,7 +35,7 @@ and it **splits the file-format concern out of `Item`** (into a `FileRep`), so a
 resolution must not enumerate any directory** and that **reporting a count must
 not realize the directory's contents**.
 
-## Findings (current behaviour)
+## Findings (motivation)
 
 ### F1. Path resolution walks and fully caches every ancestor
 
@@ -188,7 +188,6 @@ macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
   a generated `#999`.
 
 Entries with equal `macNamePrefix` are the ones that can collide (the **group**).
-This refines the earlier `f1`/`f2?` candidate-set idea into a single key.
 
 ### The final name
 
@@ -214,8 +213,9 @@ no implied ordering between them. The one exception is `.bin` files, below.
 Enumerate is both the count and the child instantiation: the number of visible
 descriptors answers `ioDrNmFls`, and the descriptors become child `FileItem`s.
 `ioDrNmFls` is a snapshot by nature (HFS keeps a stored valence; the host
-directory is live), so a cheap readdir count is no less correct than today's —
-document the staleness bound rather than pretending to exactness.
+directory is live), so a cheap readdir count is no less correct than counting the
+same live directory eagerly — document the staleness bound rather than pretending
+to exactness.
 
 Materialized and Resolved are independent: a file can be **Resolved without being
 Materialized**. The exception is a `.bin` file, whose final name depends on the
@@ -394,17 +394,16 @@ listing did not finish within 5 minutes — F4 in practice.
 
 ### Phase 0 findings
 
-- **`PBCatMove` move-with-rename was broken — fixed.** `LocalVolume::PBCatMove`
-  resolved `pb->ioNewName` as the new *parent directory*; it is the new item name
-  (destination is `ioNewDirID`, confirmed against `C_FSpCatMove`,
-  `src/file/fileHighlevel.cpp:351`). Fixed; `ItemCache::moveItem` gained an
-  optional `newName`. Covered by `MoveAndRename` and `CatMoveRenamesWithinDirectory`.
-- **Related, unfixed: the HFS backend has the same shape** — `hfsPBCatMove`
+- **`PBCatMove` `ioNewName` semantics.** `pb->ioNewName` is the new *item name*,
+  not the destination directory (destination is `ioNewDirID`, confirmed against
+  `C_FSpCatMove`, `src/file/fileHighlevel.cpp:351`); `LocalVolume::PBCatMove`
+  follows this, and `ItemCache::moveItem` takes an optional `newName`. Covered by
+  `MoveAndRename` and `CatMoveRenamesWithinDirectory`.
+- **The HFS backend shares the `PBCatMove` shape** — `hfsPBCatMove`
   (`src/hfs/hfsHier.cpp:266-270`) feeds `ioNewName` to `ROMlib_findvcbandfile`.
   Out of scope here.
-- **Name disambiguation is already stable across deletion** (contrary to
-  expectation): the mapper reuses mappings by path. Covered by
-  `DisambiguatedNamesStableAcrossDelete`.
+- **Name disambiguation is stable across deletion**: the mapper reuses mappings
+  by path. Covered by `DisambiguatedNamesStableAcrossDelete`.
 
 ### Phase 1 — Path resolution without ancestor enumeration (F1) — DONE
 
@@ -424,14 +423,8 @@ used for `ioDrNmFls` (the count half of Enumerate). Guard:
 
 Split the format concern out of `Item` into `FileRep` (Variant B) and defer the
 format gauntlet from Enumerate to Materialize. Deliverable: scanning a directory
-no longer probes every file's format.
-
-This phase absorbed the former *Phase 4 (Materialize)*: once the `FileRep` seam
-exists, "build the rep on first access" is the same deliverable as deferring the
-gauntlet, not separate work. (The `Classify` split — deciding a rep versus
-building it — remains a far-future option recorded in the Stage model; it is not
-a phase.) **Risk:** wide but mechanical; touched `item.{h,cpp}`,
-`itemcache.{h,cpp}`, `localvolume.cpp`, and every format backend.
+no longer probes every file's format. **Risk:** wide but mechanical; touched
+`item.{h,cpp}`, `itemcache.{h,cpp}`, `localvolume.cpp`, and every format backend.
 
 - **DONE (sub-step 1):** the `FileRep` seam (`open`/`openRF`/`getInfo`/`setInfo`
   plus `remove`/`move`) and the Plain backend.
