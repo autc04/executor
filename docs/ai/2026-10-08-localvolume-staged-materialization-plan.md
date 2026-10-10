@@ -19,14 +19,16 @@ cached". Assigning a CNID, reporting a directory's item count, and listing a
 directory all collapse onto one expensive "fully cache the whole directory"
 operation.
 
-This plan separates the stages that have been conflated. Stages apply at three
-scopes:
+This plan separates the stages that have been conflated. They are optional,
+orthogonal **states of an object**, not a pipeline:
 
-| Scope | Stages |
-|---|---|
-| **Directory** | Instantiate → Count → Instantiate children → Fully resolved |
-| **File item by itself** | Instantiate → Materialize (= Classify) → Resolve |
-| **File item in a directory** | driven by its parent's Count / Instantiate children / Resolve |
+| Object | State | Meaning |
+|---|---|---|
+| DirectoryItem | Instantiated | identity only |
+| DirectoryItem | **Enumerated** | its children have been instantiated |
+| FileItem | Instantiated | identity only |
+| FileItem | **Materialized** | it has a `FileRep` |
+| FileItem | **Resolved** | it has a `CNID` and a `macName` |
 
 and it **splits the file-format concern out of `Item`** (into a `FileRep`), so an
 `Item` can exist without knowing its format. The headline fixes are that **path
@@ -128,13 +130,14 @@ AppleSingle / MacBinary header) are not used. See
 
 and `CNIDMapper` is batch-shaped (`mapDirectoryContents(dirID, allEntries)`)
 because batch mode is *possible* only as a consequence of always caching a
-directory whole. That batch requirement is an artifact, not an intrinsic need:
-assigning a single entry a CNID needs only its parent id and its host path, and
-a Mac name needs only the host basename plus, for `.bin` files, a one-file format
-check. The mapper already stores each mapping's host path and reuses it across
-enumerations, so identity itself is path-keyed; the enumeration dependency lives
-in `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`), which has no
-path → CNID index and must enumerate each ancestor to find the child.
+directory whole. **Whole-directory batching is an artifact** — assigning a single
+entry a CNID needs only its parent id and its host path. But **batching by shared
+`macNamePrefix` is required**: disambiguators must be assigned consistently for
+the whole group, and assignment must query the mapper for the disambiguators it
+has already handed out. The mapper already stores each mapping's host path and
+reuses it across enumerations, so identity itself is path-keyed; the enumeration
+dependency lives in `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`),
+which has no path → CNID index and must enumerate each ancestor to find the child.
 
 ## Decisions
 
@@ -152,7 +155,7 @@ path → CNID index and must enumerate each ancestor to find the child.
    member of a `macNamePrefix` group is named, not eagerly.
 5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug.
-6. **Disambiguation is assigned in catalog order** (open question 2), making it
+6. **Disambiguation is assigned in catalog order** (open question 1), making it
    deterministic; a later iteration persists the numbers (Phase 7).
 7. **Caching is validation-based**, not timer-based (see *Caching*).
 8. **Re-enumeration must not renumber or rename existing entries.** The mapper
@@ -192,49 +195,46 @@ This refines the earlier `f1`/`f2?` candidate-set idea into a single key.
 The final Mac name is the raw name or the `.bin`-stripped name, chosen by the
 winning rep: MacBinary → stripped; every other rep → raw. The rule belongs to
 the rep, not a standalone extension check: a `foo.bin` with a `._foo.bin`
-companion is AppleDouble and keeps `foo.bin`. The mapper's `macFilename` field
-holds the chosen name and is **optional** until Resolve decides it.
+companion is AppleDouble and keeps `foo.bin`. The mapper's `macName` field holds
+the chosen name and is **optional** until Resolve decides it.
 
 ## Stage model
 
-Stages are independently triggerable; none requires a later one unless stated.
+These are optional, orthogonal **states** of an object — not a pipeline, and with
+no implied ordering between them. The one exception is `.bin` files, below.
 
-| Scope | Stages |
-|---|---|
-| Directory | Instantiate → Count → Instantiate children → Fully resolved |
-| File item by itself | Instantiate → Materialize (= Classify) → Resolve |
-| File item in a directory | driven by the parent's Count / Instantiate children / Resolve |
+| Object | State | Meaning |
+|---|---|---|
+| DirectoryItem | Instantiated | identity only |
+| DirectoryItem | **Enumerated** | its children have been instantiated (one readdir; sidecar names filtered) |
+| FileItem | Instantiated | identity only; `(parID, posixName, macNamePrefix)` known |
+| FileItem | **Materialized** | it has a `FileRep` |
+| FileItem | **Resolved** | it has a `CNID` and a `macName` |
 
-### Directory
+Enumerate is both the count and the child instantiation: the number of visible
+descriptors answers `ioDrNmFls`, and the descriptors become child `FileItem`s.
+`ioDrNmFls` is a snapshot by nature (HFS keeps a stored valence; the host
+directory is live), so a cheap readdir count is no less correct than today's —
+document the staleness bound rather than pretending to exactness.
 
-1. **Instantiate.** The `DirectoryItem` exists with identity only.
-2. **Count.** Read the host directory once and store intermediate
-   **descriptors** `(host path, posixName, kind, macNamePrefix)` for the visible
-   children (sidecar names filtered). The descriptors are retained so the next
-   stage can reuse the scan. This is what answers `ioDrNmFls`.
-   `ioDrNmFls` is a snapshot by nature: HFS keeps a stored valence, and the host
-   directory is live, so a cheap readdir count (or a cached one, validated per
-   *Caching*) is no less correct than today's value. Document the staleness bound
-   rather than pretending to exactness.
-3. **Instantiate children.** Turn descriptors into child `Item`s. May be folded
-   into Count — open question Q1.
-4. **Fully resolved.** Every child is Resolved.
-
-### File item by itself
-
-1. **Instantiate.** The `FileItem` exists. Known: `(parID, posixName,
-   macNamePrefix)`. **Not** known: `macName`, `CNID`.
-2. **Materialize.** Construct the `FileRep` (the format concern). See *Classify*.
-3. **Resolve.** Decide `macName` and `CNID`.
+Materialized and Resolved are independent: a file can be **Resolved without being
+Materialized**. The exception is a `.bin` file, whose final name depends on the
+winning rep, so it must be Materialized (Classify) before it can be Resolved.
 
 Materialize does not read file data — it establishes the item's representation
 (which rep, where the forks live, Finder metadata), and does not imply reading a
 whole file.
 
-### File item in a directory
+### Enumerate (DirectoryItem)
 
-Its parent drives it: Count produces its descriptor, Instantiate children gives
-it an `Item`, and the parent's Resolve names and numbers it.
+Read the host directory once and store intermediate **descriptors** `(host path,
+posixName, kind, macNamePrefix)` for the visible children (sidecar names filtered
+by name), then instantiate child `FileItem`s from them. The descriptors are
+retained so a following operation reuses the scan.
+
+### Materialize (FileItem)
+
+Construct the `FileRep` (the format concern). See *Classify*.
 
 ### Classify
 
@@ -243,7 +243,7 @@ building it. Keep the words distinct so that "deciding the rep" and "building th
 rep" can diverge later (more encodings, costlier decisions) — a far-future
 option, not now.
 
-### Resolve
+### Resolve (FileItem, or a DirectoryItem's children)
 
 `Resolve` assigns an item's `macName` and `CNID`. It delegates to the parent
 `DirectoryItem`, which:
@@ -288,7 +288,7 @@ Split the two jobs the current LRU + 1 s timeout (`itemcache.cpp:26`) conflates:
 - **Staleness** becomes explicit validation, so correctness no longer depends on
   timing:
   - **Membership**: `stat` the directory itself; if its mtime is unchanged since
-    Count, the descriptors, `macNamePrefix` groups, and count are still valid —
+    Enumerate, the descriptors, `macNamePrefix` groups, and count are still valid —
     O(1).
   - **Per-entry**: escalate to re-reading the directory's `(filename, mtime)`
     list only when the directory mtime moved; this catches add/remove/rename and
@@ -326,8 +326,8 @@ Operations:
 
 - `ItemCache::tryResolve(fs::path)`: resolve via CNID only; do not enumerate
   ancestors. *(done — Phase 1)*
-- `getInfoCommon`'s directory branch: use Count instead of `cacheDirectory` +
-  `countItems()`. *(done — Phase 2)*
+- `getInfoCommon`'s directory branch: use Enumerate's count instead of
+  `cacheDirectory` + `countItems()`. *(done — Phase 2)*
 - `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration;
   the name for the FSSpec comes from Resolve of that one entry.
 - `resolve(name)` (`localvolume.cpp:170`): name lookup is no longer a prebuilt
@@ -336,9 +336,9 @@ Operations:
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
 - `Item`: identity + optional name; instantiable without a format.
-- `DirectoryItem`: `countChildren()` (Count), descriptor storage + children
-  instantiation, `resolve(index, includeDirectories)` materializing only the
-  requested child; keep the HFS-compatible count semantics (files + dirs).
+- `DirectoryItem`: `countChildren()` (the count half of Enumerate), descriptor
+  storage + child instantiation, `resolve(index, includeDirectories)` materializing
+  only the requested child; keep the HFS-compatible count semantics (files + dirs).
 - `FileItem`: holds the optional `FileRep`.
 
 ### `ItemFactory` (per-format files)
@@ -351,19 +351,15 @@ Operations:
 
 ## Design challenges / open questions
 
-1. **Q1 — fold Instantiate children into Count?** Count already reads the
-   directory and builds descriptors; constructing child `Item`s from them
-   immediately may be free and avoids a second pass, or it may over-eagerly
-   allocate for directories that only wanted a count.
-2. **Exact catalog order.** Define the deterministic order used for listing and
+1. **Exact catalog order.** Define the deterministic order used for listing and
    disambiguation (HFS orders by name; today the mapper assigns in host-path sort
    order). Confirm base-then-disambiguator and where truncation applies.
-3. **Resolve transaction scope.** Whole-directory first, `macNamePrefix` group
+2. **Resolve transaction scope.** Whole-directory first, `macNamePrefix` group
    later. Define the read-modify-write and the convergence/retry rules (Phase 7).
-4. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
-   currently flush whole directories; define how each invalidates Count /
-   Instantiate / Materialize / Resolve while preserving identity.
-5. **External modification.** Reconciliation happens at validation time
+3. **Invalidation.** `create`/`delete`/`rename`/`move` (`itemcache.cpp:196-227`)
+   currently flush whole directories; define how each invalidates Enumerate /
+   Materialize / Resolve while preserving identity.
+4. **External modification.** Reconciliation happens at validation time
    (*Caching*) rather than only at the next full cache.
 
 *Not* open: CNID and name stability across re-enumeration is already provided by
@@ -411,16 +407,17 @@ listing did not finish within 5 minutes — F4 in practice.
 instead of `cacheDirectory` on each ancestor. Guard:
 `ResolvePathDoesNotEnumerate` (zero directory scans).
 
-### Phase 2 — Count without materialization (F3) — DONE
+### Phase 2 — Enumerate: count without materialization (F3) — DONE
 
 `ItemCache::countChildren` (readdir + hidden filter, no CNID/item/factory work)
-used for `ioDrNmFls`. Guard: `ListingDoesNotMaterializeSubdirectories`.
+used for `ioDrNmFls` (the count half of Enumerate). Guard:
+`ListingDoesNotMaterializeSubdirectories`.
 
-### Phase 3 — Object model + descriptor enumeration
+### Phase 3 — Object model + Enumerate
 
-Split the format concern out of `Item` into `FileRep` (Variant B); DirectoryItem
-Count stores descriptors; children are Instantiated as identity `Item`s without
-probing. Deliverable: scanning a directory no longer probes every file's format.
+Split the format concern out of `Item` into `FileRep` (Variant B); Enumerate
+stores descriptors and instantiates children as identity `Item`s without probing.
+Deliverable: scanning a directory no longer probes every file's format.
 **Risk:** wide but mechanical; touches `item.{h,cpp}`, `itemcache.{h,cpp}`,
 `localvolume.cpp`, and every format backend.
 
@@ -436,7 +433,7 @@ ordering rules from `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
 Implement `macNamePrefix` grouping, transactional Resolve (whole directory first,
 group later), catalog-order disambiguation, and the rep naming rule (MacBinary
 `.bin` stripping). **Risk:** correctness of lazy name assignment; see open
-questions 2–3.
+questions 1–2.
 
 ### Phase 6 — Caching redesign
 
@@ -504,7 +501,7 @@ delete + create). Nothing above depends on this.
   case-insensitive host FS.
 - **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — a path resolve
   performs zero directory scans.
-- **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
+- **Enumerate (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
   with two subdirectories constructs only those two items.
 - **Instrumentation**: a directory is enumerated once and reused
   (`ListingEnumeratesOnceWhileCached`).
