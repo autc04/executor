@@ -123,7 +123,11 @@ ItemPtr AppleSingleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID
     fs::ifstream(e.path(), std::ios::binary).read((char*)&magic, 8);
 
     if(magic == 0x0005160000020000)
-        return std::make_shared<AppleSingleFileItem>(itemcache, parID, cnid, e.path(), macname);
+    {
+        auto item = std::make_shared<FileItem>(itemcache, parID, cnid, e.path(), macname);
+        item->setRep(std::make_shared<AppleSingleRep>(*item));
+        return item;
+    }
     else
         return nullptr;
 }
@@ -135,39 +139,35 @@ void AppleSingleItemFactory::createFile(const fs::path& path)
 }
 
 
-std::shared_ptr<AppleSingleDoubleFile> AppleSingleFileItem::access(int8_t permission)
+std::shared_ptr<AppleSingleDoubleFile> AppleSingleRep::access(int8_t permission)
 {
     std::shared_ptr<AppleSingleDoubleFile> p;
     if((p = openedFile.lock()))
         return p;
     else
     {
-        p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(path(), permission));
+        p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(item_.path(), permission));
         openedFile = p;
         return p;
     }
 }
-std::unique_ptr<OpenFile> AppleSingleFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> AppleSingleRep::open(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 1);
 }
-std::unique_ptr<OpenFile> AppleSingleFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> AppleSingleRep::openRF(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 2);
 }
 
-ItemInfo AppleSingleFileItem::getInfo()
+void AppleSingleRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->read(9, 0, &info, sizeof(info));
-
-    return info;
 }
 
-void AppleSingleFileItem::setInfo(ItemInfo info)
+void AppleSingleRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    access(fsRdWrPerm)->write(9, 0, &info, sizeof(info.file));
+    access(fsRdWrPerm)->write(9, 0, const_cast<ItemInfo*>(&info), sizeof(info.file));
 }
 
 AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile)

@@ -49,16 +49,16 @@ public:
     virtual void createFile(const fs::path& newPath) override;
 };
 
-class AppleSingleFileItem : public FileItem
+class AppleSingleRep : public FileRep
 {
     std::weak_ptr<AppleSingleDoubleFile> openedFile;
 
     std::shared_ptr<AppleSingleDoubleFile> access(int8_t permission);
 public:
-    using FileItem::FileItem;
+    explicit AppleSingleRep(FileItem& item) : FileRep(item) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
 };
