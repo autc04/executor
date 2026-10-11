@@ -164,16 +164,6 @@ ItemPtr DirectoryItem::tryResolve(mac_string_view name)
     return {};
 }
 
-ItemPtr DirectoryItem::tryResolve(fs::path name)
-{
-    assert(cache_valid_);
-    fs::path path = path_ / name;
-    for(auto& item : contents_)
-        if(item->path() == path)
-            return item;
-    return {};
-}
-
 ItemPtr DirectoryItem::resolve(int index, bool includeDirectories)
 {
     assert(cache_valid_);

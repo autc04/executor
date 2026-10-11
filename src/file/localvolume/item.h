@@ -137,7 +137,6 @@ class DirectoryItem : public Item
     // Select a child from the contents. Only ItemCache::child() may call these,
     // so the "enumerated and valid" precondition cannot be violated elsewhere.
     ItemPtr tryResolve(mac_string_view name);
-    ItemPtr tryResolve(fs::path name);
     ItemPtr resolve(int index, bool includeDirectories);
 public:
     using Item::Item;
