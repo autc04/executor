@@ -160,13 +160,12 @@ model; those marked **[revisit]** may need a further decision before their phase
    name gets a new one. The mapper assigns the `CNID` (and its `parID`) at
    **CNIDResolve**; the `macName` is decided separately, at **NameResolve**, and
    is therefore optional until then. `macName` never determines the `CNID`.
-4. **Naming avoids known conflicts.** Deciding a name assigns a `macName` that
-   does not collide with any name already assigned in that directory.
-   When doing an operation forces us to `List` the whole directory anyway, we
-   can instead run a `NameResolve` on a whole `macNamePrefix`-defined batch.
-   Let's keep an open mind about whether to do single-name assigns at all or
-   whether to always resort to full-batch `NameResolve` (which costs some time,
-   but gives us added determinism and and _maybe_ is simpler).
+4. **Naming avoids known conflicts, and is batch-only for now.** Deciding a name
+   assigns a `macName` that does not collide with any name already assigned in
+   that directory. A "resolve my name" request triggers a `NameResolve` of the
+   whole `macNamePrefix` group it falls in — deterministic, and simpler because
+   the group is decided at once. Single-item (order-dependent, faster) name
+   resolution is a possible later phase.
 5. **[revised] `macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug. The group is
    the contiguous run of equal prefixes in a prefix-sorted descriptor list, found
@@ -302,7 +301,16 @@ Decide `macName`s for one `macNamePrefix` group — the contiguous run of equal
 prefixes in a `Listed` directory's descriptor list — assigning each a name that
 does not collide with names already assigned in that directory. This is the
 atomic naming batch (Decision 9). A whole-directory Resolve is the special case
-of doing it for every group.
+of doing it for every group. Naming is **batch-only** (Decision 4): a request
+names the group it falls in, never a single entry.
+
+"I want this entry's name" is funnelled through a single directory-side entry
+point that owns both the lookup and the state change — it ensures the directory
+is `Listed`, CNIDResolves the group, and decides the names — so no caller drives
+those steps itself. Any read of an `Item`'s `macName` goes through it, so a
+caller never observes an undecided name. (Whether that entry point lives on
+`DirectoryItem` or on a `DirectoryCache` holding the directory's mutable state is
+an open choice.)
 
 ### Materialize (FileItem)
 
@@ -409,7 +417,8 @@ valid, whatever `(mtime, size)` say; `ENOENT` → the name is gone; different in
 → a different file now holds the name. It is nearly free because realization
 already stats the path for its kind. A mapping check validates an existing binding
 only, never discovers a new entry, so List remains the bulk path and the miss
-fallback.
+fallback. The `(parID, macName)` index is likewise only as fresh as the last List
+or NameResolve; a hit from it is still validated by `(dev, ino)` at realization.
 
 Two limits bound inode identity. **Hard links** (one inode, several names) are not
 injective, so `nlink > 1` entries key identity on `(dev, ino, posixName)` (distinct
@@ -417,7 +426,9 @@ per name, no rename tracking) — this is why `nlink` is stored — and `/nix/st
 can contain hard-linked files. And some filesystems/mounts supply no usable inode
 (`d_ino == 0`), so identity needs a name-keyed fallback. A reused inode (a file
 deleted and a new one allocated the same inode before re-enumeration) will match
-in the diff and reuse the CNID; a name-keyed diff has the same class of race.
+in the diff and reuse the CNID; a name-keyed diff has the same class of race. On
+Windows, `GetFileAttributesEx` exposes no inode, so both the stat helper and the
+directory scan need a handle-based variant (`GetFileInformationByHandle`) there.
 
 There is deliberately **no per-entry `(filename, mtime)` level**: per-entry
 metadata is not cached — `Item::getInfo` stats live, and fork/Finder-info reads
@@ -546,6 +557,111 @@ Operations:
   runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
   the host filename. *(done — Phase 4 sub-step 1: `FileRep::nameSource`.)*
+
+## Access and invalidation flows
+
+*(The funnel location, the responsibility split, and realization-only validation
+are deliberately provisional: good enough for the next stages, to be revisited.)*
+
+Every reference resolves through **`realizeValidated(cnid)`**, which fuses the
+identity primitives of *Caching* with `ItemCache`'s realization:
+
+```
+rec = mapper.record(cnid)
+st  = statPath(rec.path)
+if st missing, or st.(dev, ino) != rec.(dev, ino), or kind changed:
+    mapper.deleteCNID(cnid); drop items_[cnid]; return {}     # Phase 7: inode recovery first
+item = items_[cnid].lock(), else realize from rec + st and register
+return item
+```
+
+Identity is validated at *realization*; a live `items_` entry is trusted (the
+"as of last access" bound).
+
+Parts: the mapper answers `record` / `cnidForName` / `cnidForInode` / `diff` /
+`nameGroup`; `ItemCache` owns `items_`, realization, `ensureListed`; and
+`resolveName(dir, hint)` is the single directory-side funnel (below).
+
+**By CNID** (`resolveDir(dirID)`, `tryResolve(CNID)`, FCB revalidation): the steps
+above, and nothing else — no directory is involved, and a dead binding simply
+fails (there is no name to re-derive it from).
+
+> We may later prefer a *live* `Item` over a mapper lookup, since a
+database-backed mapper (LMDB) may be slower than the in-memory object. Left as
+written for now; benchmark when the backend matters.
+
+**By parID + macName** (`resolve(name)`, `child(dir, name)`):
+
+```
+1. cnid = mapper.cnidForName(parID, macName)
+2. if cnid: item = realizeValidated(cnid); ok -> return        # fast path
+3. parent = realizeValidated(parID) as DirectoryItem; else dirNFErr
+4. cnid = resolveName(parent, macName):                        # the funnel
+     ensureListed(parent)
+     prefix = prefixOf(macName)        # truncate27(stripDisambiguator(...))
+     mapper.nameGroup(parent.cnid, group(prefix))
+     mapper.cnidForName(parID, macName)
+5. if !cnid -> fnfErr
+6. return realizeValidated(cnid)
+```
+
+**By full posix path** (`tryResolve(path)`, `nativePathToFSSpec`):
+
+```
+1. canonicalise
+2. dir = root (cnid 2)
+3. for each component c but the last:
+     st   = statPath(dir.path / c); if missing -> fail
+     cnid = mapper.cnidForInode(st.(dev, ino)) ?? mapper.createChild(dir.cnid, c, st)
+     dir  = realizeValidated(cnid); must be a DirectoryItem else ENOTDIR
+4. last component c:
+     st   = statPath(dir.path / c); if missing -> fail
+     cnid = mapper.cnidForInode(...) ?? mapper.createChild(dir.cnid, c, st)
+     resolveName(dir, /*hint*/ posixName = c)                   # lists only this dir
+     return realizeValidated(cnid)
+```
+
+Steps 1–3 never list; only step 4 lists the immediate parent, to name the target.
+
+**By parID + index** (a listing):
+
+```
+1. dir = realizeValidated(parID) as DirectoryItem
+2. ensureListed(dir)
+3. for each group in dir.descriptors_: mapper.nameGroup(dir.cnid, group)
+4. realizeValidated(descriptors_[index].cnid)     # files-only: filter by kind first
+```
+
+### The `resolveName` funnel
+
+`resolveName(dir, hint)` owns both the lookup and the state change: it ensures the
+directory is `Listed`, resolves the target's `macNamePrefix` group, and returns
+the entry's `CNID`. It is the only directory-side entry point — no caller drives
+`ensureListed` or naming itself. `hint` is either a `macName` (guest asked by
+name) or a `posixName` (a path walk reached this directory); both select the same
+group.
+
+For now it lives on `ItemCache` (as `child(dir, name)` / `child(dir, index)`),
+which has the mapper, the LRU, and the realizer, and takes the `DirectoryItemPtr`.
+Moving it onto `DirectoryItem` (via `shared_from_this`) or onto a separate
+`DirectoryCache` is deferred; the flows do not depend on the choice.
+
+### Invalidation
+
+| Event | Action |
+|---|---|
+| create / dir-create | host op, then `flush(dir)` (clear `listed_`/`count_`); the next access re-lists → diff → new record |
+| delete | `mapper.deleteCNID(cnid)`, drop `items_[cnid]`, flush the parent |
+| rename / move (FileManager) | `mapper.moveCNID(cnid, newParID, newName)`, flush the old and new parent listings |
+| external change | next `ensureListed` (stamp) → re-list → inode diff + name the affected groups; or `realizeValidated` catches a dead binding |
+
+### Responsibility summary
+
+- **Identity** (CNID/inode lookup, realize, validate, flush): `ItemCache` + mapper.
+- **Listing staleness & naming** (`ensureListed`, `diff`, group NameResolve): the
+  `resolveName` funnel, mutating the `DirectoryItem`.
+- **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing.
+- The mapper stays a dumb value store throughout.
 
 ## Phased plan
 
@@ -698,34 +814,46 @@ delete + create). Nothing above depends on this.
 
 - **Listing**: empty/non-empty; `fmList` vs `fmListFiles` vs `fmChildCount`;
   `parID`/`dirID` and CNID uniqueness; hidden sidecars excluded from listing and
-  count; host trees populated before first enumeration are visible; FileManager
+  count; host trees populated before the first List are visible; FileManager
   mutations reflected on the host.
 - **Creation / deletion**: both directions; new directory CNID returned;
   `dupFNErr` / `fBsyErr` / `fnfErr`.
-- **Move / rename**: `PBHRename` and `PBCatMove` (incl. move-with-rename and
-  rename-within-directory) keep the CNID; source drops, destination gains; counts
-  update; collisions → `dupFNErr`.
-- **CNIDs and name disambiguation**: CNID survives rename → move; a
-  *truncation*-collision set (host names >31 bytes sharing a 30-byte prefix) so
-  the tests do not depend on a case-sensitive host FS; deleting any member leaves
-  survivors' names/CNIDs unchanged; moving a disambiguated member with
-  `ioNewName = nil` preserves the POSIX name, the disambiguated Mac name, and the
-  CNID; case-only ambiguity is covered once and `GTEST_SKIP()`ped on a
-  case-insensitive host FS.
+- **Move / rename (FileManager)**: `PBHRename` and `PBCatMove` (incl.
+  move-with-rename and rename-within-directory) keep the CNID; source drops,
+  destination gains; counts update; collisions → `dupFNErr`.
+- **Identity by inode** (Decision 3):
+  - a **host-side** rename of a listed child keeps its CNID and updates its name
+    and `parID` on the next access;
+  - a delete-and-recreate at the same name gets a **new** CNID;
+  - a **hard-linked** file (`nlink > 1`) keeps distinct CNIDs for its distinct
+    names (the `(dev, ino, posixName)` key), and renaming one name does not
+    disturb the other;
+  - a name re-used by a new inode is not mistaken for the old entry.
+- **Names and disambiguation**: a *truncation*-collision set (host names >31 bytes
+  sharing a 30-byte prefix) so the tests do not depend on a case-sensitive host
+  FS; deleting any member leaves survivors' names/CNIDs unchanged; moving a
+  disambiguated member with `ioNewName = nil` preserves the POSIX name, the
+  disambiguated Mac name, and the CNID; case-only ambiguity is covered once and
+  `GTEST_SKIP()`ped on a case-insensitive host FS.
+- **Listing order** (Decision 11): `fmList` returns `macNamePrefix`-major order,
+  host path the tie-break within a group, so a group's members are contiguous.
+- **Group-scoped NameResolve**: naming one group leaves other groups' names
+  undecided until asked; a name lookup for one entry does not force a
+  whole-directory naming pass; a caller never observes an undecided name.
 - **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — a path resolve
-  performs zero directory scans.
-- **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — listing a directory
-  with two subdirectories constructs only those two items; counting a
-  subdirectory does not enumerate it.
-- **Instrumentation**: a directory is enumerated once and reused
+  performs zero directory scans and resolves components by stat + `(dev, ino)`;
+  the resulting CNID matches a later FileManager access to the same entry.
+- **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — counting a
+  subdirectory constructs no `Item`s for its children and keeps no descriptors.
+- **Instrumentation**: a directory is Listed once and reused while valid
   (`ListingEnumeratesOnceWhileCached`), and the `countScans` counter backs
   `CountScansOnceWhileValid`.
-- **Validation (Phase 5)**: an external add/remove/rename inside an enumerated
-  directory is visible on the next access; unchanged names keep their CNID and
-  `macName`; a repeated listing validates but does not re-enumerate (stats);
-  eviction under the item budget, then re-access, preserves CNIDs/names; an
-  in-place edit of a MacBinary header is reflected by `getInfo`; a file↔directory
-  kind change is handled.
+- **Validation (Phase 5)**: an external add/remove inside a Listed directory is
+  visible on the next access; a **host-side rename keeps the CNID**; unchanged
+  entries keep their CNID and `macName`; a repeated listing validates but does not
+  re-list (stats); eviction under the item budget, then re-access, preserves
+  CNIDs/names; an in-place edit of a MacBinary header is reflected by `getInfo`;
+  a file↔directory kind change at a name is a new inode and hence a new entry.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
   `--gtest_also_run_disabled_tests`). The validation and naming tests above are
   enabled.
@@ -750,6 +878,9 @@ against regressing F1/F3.
 - **Split Classify from Materialize.** Deciding an item's rep and building it are
   the same step today; separating them would let cheap decisions (and more
   encodings) be added without pre-paying construction cost.
+- **List a group, not the whole directory.** Correctness needs only the target's
+  `macNamePrefix` group; listing every descriptor is the simple superset. A lookup
+  could readdir and keep only the target's group.
 
 ## Discarded alternatives
 
