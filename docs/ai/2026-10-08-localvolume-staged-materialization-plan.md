@@ -25,15 +25,20 @@ orthogonal **states of an object**, not a pipeline:
 | Object | State | Meaning |
 |---|---|---|
 | DirectoryItem | Instantiated | identity only |
-| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
-| DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
-| FileItem | Instantiated | identity only; `CNID` and `macName` assigned |
+| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no descriptors kept) |
+| DirectoryItem | **Listed** | its children are described by a stored descriptor list; implies Counted |
+| Item | **CNIDResolved** | it has a `CNID` (a mapper record exists) |
+| Item | **Named** | its `macName` has been decided |
 | FileItem | **Materialized** | it has a `FileRep` |
 
-and it **splits the file-format concern out of `Item`** (into a `FileRep`), so an
-`Item` can exist without knowing its format. The headline fixes are that **path
-resolution must not enumerate any directory** and that **reporting a count must
-not enumerate or materialize the directory's contents**.
+The model is **link-free**: an `Item` owns no other `Item`; a `DirectoryItem`
+holds a descriptor list rather than child `Item`s, identity lives in the
+`CNIDMapper`, and realized `Item`s are kept alive only by an LRU while in use.
+The file-format concern is **split out of `Item`** (into a `FileRep`), so an
+`Item` can exist without knowing its format, and **a `CNID` is keyed by the host
+file's inode**, not by name. The headline fixes are that **path resolution must
+not enumerate any directory** and that **reporting a count must not enumerate or
+materialize the directory's contents**.
 
 ## Findings (motivation)
 
@@ -134,12 +139,15 @@ directory whole. **Whole-directory batching is an artifact** — assigning a sin
 entry a CNID needs only its parent id and its host path. But **batching by shared
 `macNamePrefix` is required**: disambiguators must be assigned consistently for
 the whole group, and assignment must query the mapper for the disambiguators it
-has already handed out. The mapper already stores each mapping's host path and
-reuses it across enumerations, so identity itself is path-keyed; the enumeration
+has already handed out. The mapper stores each mapping's host path and reuses it
+across enumerations, so identity is *today* path-keyed; the enumeration
 dependency lives in `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`),
 which has no path → CNID index and must enumerate each ancestor to find the child.
 
 ## Decisions
+
+Decisions marked **[revised]** changed while folding in the link-free object
+model; those marked **[revisit]** may need a further decision before their phase.
 
 1. **Content-derived names are dead.** No name is ever read from an
    AppleDouble/AppleSingle/MacBinary header. All names are transformations of the
@@ -147,43 +155,55 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
 2. **Sidecars are always hidden by name**, independent of whether they are
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
-3. **Identity is path-determined and name-independent.** Identity is keyed by
-   `(parID, posixName)` and reused whenever the same entry is seen again. `CNID`
-   and `macName` are assigned together when the identity is created; `macName`
-   does not determine the `CNID`, and neither is optional.
-4. **Naming avoids known conflicts.** Creating an identity assigns a `macName`
-   that does not collide with any name the mapper already knows for that
-   directory.
-5. **`macNamePrefix` is a conservative grouping key** (see *Names*).
-   Over-grouping costs only laziness; under-grouping would be a bug.
+3. **[revised] Identity is keyed by the host inode, not by name.** A `CNID`
+   follows the *file*: a rename keeps it, and a delete-and-recreate at the same
+   name gets a new one. The mapper assigns the `CNID` (and its `parID`) at
+   **CNIDResolve**; the `macName` is decided separately, at **NameResolve**, and
+   is therefore optional until then. `macName` never determines the `CNID`.
+4. **Naming avoids known conflicts.** Deciding a name assigns a `macName` that
+   does not collide with any name already assigned in that directory. **[revisit]**:
+   confirm the "known" set (the group's host names plus the directory's assigned
+   names) is the intended scope.
+5. **[revised] `macNamePrefix` is a conservative grouping key** (see *Names*).
+   Over-grouping costs only laziness; under-grouping would be a bug. The group is
+   the contiguous run of equal prefixes in a prefix-sorted descriptor list, found
+   by binary search (no separate group index).
 7. **Caching is validation-based**, not timer-based (see *Caching*).
-8. **Re-enumeration must not renumber or rename existing entries.** The mapper
-   already has this property (reuse by path); the staged design must preserve it.
-9. **Batch assignment is a transaction.** Creating identities for a directory
-   (`Resolve` / `mapDirectoryContents`) is one atomic read-modify-write, so
-   concurrent writers converge and numbers stay stable.
+8. **Re-enumeration must not renumber or rename existing entries.** The staged
+   design must preserve this. **[revisit]**: the reconciliation match key becomes
+   the inode, not the path, so a delete-and-recreate at an existing name is now a
+   *new* entry by design (Decision 3), not a reused `(parID, posixName)` identity.
+9. **[revised] Identity creation and naming are transactions.** The per-directory
+   diff and a **NameResolve** over one group are each one atomic
+   read-modify-write, so concurrent writers converge. **[revisit]**: the batch is
+   now the prefix group, not the whole directory.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
-11. **Catalog order is host-path sort order, for now.** The mapper assigns in the
-    order the host lists the directory (path-sorted). This can look unexpected to
-    a Mac user. Revisit if the native order proves objectionable.
+11. **[revised] Catalog order is `macNamePrefix`-major, host path as the
+    tie-break.** A `Listed` directory's descriptors are sorted by
+    `(macNamePrefix, posixName)`, and that is the listing order. (Was: host-path
+    sort order.) Revisit if this proves objectionable to a Mac user.
 12. **delete/rename/move update the mapper and flush the whole directory.**
     `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
     stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
-13. **Count and Enumerate are separate directory stages.** Count keeps only a
-    tally (no `Item`s, no mapper work); Enumerate builds the children and yields
-    the count for free (see *Stage model*). Counts vastly outnumber enumerations
-    (`ioDrNmFls` is requested for every directory a listing shows), and Enumerate
-    costs memory, so the two must not be conflated.
-14. **Staleness is validation-based**, via a directory stamp of `(mtime, size)`
-    taken from one raw `stat`; external changes are reconciled at access, not on
-    a timer (see *Caching*).
+13. **[revised] Count and List are separate directory stages.** Count keeps only
+    a tally (no descriptors, no mapper work); List stores the descriptor list and
+    yields the count for free (see *Stage model*). Counts vastly outnumber
+    Listings (`ioDrNmFls` is requested for every directory a listing shows), and
+    List costs memory, so the two must not be conflated.
+14. **[revised] Staleness is validation-based, in three scopes** (see *Caching*):
+    directory contents and file representation use `(mtime, size)` from one raw
+    `stat`; identity uses `(dev, ino)`. External changes are reconciled at access,
+    not on a timer.
+15. **Items are link-free.** No `Item` owns another; a `DirectoryItem` stores a
+    descriptor list, not child `Item`s. Identity lives in the `CNIDMapper`, and
+    realized `Item`s are retained only by an LRU (see *Object model*).
 
 ## Names
 
 ### `macNamePrefix`
 
-At a file's Instantiate we know a grouping key, **not** the name:
+While listing a directory we know a grouping key, **not** the name:
 
 ```
 macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
@@ -200,7 +220,11 @@ macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
 - `maxDisambiguatorDigits = 3`; truncate to `30 - 3 = 27` bytes to leave room for
   a generated `#999`.
 
-Entries with equal `macNamePrefix` are the ones that can collide (the **group**).
+The prefix is computed at enumeration and stored on each descriptor. A `Listed`
+directory keeps its descriptors sorted by `(macNamePrefix, posixName)`, so a group
+is exactly the contiguous range of descriptors with equal prefix, found by binary
+search — no separate group index. Entries in a group are the ones that can
+collide.
 
 ### The final name
 
@@ -213,30 +237,33 @@ the chosen name.
 ## Stage model
 
 These are optional, orthogonal **states** of an object — not a pipeline, with no
-implied ordering except where noted: Enumerate implies Count.
+implied ordering except where noted: List implies Count, and Realize is not a
+state at all (see below).
 
 | Object | State | Meaning |
 |---|---|---|
 | DirectoryItem | Instantiated | identity only |
-| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no children built) |
-| DirectoryItem | **Enumerated** | its children have been instantiated; implies Counted |
-| FileItem | Instantiated | identity only; `CNID` and `macName` assigned |
+| DirectoryItem | **Counted** | its visible-child count is known (one readdir; no descriptors kept) |
+| DirectoryItem | **Listed** | its visible children are described by a stored descriptor list; implies Counted |
+| Item | **CNIDResolved** | it has a `CNID` (a mapper record exists) |
+| Item | **Named** | its `macName` has been decided |
 | FileItem | **Materialized** | it has a `FileRep` |
 
-Count and Enumerate are separate directory stages. `ioDrNmFls` is queried for
-*every* directory a listing displays, so counts vastly outnumber enumerations;
-and while Enumerate is only slightly more expensive than Count in *time*, it
-retains one `Item` per child and so costs far more *memory*. Hence a cheap Count
-that keeps only a tally, and a heavier Enumerate that keeps the children.
+`CNIDResolve` and `NameResolve` are separate, and both are separate from
+`Materialize`: an item can be addressed by `CNID` without being named, and named
+without its format being known. That is what lets an ancestor be walked without
+listing or naming it.
+
+Count and List are separate directory stages. `ioDrNmFls` is queried for *every*
+directory a listing displays, so counts vastly outnumber listings; and while List
+is only slightly more expensive than Count in *time*, it retains a descriptor per
+child and so costs more *memory*. Hence a cheap Count that keeps only a tally, and
+a heavier List that keeps the descriptors.
 
 `ioDrNmFls` is a snapshot by nature (HFS keeps a stored valence; the host
 directory is live), so a readdir tally is no less correct than counting the same
 live directory eagerly — document the staleness bound rather than pretending to
 exactness.
-
-An item's name is assigned when its identity is created, whether or not it has
-been Materialized; a `.bin` file's name comes from its winning rep, so naming it
-consults that rep without necessarily materializing the item.
 
 Materialize does not read file data — it establishes the item's representation
 (which rep, where the forks live, Finder metadata), and does not imply reading a
@@ -246,17 +273,30 @@ whole file.
 
 Read the host directory once, apply the hidden-name filter, and keep only the
 tally plus a validation stamp. No descriptors, no CNID-mapper work, no `Item`s —
-so a Counted directory costs O(1) memory. A Count-only directory has no CNIDs for
-its children; a later name lookup Enumerates it (or uses the mapper's
-`(parID, posixName)` index) to build them.
+so a Counted directory costs O(1) memory.
 
-### Enumerate (DirectoryItem)
+### List (DirectoryItem)
 
-Read the host directory once and store intermediate **descriptors** `(host path,
-posixName, kind, macNamePrefix)` for the visible children (sidecar names filtered
-by name), run the CNID-mapper diff, and instantiate child `FileItem`s. The
-descriptors are retained so a following operation reuses the scan, and the count
-is `contents_.size()` — Enumerate implies Count.
+Read the host directory once and store an ordered **descriptor list** — one
+`(posixName, kind, macNamePrefix, optional cnid)` per visible child (sidecar names
+filtered by name) — plus a validation stamp. The descriptors are sorted by
+`(macNamePrefix, posixName)`. The count is `descriptors.size()`: List implies
+Count. No child `Item` is created or retained.
+
+### CNIDResolve (Item)
+
+Give an entry a `CNID` (and its `parID`) by looking it up in the mapper — keyed by
+`(dev, ino)` — or creating a record on a miss. This needs only the entry's parent
+and its host identity, not the parent's listing, which is what lets path
+resolution descend without enumerating.
+
+### NameResolve / Resolve (a directory's group)
+
+Decide `macName`s for one `macNamePrefix` group — the contiguous run of equal
+prefixes in a `Listed` directory's descriptor list — assigning each a name that
+does not collide with names already assigned in that directory. This is the
+atomic naming batch (Decision 9). A whole-directory Resolve is the special case
+of doing it for every group.
 
 ### Materialize (FileItem)
 
@@ -268,30 +308,30 @@ For now Classify is just another name for Materialize: we decide the rep by
 building it. The two words are kept distinct so they *could* be split later
 (*Future Ideas*).
 
-### Resolve (a DirectoryItem's children)
+### Realize (a cache event, not a state)
 
-`Resolve` is the batch form of identity creation: `getOrCreate` in a loop over a
-directory's children, plus deletion of mappings whose entries are gone. The
-mapper assigns each child a `CNID` and a `macName` that does not conflict with
-names it already knows for that directory (Decision 9).
-
-Path resolution creates identities for the components along the path
-individually, calling `getOrCreate` for each.
+Turning a mapper record into a live `Item` object is not a stage. It is a cache
+event driven by the realization LRU (see *Caching*): any record can be realized on
+demand and dropped arbitrarily, because a realized `Item` is a pure function of
+its mapper record plus live host state.
 
 ## Object model
 
-The format concern is **split out of `Item`** so an `Item` can exist without
-knowing its file format (Variant B; see *Discarded alternatives*):
+**Items are link-free.** No `Item` owns another `Item`: a `DirectoryItem` stores
+descriptors, not children, and the parent→child relation lives entirely in the
+`CNIDMapper`. A realized `Item` is held only by the realization LRU or by an
+external reference (see *Caching*).
 
-- **`Item`** — identity: `parID`, `cnid`, `path`, `macName`, plus the identity ops
-  (`deleteItem`, `moveItem`). `cnid` and `macName` are assigned together when the
-  mapper creates the identity (see *CNIDMapper*); neither is optional, and there
-  is no separate "undecided" state. `deleteItem`/`moveItem` stay the public API
-  here, but delegate the host-file mutation to the rep (see below) so that a
+- **`Item`** — identity: `parID`, `cnid`, `path`, and `macName`, plus the identity
+  ops (`deleteItem`, `moveItem`). `cnid` is assigned at **CNIDResolve**; `macName`
+  is decided separately at **NameResolve** and is therefore *optional* until then
+  (the authoritative copy lives in the mapper record). `deleteItem`/`moveItem`
+  stay the public API here but delegate the host-file mutation to the rep, so a
   file's format need not be known until it is Materialized.
-- **`DirectoryItem : Item`** — the two directory stages: an optional `count_`
-  (+ validation stamp) and an optional enumeration (`contents_`/`files_`/
-  `contents_by_name_` + stamp).
+- **`DirectoryItem : Item`** — the two directory stages and their stamps: an
+  optional `count_` (+ stamp), and an optional **descriptor list** sorted by
+  `(macNamePrefix, posixName)` with a lazily populated per-descriptor `CNID`
+  (one `CNID` per entry once CNIDResolved). No child `Item`s.
 - **`FileItem : Item`** — holds an optional `FileRep`.
 - **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`, and
   the host-file mutation `remove`/`move` (default = a single host file; the
@@ -299,59 +339,79 @@ knowing its file format (Variant B; see *Discarded alternatives*):
   `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`, `MacBinaryRep`, `MacRep`.
   Built at Materialize.
 
-`ItemCache::items_` (`cnid -> weak_ptr<Item>`) stays the realization cache, so
-"find an already-realized child" is answered there, not by the parent.
-`upgradeItem` becomes a `FileRep` swap (it still rewrites the host file into the
-richer encoding).
+`ItemCache::items_` (`cnid -> weak_ptr<Item>`) is the realization registry, backed
+by an LRU that owns the realized `Item`s (files *and* directories). So "find an
+already-realized child" is answered there, not by the parent. `upgradeItem`
+becomes a `FileRep` swap (it still rewrites the host file into the richer
+encoding).
 
 ## Caching
 
 Three jobs are conflated in the current LRU + 1 s timeout (`itemcache.cpp:26`):
 realizing items, bounding memory, and staying fresh. Split them.
 
-### Two directory stages to cache
+### What a DirectoryItem caches
 
-`DirectoryItem` carries two optional pieces of state and one shared validation
-stamp:
+`DirectoryItem` carries two optional pieces of state, one shared validation
+stamp, and a lazily populated per-descriptor CNID:
 
 ```cpp
 std::optional<int> count_;                  // Counted: a tally only
-std::vector<ItemPtr> contents_, files_;     // Enumerated: the children
-std::map<mac_string, ItemPtr> contents_by_name_;
-bool enumerated_ = false;
-DirStamp stamp_;                            // (mtime, size) at the last scan
+std::vector<Descriptor> descriptors_;       // Listed: sorted by (macNamePrefix, posixName)
+                                            //   posixName, kind, macNamePrefix, optional cnid
+bool listed_ = false;
+FileStamp stamp_;                           // (mtime, size) at the last scan
 ```
 
-- `enumerated_` implies the count (`contents_.size()`); `count_` is then dropped.
-- `count_` alone means Counted but not Enumerated.
+- `listed_` implies the count (`descriptors_.size()`); `count_` is then dropped.
+- `count_` alone means Counted but not Listed.
 - Both payloads are valid iff `stat(dir) == stamp_`. When validation fails, *both*
-  are dropped before rescanning, so a stale enumeration is never served merely
+  are dropped before rescanning, so a stale listing is never served merely
   because a fresh count was taken.
 
 ### Validation (staleness), independent of wall-clock time
 
-`cacheDirectory` becomes `ensureEnumerated(dir)`:
+`cacheDirectory` becomes `ensureListed(dir)`:
 
 ```
-if enumerated_ and stat(dir) == stamp_: return   # L0, O(1)
-reenumerate(dir)                                 # L1
+if listed_ and stat(dir) == stamp_: return   # L0, O(1)
+relist(dir)                                  # L1
 ```
 
 - **L0 (O(1))**: `stat` the directory itself; if the stamp is unchanged, the
-  descriptors, `macNamePrefix` groups, and count are all still valid.
-- **L1**: re-readdir and re-run the mapper diff (reusing CNIDs, assigning new
-  ones, `deleteCNID`ing children no longer present).
+  descriptors and count are all still valid.
+- **L1**: re-readdir and re-run the mapper diff (reusing CNIDs by inode,
+  assigning new ones, `deleteCNID`ing children no longer present).
 
 The stamp is `(mtime, size)` taken from **one raw `stat`**, with a before/after
 re-stat around the `readdir` so a change racing our own scan is caught (retry on
 mismatch). Do **not** use `fs::last_write_time()` for this: this project's `fs`
 is Boost.Filesystem, whose `last_write_time()` returns `std::time_t` — one-second
 resolution, which would miss same-second changes and make the validation test
-flaky. `ino` (and rename detection) is deferred to Phase 7; `nlink` is not used.
+flaky.
 
-Counting caches the same way: `Count(dir)` returns `contents_.size()` if
-Enumerated and valid, else a cached `count_` if its stamp is valid, else rescans.
-A repeated `ioDrNmFls` request is O(1) after the first scan.
+Counting caches the same way: `Count(dir)` returns `descriptors_.size()` if Listed
+and valid, else a cached `count_` if its stamp is valid, else rescans. A repeated
+`ioDrNmFls` request is O(1) after the first scan.
+
+### Identity staleness (the third scope)
+
+A directory stamp only runs on a List. The lookups that deliberately bypass a List
+— `CNID -> Item` and path resolution — validate the *mapping* directly: `stat` the
+record's path and compare `(dev, ino)` and the kind against the record. Match →
+valid, whatever `(mtime, size)` say; `ENOENT` → the name is gone; different inode
+→ a different file now holds the name. It is nearly free because realization
+already stats the path for its kind. A mapping check validates an existing binding
+only, never discovers a new entry, so List remains the bulk path and the miss
+fallback.
+
+Two limits bound inode identity. **Hard links** (one inode, several names) are not
+injective, so `nlink > 1` entries key identity on `(dev, ino, posixName)` (distinct
+per name, no rename tracking) — this is why `nlink` is stored — and `/nix/store`
+can contain hard-linked files. And some filesystems/mounts supply no usable inode
+(`d_ino == 0`), so identity needs a name-keyed fallback. A reused inode (a file
+deleted and a new one allocated the same inode before re-enumeration) will match
+in the diff and reuse the CNID; a name-keyed diff has the same class of race.
 
 There is deliberately **no per-entry `(filename, mtime)` level**: per-entry
 metadata is not cached — `Item::getInfo` stats live, and fork/Finder-info reads
@@ -360,35 +420,38 @@ hit the rep live — so the only per-entry staleness is the materialized rep, be
 ### Reconciliation of external changes
 
 Reconciliation *is* L1: a host change is observed on the next access to the
-affected directory, with no FileManager operation. The mapper's filename diff
-decides the outcome: an unchanged filename keeps its CNID and decided `macName`;
-a new name gets a new CNID; a vanished name is `deleteCNID`ed (recursively).
+affected directory, with no FileManager operation. The mapper matches the fresh
+scan against its stored children **by inode**:
 
-- An **external rename** is therefore seen as delete + create (new CNID) until
-  Phase 7 inode tracking. This is the documented consequence, not a bug.
-- A **kind change** (file ↔ directory at the same name) keeps the
-  `(parID, posixName)` identity but must rebuild the `Item` as the new type:
-  `ensureEnumerated` must discard a live `items_[cnid]` whose kind no longer
-  matches the fresh descriptor.
-- **Path resolution is unaffected**: `tryResolve(path)` uses `lookupChild`/
-  `getOrCreateChild` and checks `fs::exists`, so it neither enumerates nor
-  resurrects deleted entries.
-- **Read errors**: an unreadable *ancestor* scan degrades to empty (as today); an
-  unreadable *requested* directory reports `ioErr`.
+- an inode seen again at the same name is unchanged (keeps its CNID and decided
+  `macName`);
+- an inode seen at a new name is a **rename**; the CNID follows and the name
+  updates;
+- a scanned inode with no stored record is **new** (new CNID);
+- a stored inode absent from the scan is gone (`deleteCNID`ed, recursively).
+
+Consequences:
+
+- An **external rename keeps the CNID** (Decision 3); a delete-and-recreate at the
+  same name, or a kind change at a name, is a new CNID (the inode differs).
+- **Path resolution** descends by stat + `(dev, ino)` (see *Stage model*,
+  CNIDResolve) and never enumerates; a stale binding is validated or recreated.
+- **Read errors**: a directory that cannot be read reports `ioErr` from the lookup
+  funnel (`ItemCache::child`).
 - The staleness bound is "as of the last access". Changes racing the guest's
   other traps are inherently un-transactional (HFS is not transactional either).
 
 CNID changes made cross-instance through LMDB, with no host change, are invisible
 to the stamp; that is Phase 6. Identity stability across re-enumeration (CNIDs and
-decided names survive) is already provided by the mapper's match-by-path reuse,
-pinned by `DisambiguatedNamesStableAcrossDelete`,
+decided names survive for an unchanged entry) is provided by the mapper's inode
+match, pinned by `DisambiguatedNamesStableAcrossDelete`,
 `MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove` —
 *not* an open question.
 
 ### Materialized-rep staleness
 
 A rep caches parsed state (`MacBinaryFile::header_`,
-`AppleSingleDoubleFile::descriptors`) and can outlive the enumeration that built
+`AppleSingleDoubleFile::descriptors`) and can outlive the listing that built
 it. Record the primary host file's `(mtime, size)` on the `FileItem` at
 Materialize; at the start of `open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`,
 drop the rep if the stamp changed (it rematerializes). Do not revalidate a rep
@@ -397,66 +460,74 @@ reopen.
 
 ### Memory bound
 
-An LRU over *enumerated* directories bounds memory; eviction clears the
-enumeration and is safe because re-enumeration rebuilds from the mapper. Charge
-**total items** (Σ `contents_.size()`) rather than directory count — the risk is
-one huge directory (e.g. `/nix/store`), not many small ones. Default budget:
-**500,000 items**. Pin the root (`resolveDir(2)`), which is tiny.
+An LRU over realized `Item`s — files *and* directories — bounds memory; eviction
+drops the LRU's strong reference (the item then dies unless externally
+referenced), and is safe because re-realization rebuilds from the mapper. Charge
+**total items** (Σ live `Item`s) rather than directory count — the risk is one
+huge directory (e.g. `/nix/store`), not many small ones. Default budget:
+**500,000 items**. The root is pinned only as a cheap heuristic (the volume
+anchor / `resolveDir(2)`), not because the item graph is rooted anywhere.
 
-Evicting a directory frees its children and their reps (the parent holds them
-strongly via `contents_`); items still referenced by an open FCB survive, and
-re-enumeration rebinds them by CNID through `items_`. `count_`/`stamp_` are O(1)
-per live `DirectoryItem` and add no meaningful pressure.
-
-This removes the 1 s / 20-directory policy entirely.
+Evicting a `DirectoryItem` frees its descriptor list; the mapper record survives,
+so a later List rebuilds it with the same CNIDs. Items referenced by an open FCB
+survive. This removes the 1 s / 20-directory policy entirely.
 
 ## Component changes (sketch)
 
 ### `CNIDMapper` (`cnidmapper.h`)
 
-Backing store, per volume:
+Backing store, per volume (a **dumb value store**; resolving and staleness policy
+live in `ItemCache`):
 
-- `cnid -> { parID, posixName, macName, mtime, (dev, inode) }` — the item record.
-  Replace the cached `fs::directory_entry` with a plain path/filename and an
-  explicit `mtime` snapshot. `macName` is set with the identity (Decision 3).
-  `(dev, inode)` is stored now for future rename tracking (Phase 7).
-- `(parID, posixName) -> cnid` — the load-bearing index. It is also the
-  directory content/diff index (deletions = stored children not seen in the host
-  scan). Replaces the current path-sorted `directories_` vector.
-- `(parID, macName) -> cnid` — **deferred** (needs per-file staleness rules);
-  until then, lookup by Mac name forces enumeration via the existing `tryResolve`.
+- **record** per CNID: `{ parID, posixName, macName?, mtime, (dev, ino), nlink }`.
+  A plain path/name and an explicit `mtime` snapshot, not a cached
+  `fs::directory_entry`. `macName` is optional until NameResolve; `(dev, ino)` and
+  `nlink` carry identity (Decision 3).
+- `(dev, ino) -> cnid` — identity, for stat-first path resolution and rename
+  recovery.
+- `parID -> {cnid}` — the directory child set: the reconciliation diff and the
+  names-in-use set.
+- `(parID, macName case-folded) -> cnid` — name lookup without listing.
+
+It deliberately does **not** keep `(parID, posixName) -> cnid`: the only caller
+that wanted it is path resolution, which stats each component and uses
+`(dev, ino)` instead.
 
 Operations:
 
-- `getOrCreate(parID, posixName)` — assigns `CNID` and `macName` together,
-  choosing a `macName` that does not conflict with anything the mapper already
-  knows for that directory.
-- `mapDirectoryContents` (the batch form, "Resolve") is `getOrCreate` in a loop
-  over the directory's entries, plus deletion of mappings for entries no longer
-  present. It reconciles against `(parID, posixName)`, reusing CNIDs and `macName`s
-  (Decision 8).
+- CNIDResolve: look up `(dev, ino)`, or create a record under a parent.
+- **Resolve / diff** (the batch form): match the fresh scan against the stored
+  children by inode — reuse, rename, create, or delete — then NameResolve the
+  affected groups. `lookupChild`/`getOrCreateChild` go away.
+- `deleteCNID`/`moveCNID` maintain the three indexes above.
+- A group's naming is a read-modify-write; larger operations are handed to the
+  mapper as a `std::function` so the transaction shape is backend-neutral
+  (Decision 9).
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
-- `ItemCache::tryResolve(fs::path)`: resolve via CNID only; do not enumerate
-  ancestors. *(done — Phase 1)*
-- `getInfoCommon`'s directory branch: use **Count** (`countChildren`) instead of
-  `cacheDirectory` + `countItems()`. *(Phase 2; validation-stamp caching is
-  Phase 5.)*
-- `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration;
-  the name for the FSSpec comes from Resolve of that one entry.
-- `resolve(name)` (`localvolume.cpp:170`): name lookup is no longer a prebuilt
-  map. Resolve the parent directory (or the name's group), then look up the name.
-- `cacheDirectory` → `ensureEnumerated` (L0 stamp check, L1 re-enumerate); LRU by
-  total items, root pinned. *(done — Phase 5)*
+- `ItemCache::tryResolve(fs::path)`: **stat-first** — stat each component, resolve
+  `(dev, ino)` via the mapper, and never enumerate an ancestor. *(Phase 1 used a
+  `(parID, posixName)` lookup; superseded.)*
+- `ItemCache::child(...)`: the lookup funnel — ensure the directory is Listed and
+  valid, then select (see *Stage model*).
+- `getInfoCommon`'s directory branch: use **Count** (`countChildren`), which keeps
+  only a tally.
+- `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration; the
+  name for the FSSpec comes from NameResolve of that one entry's group.
+- `resolve(name)`: the parent is Listed (or the name's group NameResolved), then
+  the name is looked up via the mapper's `(parID, macName)` index.
+- `ensureListed` (L0 stamp check, L1 re-list); an LRU by total items over all
+  `Item`s.
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
-- `Item`: identity + optional name; instantiable without a format.
-- `DirectoryItem`: the two stages — `count_`/`stamp_` (Counted) and
-  `contents_`/`files_`/`contents_by_name_` (Enumerated) — plus
-  `resolve(index, includeDirectories)`; keep the HFS-compatible count semantics
-  (files + dirs).
+- `Item`: identity (`parID`, `cnid`, `path`, optional `macName`); instantiable
+  without a format; owns no other `Item`.
+- `DirectoryItem`: the two stages — `count_`/`stamp_` (Counted) and the
+  `(macNamePrefix, posixName)`-sorted descriptor list with a per-descriptor `CNID`
+  (Listed) — plus `resolve(index, includeDirectories)`; keep the HFS-compatible
+  count semantics (files + dirs).
 - `FileItem`: holds the optional `FileRep` and builds it lazily via
   `ensureMaterialized()` (called from `open`/`openRF`/`getInfo`/`setInfo`/
   `deleteItem`/`moveItem`). *(done — Phase 3)*
@@ -676,17 +747,16 @@ against regressing F1/F3.
 
 ## Discarded alternatives
 
-Two object-model variants were considered and dropped in favour of the split
-above (Variant B):
-
-- **Variant A — fused `Item` with in-place promotion.** Keep one class per format
-  and promote a cheap placeholder to the concrete class on first access
-  (generalizing `upgradeItem`). Smallest change, but it keeps identity and format
-  fused and mutates an item's dynamic type under callers holding a `shared_ptr`.
-- **Variant C — descriptor-first directory.** `DirectoryItem` stores descriptors
-  and no `Item` exists until Materialize. Most faithful to the stages, but it
-  forces the listing/metadata API (`resolve`, `getInfoCommon`) onto descriptors
-  and rewrites every `dynamic_cast` site.
+- **Fused `Item` with in-place promotion.** Keep one class per format and promote a
+  cheap placeholder to the concrete class on first access (generalizing
+  `upgradeItem`). Smallest change, but it fuses identity and format and mutates an
+  item's dynamic type under callers holding a `shared_ptr`. Rejected: identity and
+  format must be separable (Decision 10).
+- **A rooted tree of realized `Item`s.** Keep parent→child ownership in
+  `DirectoryItem` and prune leaves to bound memory. Rejected: the mapper already
+  expresses parenthood, a uniform LRU over all `Item`s is simpler than tree
+  pruning, and stepping down a path must not drag a directory listing along
+  (Decision 15).
 
 ## References
 

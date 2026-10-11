@@ -56,9 +56,12 @@ NameResolve split, which both variants need (§1).
 | **Enumerated** | *all* of a directory's children are Instantiated. |
 | **Materialized** | a `FileItem` has its `FileRep` (Phase 3). |
 
-A **descriptor** is a retained per-entry `readdir` result: ordered
+A **descriptor** is a retained per-entry `readdir` result:
 `(posixName, kind, macNamePrefix)`, plus an optional **lazily populated CNID**
-once the entry is CNIDResolved. It is not an `Item` (no object), not a
+once the entry is CNIDResolved. Descriptors are kept sorted by
+`(macNamePrefix, posixName)` — the group key first — which makes a
+`macNamePrefix` group a contiguous range (found by binary search) and defines the
+listing order. A descriptor is not an `Item` (no object), not a
 `CNIDMapper::Mapping` (no identity ownership), and not an `fs::directory_entry`
 (no cached stat). A directory stores descriptors when it wants a listing it can
 reconstruct — and each entry realize — on demand, without holding child `Item`s.
@@ -81,19 +84,25 @@ so a `DirectoryItem` does not need to own its children.
 
 - No `Item` holds another `Item`. `DirectoryItem::contents_/files_/contents_by_name_`
   (strong child vectors) are **removed**.
-- A `DirectoryItem`'s enumeration payload is an ordered **descriptor list**
-  (§2), grouped by `macNamePrefix` for lazy NameResolve, with a **lazily
-  populated CNID cache** — a resolved CNID per descriptor once that entry is
-  CNIDResolved — and optionally an ordered child-CNID list for `resolve(index)`.
+- A `DirectoryItem`'s enumeration payload is a **descriptor list** (§2), sorted
+  by `(macNamePrefix, posixName)`, with a **lazily populated CNID cache** — a
+  resolved CNID per descriptor once that entry is CNIDResolved. One ordered list
+  serves three jobs: the listing order for `resolve(index)` (the descriptor order
+  *is* the catalog order), the `macNamePrefix` group for lazy NameResolve (a
+  contiguous range, found by binary search — no separate group index), and the
+  CNID source for realized children (no separate ordered child-CNID list).
 - **Realization registry**: `items_` (weak) as today; **plus** one LRU of
   `Item`s — files *and* directories — that holds the strong reference.
 - An `Item` is alive iff it is in the LRU or externally referenced (an open FCB,
   a local `ItemPtr`). Nothing else retains it.
-- **All identity and name lookups delegate to the mapper**, which exposes two
-  indexes: `(parID, posixName) -> cnid` (identity) and
-  `(parID, macName case-folded) -> cnid` (name). The name index is populated by
-  NameResolve; before that, a name lookup triggers NameResolve of the group.
-  `cnid -> Item` realizes from the mapper record.
+- **Identity and name lookups delegate to the mapper**, which stores a record per
+  CNID plus the indexes it needs: a global `(dev, ino) -> cnid` (identity), a
+  per-directory child set `parID -> {cnid}` (reconciliation and names-in-use), and
+  `(parID, macName case-folded) -> cnid` (name lookups; populated by NameResolve,
+  and a miss triggers NameResolve of the group). There is deliberately **no
+  `(parID, posixName) -> cnid` index** (§3.3, §3.8): only path resolution wanted
+  one, so it resolves components stat-first instead. `cnid -> Item` realizes from
+  the record.
 
 ### 3.2 Stages
 
@@ -101,7 +110,7 @@ so a `DirectoryItem` does not need to own its children.
   group has been NameResolved — **Named** (`macName`). The two happen at
   different times.
 - `DirectoryItem`: **Counted** (tally only) or **Listed** (descriptor list +
-  group index + lazy CNID cache).
+  lazy CNID cache).
 - `FileItem`: **Materialized** (rep).
 - *Realization is not a stage* — it is a cache event. Any mapping can be turned
   into an `Item` on demand and dropped arbitrarily without consequence, because
@@ -114,20 +123,69 @@ trigger NameResolve. That is the same undecided-name obligation as Variant B
 ### 3.3 Path resolution (`nativePathToFSSpec` on `/X/Y/z`)
 
 1. Seed at the root Item (CNID 2).
-2. For each parent component `X`, `Y`: mapper `(parID, posixName) -> cnid`
-   (**CNIDResolve**, no name), then realize the `DirectoryItem` (LRU) as needed.
-   No listing, no siblings, no names.
+2. For each parent component `X`, `Y`: **stat** `parent/comp` for `(dev, ino)`
+   and look it up in the global `(dev, ino) -> cnid` index (**CNIDResolve**, no
+   name); create a record under the parent's CNID on a miss. No listing, no
+   siblings, no names. Realize the `DirectoryItem` (LRU) as needed.
 3. For the last component `z`: the FSSpec needs its `macName`, so make the
    immediate parent's **descriptor list** available (one `readdir`,
    hidden-filtered, grouped by `macNamePrefix`) and run **NameResolve** over
    `z`'s group; realize `z`.
 4. No sibling `Item` is realized.
 
-Step 2 is why the split is needed here: without it, resolving a parent would
-require naming it, which needs its own parent's listing, and so on — back to
-enumerating every ancestor.
+Path resolution is the only consumer of a posix-name-to-child lookup, and it
+already stats every component (for existence and kind), so folding the identity
+lookup into that same stat costs nothing and removes the need for a
+`(parID, posixName)` index (§3.8). Step 2 is also why CNIDResolve must be
+separable from NameResolve: without it, resolving a parent would require naming
+it, which needs its own parent's listing, and so on — back to enumerating every
+ancestor.
 
-### 3.4 Eviction
+### 3.4 Staleness and identity
+
+Three staleness scopes, each answering a different question with its own signal:
+
+| Scope | Question | Signal | Lives in |
+|---|---|---|---|
+| Directory contents | are `dir`'s children/names current? | dir `(mtime, size)` | `ensureEnumerated` L0 |
+| File representation | is a file's `FileRep` current? | file `(mtime, size)` | `FileItem` rep stamp |
+| **Identity** | is `(cnid ↔ path)` still the same *file*? | file `(dev, ino)` | realization |
+
+The directory stamp only runs on enumeration, so the lookups that deliberately
+bypass it — `CNID -> Item` and path resolution — need the third check. It is
+nearly free: realization already stats the path to decide its kind, so widen
+that one stat to also return
+`(kind, dev, ino)` and compare `(dev, ino)` and the kind against the mapper
+record. The mapper stays a dumb store returning `(dev, ino)`; the comparison and
+the policy live in `ItemCache`. The outcome is *valid* (regardless of
+`(mtime, size)`), *gone* (`ENOENT`, the name vanished), or *replaced* (a
+different file now holds the name). A mapping check can only validate an existing
+binding, never discover a new entry, so enumeration remains the bulk path and the
+miss fallback; the check is what lets a *hit* be served without enumerating.
+
+**Decision: identity is keyed by inode, not by name.** A `CNID` follows the
+*file*:
+
+- A rename — host-side or through the mapper — keeps the `CNID`. Host-side renames
+  are recovered from the `(dev, ino) -> cnid` index (§3.8); until that recovery
+  path is wired up, a binding whose path vanished is treated as a delete.
+- A delete-and-recreate at the same name is a **new** `CNID`, since the inode
+  differs. This supersedes the main plan's current name-keyed rule, where a kind
+  change at one name reuses the `(parID, posixName)` identity and only rebuilds
+  the `Item` type.
+- **Hard links** are the caveat: one inode can carry several names, so
+  `(dev, ino)` is not injective and two Mac entries would share a CNID. Give
+  inode identity only to single-link files; for `nlink > 1` key identity on
+  `(dev, ino, posixName)` (distinct per name, no rename tracking). That is why
+  `nlink` is stored beside `(dev, ino)`. This is not hypothetical for the target
+  volume: `/nix/store` can contain hard-linked files.
+- **Inode fidelity and reuse.** Some filesystems/mounts supply no usable inode
+  (`d_ino == 0`); identity then needs a name-keyed fallback. And a *reused* inode
+  (a file deleted and a new one allocated the same inode before re-enumeration)
+  will be matched by the diff and reuse the CNID. A name-keyed diff has the same
+  class of race on name reuse.
+
+### 3.5 Eviction
 
 - Uniform LRU over all `Item`s. Eviction = drop the LRU's strong ref; the `Item`
   dies if nothing else holds it (`noteItemFreed` clears the weak entry).
@@ -136,10 +194,12 @@ enumerating every ancestor.
 - Root is a normal cached `Item`; "pin the root" is at most a heuristic (the
   volume anchor / `resolveDir(2)`), not a structural need.
 
-### 3.5 Consequences for call sites
+### 3.6 Consequences for call sites
 
-- `resolve(index)` walks the stored ordered descriptor/CNID list and realizes
-  entries on demand — the listing costs descriptors, not `Item`s.
+- `resolve(index)` walks the descriptor list (its order is the listing order)
+  and realizes entries on demand — the listing costs descriptors, not `Item`s.
+  The listing order is `macNamePrefix`-major with host path as the tie-break;
+  this revises the main plan's Decision 11 (host-path sort order).
 - `dir->tryResolve(name)`: mapper `(parID, macName) -> cnid` (requires the index
   the main plan deferred), else fall back to a listing. No `contents_by_name_`.
 - `upgradeItem`: swap the rep; the `Item` is not owned by a parent, so nothing
@@ -147,13 +207,13 @@ enumerating every ancestor.
 - delete/rename/move: update the mapper (`deleteCNID`/`moveCNID`); invalidate the
   affected listings and any LRU/registry entries. No child vectors to maintain.
 
-### 3.6 Pros / cons / risks
+### 3.7 Pros / cons / risks
 
 - **Pros.** Very small retention story; eviction is trivial and O(1); memory is
   bounded by the LRU, not by directory shape; F1 is cheapest (no sibling
   realization); maps cleanly onto LMDB (the mapper is the only durable
   structure); one place decides names (the mapper), so identity/name consistency
-  is local.
+  is local; the mapper does not index the host-name space.
 - **Cons / risks.**
   - Needs the `(parID, macName case-folded) -> cnid` index **and** a staleness
     rule for it (the main plan deferred this precisely because a name lookup can
@@ -170,13 +230,30 @@ enumerating every ancestor.
   - Two caches (LRU + weak registry) plus the mapper: the invariant "an `Item` is
     always re-derivable" must hold, so no per-`Item` state may become load-bearing
     (today only `FileRep` and directory stamps are, and both are reclaimable).
+  - The inode is now load-bearing for identity, validation (§3.4), path
+    resolution, and the reconciliation diff. On POSIX `readdir`/`stat` supply it
+    for free; on Windows `GetFileAttributesEx` does not, so both the stat helper
+    and the directory scan need a handle-based variant there.
 
-### 3.7 `CNIDMapper` as a dumb value store
+### 3.8 `CNIDMapper` as a dumb value store
 
 Resolving and staleness are owned by `DirectoryItem` (and, for reps, `Item`),
-**not** by the mapper. The mapper stays a value store: it answers
-`(parID, posixName) -> cnid`, `(parID, macName) -> cnid`, and `cnid -> record`,
-and applies mutations, without owning policy. Two consequences:
+**not** by the mapper. The mapper stays a value store. It holds:
+
+- **record** per CNID: `{ parID, posixName, macName?, mtime, (dev, ino), nlink }`
+  (`macName` optional until NameResolve; `nlink` for the hard-link rule of §3.4).
+- **`(dev, ino) -> cnid`** (global): identity, for stat-first path resolution
+  (§3.3) and, later, rename recovery.
+- **`parID -> {cnid}`** (child set): reconciliation and names-in-use.
+- **`(parID, macName case-folded) -> cnid`**: name lookups.
+
+It deliberately does **not** store `(parID, posixName) -> cnid`: the only caller
+that wanted a host-name-to-CNID lookup is path resolution, which is stat-first
+instead. The consequence is that `lookupChild` / `getOrCreateChild` leave the
+interface — there is no name-keyed child lookup — and the reconciliation diff is
+re-keyed to the inode.
+
+Two further consequences:
 
 - Swapping backends (`SimpleCNIDMapper` ↔ `LMDBCNIDMapper`) then changes only a
   small value interface instead of duplicating policy in both.
@@ -294,10 +371,10 @@ of step 3. Ancestors only need their CNIDs (CNIDResolve), not enumeration.
 | Eviction unit | any `Item`, O(1) | leaf, post-order |
 | Root special-casing | heuristic only | structural (tree root) |
 | `macName` storage | mapper record + `(parID,macName)` index | on the live `Item` |
-| `(parID, macName)->cnid` | required, case-folded | not required (`contents_by_name_`) |
+| `(parID, macName)->cnid` | required, case-folded (path lookup is stat-first) | not required (`contents_by_name_`) |
 | Undecided names | exist (mapper record without a name) | exist (`Item` without a name) |
 | F1 immediate parent | descriptor list + group NameResolve (no sibling `Item`s) | full Enumerate (all sibling `Item`s) |
-| Directory payload | ordered descriptors + lazy CNID cache | live `Item` vectors |
+| Directory payload | descriptors sorted by `(prefix, path)` + lazy CNID cache | live `Item` vectors |
 | Listing by index | ordered descriptors, realize on demand | `contents_` as today |
 | Memory shape | LRU-bounded, O(1) evict | tree-shaped, leaf-pruned |
 | `upgradeItem` | rep swap, nothing else | as today |
@@ -306,8 +383,9 @@ of step 3. Ancestors only need their CNIDs (CNIDResolve), not enumeration.
 | Revisits Decision 3? | yes (shared) | yes (shared) |
 
 Both variants share the same *cost model* for F1 and F3 (ancestors are never
-enumerated; counts come from Count) and the same CNIDResolve/NameResolve split
-(§1); the table's naming rows differ only in *where* names live.
+enumerated; counts come from Count), the same CNIDResolve/NameResolve split
+(§1), and the inode-keyed identity decision (§3.4); the table's naming rows
+differ only in *where* names live.
 
 ---
 
