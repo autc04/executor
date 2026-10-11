@@ -161,28 +161,31 @@ model; those marked **[revisit]** may need a further decision before their phase
    **CNIDResolve**; the `macName` is decided separately, at **NameResolve**, and
    is therefore optional until then. `macName` never determines the `CNID`.
 4. **Naming avoids known conflicts.** Deciding a name assigns a `macName` that
-   does not collide with any name already assigned in that directory. **[revisit]**:
-   confirm the "known" set (the group's host names plus the directory's assigned
-   names) is the intended scope.
+   does not collide with any name already assigned in that directory.
+   When doing an operation forces us to `List` the whole directory anyway, we
+   can instead run a `NameResolve` on a whole `macNamePrefix`-defined batch.
+   Let's keep an open mind about whether to do single-name assigns at all or
+   whether to always resort to full-batch `NameResolve` (which costs some time,
+   but gives us added determinism and and _maybe_ is simpler).
 5. **[revised] `macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug. The group is
    the contiguous run of equal prefixes in a prefix-sorted descriptor list, found
    by binary search (no separate group index).
 7. **Caching is validation-based**, not timer-based (see *Caching*).
-8. **Re-enumeration must not renumber or rename existing entries.** The staged
-   design must preserve this. **[revisit]**: the reconciliation match key becomes
-   the inode, not the path, so a delete-and-recreate at an existing name is now a
-   *new* entry by design (Decision 3), not a reused `(parID, posixName)` identity.
+8. **Re-enumeration must not renumber or rename existing entries.** The reconciliation
+   match key becomes the inode, not the path, so a delete-and-recreate at an existing
+   name is now a *new* entry by design (Decision 3), not a reused `(parID, posixName)`
+   identity.
 9. **[revised] Identity creation and naming are transactions.** The per-directory
    diff and a **NameResolve** over one group are each one atomic
-   read-modify-write, so concurrent writers converge. **[revisit]**: the batch is
+   read-modify-write, so concurrent writers converge. The batch is
    now the prefix group, not the whole directory.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
 11. **[revised] Catalog order is `macNamePrefix`-major, host path as the
     tie-break.** A `Listed` directory's descriptors are sorted by
     `(macNamePrefix, posixName)`, and that is the listing order. (Was: host-path
-    sort order.) Revisit if this proves objectionable to a Mac user.
+    sort order.)
 12. **delete/rename/move update the mapper and flush the whole directory.**
     `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
     stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
@@ -207,9 +210,12 @@ While listing a directory we know a grouping key, **not** the name:
 
 ```
 macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
-                    stripDisambiguator(
-                        stripBin(
-                            toMacRoman(first31(posixName)))))
+                  stripAll(
+                    first31(toMacRoman(posixName))))
+
+stripAll(x) | endsWith ".bin" = stripAll(stripBin(x))
+            | endsWithDisambiguator = stripAll(stripDisambiguator(x))
+            | otherwise = x
 ```
 
 - `toMacRoman(x)` — raw conversion to MacRoman (not `toMacRomanFilename`'s
