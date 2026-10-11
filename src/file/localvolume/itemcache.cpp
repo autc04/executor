@@ -82,9 +82,9 @@ bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
         {
             std::cerr << exc.what() << std::endl;
             ok = false;
-            // An unreadable directory looks empty rather than failing the
-            // caller here; the caller decides whether this directory was the
-            // one requested (see LocalVolume::resolveForInfo) or incidental.
+            // Fill the cache with what we saw (nothing) and report the failure
+            // through the return value; child() turns it into ioErr, since the
+            // directory being enumerated there is the one being queried.
         }
 
         FileStamp after = statFile(dir->path());
@@ -288,6 +288,20 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
             return {};
     }
     return item;
+}
+
+ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
+{
+    if(!ensureEnumerated(dir))
+        throw OSErrorException(ioErr);
+    return dir->tryResolve(name);
+}
+
+ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDirectories)
+{
+    if(!ensureEnumerated(dir))
+        throw OSErrorException(ioErr);
+    return dir->resolve(index, includeDirectories);
 }
 
 ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)

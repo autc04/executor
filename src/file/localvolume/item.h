@@ -133,12 +133,14 @@ class DirectoryItem : public Item
     void clearCache();
     void populateCache(std::vector<ItemPtr> items, FileStamp stamp);
     bool isCached() const { return cache_valid_; }
-public:
-    using Item::Item;
 
+    // Select a child from the contents. Only ItemCache::child() may call these,
+    // so the "enumerated and valid" precondition cannot be violated elsewhere.
     ItemPtr tryResolve(mac_string_view name);
     ItemPtr tryResolve(fs::path name);
     ItemPtr resolve(int index, bool includeDirectories);
+public:
+    using Item::Item;
 
     long dirID() const { return cnid(); }
 

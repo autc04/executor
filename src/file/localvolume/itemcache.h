@@ -43,6 +43,11 @@ class ItemCache
     void clearCachedDirectory(const DirectoryItemPtr& dir);
     ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
 
+    // Ensure `dir` is enumerated and valid; re-enumerates if the host changed.
+    // Returns false if a fresh scan failed (the directory could not be read).
+    // Private: obtain children through child(), which owns this precondition.
+    bool ensureEnumerated(const DirectoryItemPtr& item);
+
     // Construct an identity Item (DirectoryItem or bare FileItem) from a host
     // entry, without running the format gauntlet. Returns null for entries that
     // are neither a regular file nor a directory.
@@ -68,10 +73,14 @@ public:
     ItemPtr tryResolve(CNID cnid);
     ItemPtr tryResolve(fs::path path);
 
+    // Obtain a child of a directory. This is the only way to query a
+    // directory's contents: it first ensures `dir` is enumerated and valid, so
+    // that precondition is an invariant of the lookup rather than a caller
+    // obligation. Returns null if there is no such child; throws ioErr if `dir`
+    // itself cannot be read.
+    ItemPtr child(const DirectoryItemPtr& dir, mac_string_view name);
+    ItemPtr child(const DirectoryItemPtr& dir, int index, bool includeDirectories);
 
-    // Ensure `dir` is enumerated and valid; re-enumerates if the host changed.
-    // Returns false if a fresh scan failed (the directory could not be read).
-    bool ensureEnumerated(const DirectoryItemPtr& item);
     // Number of visible children, without enumerating/constructing them.
     int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);

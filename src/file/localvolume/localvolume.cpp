@@ -169,8 +169,7 @@ ItemPtr LocalVolume::resolve(mac_string_view name, short vRef, long dirID)
     else
     {
         std::shared_ptr<DirectoryItem> dir = resolveDir(vRef, dirID);
-        itemCache->ensureEnumerated(dir);
-        if(auto file = dir->tryResolve(name))
+        if(auto file = itemCache->child(dir, name))
             return file;
         else
             throw OSErrorException(fnfErr);
@@ -199,8 +198,7 @@ ItemPtr LocalVolume::resolveRelative(const std::shared_ptr<DirectoryItem>& base,
     }
     else
     {
-        itemCache->ensureEnumerated(base);
-        item = base->tryResolve(mac_string_view(p, colon));
+        item = itemCache->child(base, mac_string_view(p, colon));
         if(!item)
         {
             if(colon == name.end())
@@ -225,9 +223,7 @@ ItemPtr LocalVolume::resolveForInfo(mac_string_view name, short vRef, long dirID
     if(index > 0)
     {
         auto dir = resolveDir(vRef, dirID);
-        if(!itemCache->ensureEnumerated(dir))
-            throw OSErrorException(ioErr);   // the requested directory is unreadable
-        return dir->resolve(index, includeDirectories);
+        return itemCache->child(dir, index, includeDirectories);
     }
     else if(index == 0 && !name.empty())
         return resolve(name, vRef, dirID);
@@ -562,8 +558,7 @@ LocalVolume::NonexistentFile LocalVolume::resolveForCreate(mac_string_view name,
         name = mac_string_view(name.begin() + colon+1, name.end());
     }
 
-    itemCache->ensureEnumerated(parent);
-    if(parent->tryResolve(name))
+    if(itemCache->child(parent, name))
         throw OSErrorException(dupFNErr);
     
     return NonexistentFile { parent, name };
@@ -592,8 +587,7 @@ void LocalVolume::PBDirCreate(HParmBlkPtr pb)
 
     itemCache->flushDirectoryCache(parent);
 
-    itemCache->ensureEnumerated(parent);
-    auto item = parent->tryResolve(name);
+    auto item = itemCache->child(parent, name);
     if(!item)
         throw OSErrorException(ioErr);
     pb->fileParam.ioDirID = item->cnid();
@@ -620,8 +614,7 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(bdNamErr);
 
     auto parent = resolveDir(item->parID());
-    itemCache->ensureEnumerated(parent);
-    if(parent->tryResolve(newName))
+    if(itemCache->child(parent, newName))
         throw OSErrorException(dupFNErr);
     
     itemCache->renameItem(item, newName);
@@ -797,8 +790,7 @@ void LocalVolume::PBCatMove(CMovePBPtr pb)
 
     mac_string_view finalName = newName.empty() ? mac_string_view(item->name()) : newName;
 
-    itemCache->ensureEnumerated(newParent);
-    if(ItemPtr existing = newParent->tryResolve(finalName))
+    if(ItemPtr existing = itemCache->child(newParent, finalName))
         if(existing != item)
             throw OSErrorException(dupFNErr);
 
