@@ -495,7 +495,8 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
     localVolumeStats().itemsConstructed++;
 
     // Retain realized directories so a listing or tally survives between
-    // accesses; files are realized transiently (retained from Phase 10).
+    // accesses; files are realized transiently (an all-`Item` LRU is future
+    // work).
     if(isDir)
     {
         auto dir = std::static_pointer_cast<DirectoryItem>(item);

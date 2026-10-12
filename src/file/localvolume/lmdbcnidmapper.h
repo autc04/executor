@@ -43,7 +43,7 @@ public:
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> realPaths) override;
     virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
     // Not implemented yet; the LMDB backend is disabled and will be reworked
-    // together with its indexes in Phase 10 of
+    // together with its indexes in Phase 11 of
     // docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
     virtual CNID resolveChild(CNID parID, const fs::path& path,
         const FileIdentity& identity, bool isDir, std::uint64_t mtime) override;

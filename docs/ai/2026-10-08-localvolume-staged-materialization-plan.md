@@ -443,7 +443,7 @@ indexes, the diff, and path lookup — there is no bare `(dev, ino)` anywhere:
 
 - `(dev, ino)` — the default, for `nlink == 1`.
 - `(dev, ino, posixName)` — for `nlink > 1` (one inode, several names), so
-  hard-linked names stay distinct. **Deferred to Phase 11**; Phase 8 assumes
+  hard-linked names stay distinct. **Deferred to Phase 10**; Phase 8 assumes
   `nlink == 1`.
 - a name-keyed form as the fallback when no inode is usable (`d_ino == 0`, or a
   filesystem without inodes).
@@ -475,7 +475,7 @@ scan against its stored children **by inode**:
 
 Reconciliation is **per directory**: a move to another directory shows up as a
 delete in the old one and a create in the new one (a new CNID). Cross-directory
-rename detection is deliberately not attempted (Phase 11).
+rename detection is deliberately not attempted (Phase 10).
 
 Consequences:
 
@@ -497,7 +497,7 @@ Consequences:
 CNID and naming changes made cross-instance through LMDB, with no host change, are
 invisible to the stamp. They stay coherent because the design reads mapper state
 **live** and never caches a mapper-derived answer in memory (names are sticky, and
-a name read re-reads inside a transaction, which LMDB serializes); Phase 10 adds
+a name read re-reads inside a transaction, which LMDB serializes); Phase 11 adds
 only that atomicity. Caching such an answer (a `(parID, macName) -> cnid` result,
 or an `Item`'s `macName`) would require a mapper generation checked like the stamp.
 Identity stability across re-enumeration (CNIDs and
@@ -629,7 +629,7 @@ identity primitives of *Caching* with `ItemCache`'s realization:
 rec = mapper.record(cnid)
 st  = statPath(rec.path)
 if st missing, or st.(dev, ino) != rec.(dev, ino), or kind changed:
-    mapper.deleteCNID(cnid); drop items_[cnid]; return {}     # Phase 11: inode recovery first
+    mapper.deleteCNID(cnid); drop items_[cnid]; return {}     # Phase 10: inode recovery first
 item = items_[cnid].lock(), else realize from rec + st and register
 return item
 ```
@@ -831,9 +831,9 @@ LRU (see *Caching*). Sub-steps:
 
 Pin what the FileManager must do, independent of the implementation, and mark the
 ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a same-directory
-host-side rename keeps the CNID (Phase 11); listing order is `macNamePrefix`-major
+host-side rename keeps the CNID (Phase 10); listing order is `macNamePrefix`-major
 (Phase 7); unrelated groups stay undecided after a name lookup (Phase 9); a
-hard-linked name is distinct from its sibling (Phase 11). Later phases add their
+hard-linked name is distinct from its sibling (Phase 10). Later phases add their
 own tests too.
 
 ### Phase 7 — Link-free object model — DONE
@@ -863,14 +863,14 @@ every listing/metadata call site and the `dynamic_cast` sites.
   become a single transaction later.
 - **Validation, not recovery:** on access, if the record's path no longer exists or
   its `(dev, ino)` no longer matches, flush the `Item` and the mapper entry. A moved
-  item therefore gets a **new** CNID; rename preservation comes later (Phase 11).
+  item therefore gets a **new** CNID; rename preservation comes later (Phase 10).
 - **A kind change is a new item**, even when the host reused the inode; the diff
   and path lookup require the kind to match as well as the inode.
 - **An encoding upgrade swaps the `FileRep`, not the file.** The upgrade targets
   (AppleDouble, Mac) only *add* their storage beside the existing data fork, so
   `upgradeItem` rewrites nothing and the host file keeps its inode — and the item
   its CNID.
-- **Hard links are out of scope** (Phase 11).
+- **Hard links are out of scope** (Phase 10).
 
 **Risk:** inode fidelity (`d_ino == 0`) and Windows (no inode from the cheap stat).
 
@@ -885,7 +885,15 @@ every listing/metadata call site and the `dynamic_cast` sites.
 
 **Risk:** the undecided-name obligation spans every name reader.
 
-### Phase 10 — CNID persistence, transactions, multi-instance sharing
+### Phase 10 — Same-directory rename recovery, and hard links
+
+Use the stored `(dev, ino)` to keep a CNID when a file is renamed **within one
+directory**: the re-list matches the scan to the stored children by inode, so a
+rename reuses the CNID instead of delete + create, and hard-linked names
+(`nlink > 1`) get distinct CNIDs keyed on `(dev, ino, posixName)`. Cross-directory
+rename detection is deliberately not attempted — it cannot be done efficiently.
+
+### Phase 11 — CNID persistence, transactions, multi-instance sharing
 
 Re-enable `LMDBCNIDMapper`: persist the record table and the indexes, and make the
 per-directory diff and `nameGroup` **transactional read-modify-writes**
@@ -893,14 +901,6 @@ per-directory diff and `nameGroup` **transactional read-modify-writes**
 CNID and naming decisions for the same volume. Cross-instance coherence rests on
 reading mapper state live (see *Caching*); it needs no generation counter until an
 in-memory mapper cache is introduced.
-
-### Phase 11 — Same-directory rename recovery, and hard links
-
-Use the stored `(dev, ino)` to keep a CNID when a file is renamed **within one
-directory**: the re-list matches the scan to the stored children by inode, so a
-rename reuses the CNID instead of delete + create, and hard-linked names
-(`nlink > 1`) get distinct CNIDs keyed on `(dev, ino, posixName)`. Cross-directory
-rename detection is deliberately not attempted — it cannot be done efficiently.
 
 ### Phase 12 — Single-item name resolution
 
@@ -1018,7 +1018,7 @@ against regressing F1/F3.
 ## Out of scope
 
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
-- Re-enabling the LMDB mapper, except insofar as it affects Phase 10.
+- Re-enabling the LMDB mapper, except insofar as it affects Phase 11.
 - HFS backend behaviour.
 
 ## Future Ideas

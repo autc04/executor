@@ -352,7 +352,7 @@ CNID LMDBCNIDMapper::resolveChild(CNID parID, const fs::path& path,
     const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
     // The LMDB backend is disabled; it is reworked together with its indexes in
-    // Phase 10 of docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
+    // Phase 11 of docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
     throw std::logic_error("LMDBCNIDMapper::resolveChild not implemented");
 }
 

@@ -679,7 +679,7 @@ TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
 }
 
 // Phase 8: an external rename (a different inode at a new name) is delete +
-// create until Phase 11 recovers it.
+// create until Phase 10 recovers it.
 TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
 {
     hostFile("old", "data");
@@ -785,7 +785,7 @@ TEST_F(LocalVolumeFixture, SidecarNameWinsOverMacBinary)
 //   --gtest_also_run_disabled_tests)
 // --------------------------------------------------------------------------
 
-// Phase 11: a host-side rename within one directory keeps the CNID (the re-list
+// Phase 10: a host-side rename within one directory keeps the CNID (the re-list
 // matches its children by inode). A move to another directory stays delete +
 // create.
 TEST_F(LocalVolumeFixture, DISABLED_SameDirectoryHostRenameKeepsCnid)
@@ -817,7 +817,7 @@ TEST_F(LocalVolumeFixture, ListingOrderIsMacNamePrefixMajor)
     EXPECT_EQ("B", list[1].name);
 }
 
-// Phase 11: a hard-linked file keeps a CNID distinct from its sibling.
+// Phase 10: a hard-linked file keeps a CNID distinct from its sibling.
 TEST_F(LocalVolumeFixture, DISABLED_HardLinkedNamesAreDistinct)
 {
     hostFile("orig", "data");

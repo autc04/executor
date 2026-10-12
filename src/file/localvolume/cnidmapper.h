@@ -54,7 +54,7 @@ public:
     // Reconcile a fresh scan of `dirID` against its stored children, keyed by
     // host inode: an inode seen again at the same name keeps its CNID and Mac
     // name; an inode seen under a new name is a rename (a new CNID, until
-    // Phase 11); a scanned inode with no record is new; a stored child absent
+    // Phase 10); a scanned inode with no record is new; a stored child absent
     // from the scan is gone. No names are decided. Returns the surviving entries
     // in scan order.
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> entries) = 0;
