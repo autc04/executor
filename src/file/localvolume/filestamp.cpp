@@ -54,7 +54,6 @@ PathStat Executor::statPath(const fs::path& path)
         s.isRegular = S_ISREG(st.st_mode);
         s.identity.device = (std::uint64_t)st.st_dev;
         s.identity.inode = (std::uint64_t)st.st_ino;
-        s.identity.nlink = (std::uint64_t)st.st_nlink;
         // Some filesystems report inode 0; treat that as "no usable inode".
         s.identity.valid = st.st_ino != 0;
     }

@@ -49,13 +49,19 @@ class ItemCache
     void clearCachedDirectory(const DirectoryItemPtr& dir);
 
     // A live, already-realized Item, if its kind still matches. Otherwise the
-    // registry entry is dropped so the Item can be rebuilt.
-    ItemPtr itemSnapshot(CNID cnid, bool isDir);
+    // registry entry is dropped so the Item can be rebuilt. A moved binding
+    // re-points the live Item in place.
+    ItemPtr itemSnapshot(CNID cnid, const fs::path& path, bool isDir);
 
-    // Validate a CNID's binding against the host and realize the Item: stat the
-    // record's path, drop the binding if it is gone or its identity/kind
-    // changed, and otherwise return the (possibly newly built) Item.
+    // Realize a CNID, validating its binding (see realizeValidated).
+    ItemPtr realizeOnce(CNID cnid);
+
+    // Validate a CNID's binding against the host and realize the Item. If the
+    // binding is stale, flush the parent's listing (so the diff can recover a
+    // same-directory rename or drop a gone entry) and retry, recursing up while
+    // an ancestor's own binding is stale. `depth` bounds that recursion.
     ItemPtr realizeValidated(CNID cnid);
+    ItemPtr realizeValidated(CNID cnid, int depth);
 
     // Realize a descriptor's Item (from the registry, else freshly built).
     ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);

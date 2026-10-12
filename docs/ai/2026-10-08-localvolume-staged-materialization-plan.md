@@ -932,7 +932,7 @@ every listing/metadata call site and the `dynamic_cast` sites.
 
 **Risk:** the undecided-name obligation spans every name reader.
 
-### Phase 10 — Same-directory rename recovery, and hard links
+### Phase 10 — Same-directory rename recovery, and hard links — DONE
 
 **Bindings.** A CNID denotes the pair `(parID, posixName)` at which an inode lives,
 not the inode alone, so one inode may hold several bindings (hard links), each with
@@ -942,15 +942,19 @@ its own CNID. Identity is `(dev, ino)` (or a name key when no inode is usable) a
 
 **Rename recovery.** The per-directory diff matches a stored child `c` against the
 scanned entries with the same identity, per *Reconciliation*: one matching
-name+kind → unchanged; exactly one occurrence at a new name → rename (keep the
-CNID, adopt the `posixName`, clear the `macName`); no occurrence → delete; several
-occurrences with no old-name match → delete and re-create each. A same-inode record
-in another directory is never a match, so cross-directory moves stay delete + create.
+name+kind → unchanged; exactly one occurrence at a new name of the same kind →
+rename (keep the CNID, adopt the `posixName`, clear the `macName`); no occurrence →
+delete; several occurrences with no old-name match → delete and re-create each. A
+same-inode record in another directory is never a match, so cross-directory moves
+stay delete + create.
 
 **Recovery on access.** The binding check no longer deletes a record: on failure it
-flushes the parent's listing, the diff reconciles, and the access retries once. A
-live `Item` (an open FCB's) is updated in place, and `macName` is cleared only when
-the `posixName` changed.
+flushes the parent's listing, the diff reconciles, and the access retries once
+(recursing up while an ancestor's own binding is stale). A live `Item` (an open
+FCB's) is updated in place, and `macName` is cleared only when the `posixName`
+changed. One consequence: a name lookup must re-check the name *after* realizing,
+since realizing may have recovered a rename that moved the binding away from the
+requested name.
 
 **Accepted:** a recycled inode makes a delete-and-recreate at a *new* name look like
 a rename, and inode reuse at the same name still reads as unchanged (see *Binding
@@ -1070,8 +1074,8 @@ without a native path.
   the next access — including a Plain file *becoming* AppleDouble when its `._*`
   appears, and becoming Plain again when it is removed.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
-  `--gtest_also_run_disabled_tests`). The validation and naming tests above are
-  enabled.
+  `--gtest_also_run_disabled_tests`). The validation, naming and Phase 10
+  rename/hard-link tests above are enabled.
 
 ### Benchmarks
 

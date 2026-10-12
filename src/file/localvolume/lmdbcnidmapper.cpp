@@ -179,10 +179,10 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
         auto cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
         for(auto& entry : sortedRealDirEntries)
         {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path)
+            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.posixName)
                 ++cachedMappingIt;
 
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path)
+            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.posixName)
             {
                 mac_string nameUpr = cachedMappingIt->macname;
                 ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
@@ -197,17 +197,17 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
         cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
         for(auto& entry : sortedRealDirEntries)
         {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path)
+            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.posixName)
             {
                 // discard mapping
                 deleteCNID(txn, cachedMappingIt->cnid);
                 ++cachedMappingIt;
             }
 
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path)
+            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.posixName)
             {
                 // use existing mapping
-                dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, entry.path, cachedMappingIt->macname, {}, entry.isDir});
+                dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, entry.posixName, cachedMappingIt->macname, {}, entry.isDir});
                 newContents.push_back(cachedMappingIt->cnid);
 
                 ++cachedMappingIt;
@@ -216,7 +216,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
             {
                 // new mapping
                 mac_string macname;
-                const fs::path& name = entry.path.filename();
+                const fs::path& name = entry.posixName;
                 int index = 0;
 
                 bool nameIsFree;
@@ -232,7 +232,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
 
                 Mapping newMapping {
                     dirID, newCNID++,
-                    entry.path,
+                    entry.posixName,
                     std::move(macname),
                     {},
                     entry.isDir
@@ -263,7 +263,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
     auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
     auto directoryContents = getDirectory(txn, dirID);
     std::sort(realDirEntries.begin(), realDirEntries.end(),
-        [](const DirEntry& a, const DirEntry& b) { return a.path < b.path; });
+        [](const DirEntry& a, const DirEntry& b) { return a.posixName < b.posixName; });
 
     if(directoryContents.size() != realDirEntries.size())
     {
@@ -281,7 +281,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
         {
             auto optMapping = getMapping(txn, *cachedIt);
 
-            if(!optMapping || optMapping->path != realIt->path)
+            if(!optMapping || optMapping->path != realIt->posixName)
             {
                 txn.abort();
                 return updateDirectoryContents(dirID, realDirEntries);
@@ -299,7 +299,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
         auto realIt = realDirEntries.begin();
         for(;cachedMappingIt != cachedMappingEnd; ++cachedMappingIt, ++realIt)
         {
-            dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, realIt->path, cachedMappingIt->macname, {}, realIt->isDir});
+            dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, realIt->posixName, cachedMappingIt->macname, {}, realIt->isDir});
         }
     }
     

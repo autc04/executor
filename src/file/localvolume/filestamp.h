@@ -27,16 +27,14 @@ bool operator==(const FileStamp& a, const FileStamp& b);
 inline bool operator!=(const FileStamp& a, const FileStamp& b) { return !(a == b); }
 
 // The host file's identity, as opposed to its change stamp: the (device, inode)
-// pair a CNID is keyed by, plus the link count. `valid` is false when the host
-// does not expose a usable inode (or gives inode 0); callers then fall back to
-// matching by path. nlink is recorded so the deferred hard-link key
-// (dev, ino, posixName) can be added without another stat. See *Identity* in the
-// plan.
+// pair a CNID's binding is keyed by. `valid` is false when the host does not
+// expose a usable inode (or gives inode 0); callers then fall back to name-keyed
+// matching. There is no link count: a CNID denotes a binding, and several
+// bindings may share one inode (hard links). See *Binding staleness* in the plan.
 struct FileIdentity
 {
     std::uint64_t device = 0;
     std::uint64_t inode = 0;
-    std::uint64_t nlink = 1;
     bool valid = false;
 };
 

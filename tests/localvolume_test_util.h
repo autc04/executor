@@ -378,6 +378,66 @@ protected:
             return std::nullopt;
         return (int)ipb.dirInfo.ioDrNmFls;
     }
+
+    // ---- open files ----
+
+    short fmOpen(long parentDirID, std::string_view name, int8_t perm = fsCurPerm)
+    {
+        HParamBlockRec hpb;
+        initPB(hpb);
+        hpb.ioParam.ioVRefNum = vRefNum_;
+        hpb.fileParam.ioDirID = parentDirID;
+        auto n = str255(name);
+        hpb.ioParam.ioNamePtr = n.data();
+        hpb.ioParam.ioPermssn = perm;
+        PBHOpenDFSync(&hpb);
+        if(hpb.ioParam.ioResult == paramErr)   // data-fork open unimplemented
+            PBHOpenSync(&hpb);
+        if(hpb.ioParam.ioResult != noErr)
+            return -1;
+        return hpb.ioParam.ioRefNum;
+    }
+
+    void fmSetFPos(short refNum, int32_t pos)
+    {
+        ParamBlockRec pb;
+        std::memset(&pb, 42, sizeof(pb));
+        pb.ioParam.ioCompletion = nullptr;
+        pb.ioParam.ioRefNum = refNum;
+        pb.ioParam.ioPosMode = fsFromStart;
+        pb.ioParam.ioPosOffset = pos;
+        PBSetFPosSync(&pb);
+    }
+
+    std::string fmRead(short refNum, size_t count)
+    {
+        // A stack buffer: only the main thread's stack and the globals are mapped
+        // into the guest address space, so a heap buffer would not translate.
+        char buf[256];
+        if(count > sizeof(buf))
+            count = sizeof(buf);
+
+        ParamBlockRec pb;
+        std::memset(&pb, 42, sizeof(pb));
+        pb.ioParam.ioCompletion = nullptr;
+        pb.ioParam.ioRefNum = refNum;
+        pb.ioParam.ioBuffer = (Ptr)buf;
+        pb.ioParam.ioReqCount = count;
+        pb.ioParam.ioPosMode = fsAtMark;
+        PBReadSync(&pb);
+        if(pb.ioParam.ioResult != noErr && pb.ioParam.ioResult != eofErr)
+            return {};
+        return std::string(buf, pb.ioParam.ioActCount);
+    }
+
+    void fmClose(short refNum)
+    {
+        ParamBlockRec pb;
+        std::memset(&pb, 42, sizeof(pb));
+        pb.ioParam.ioCompletion = nullptr;
+        pb.ioParam.ioRefNum = refNum;
+        PBCloseSync(&pb);
+    }
 };
 
 } // namespace Executor::Test

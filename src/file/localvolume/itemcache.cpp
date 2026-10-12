@@ -163,7 +163,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
                 if(!st.exists || (!st.isDirectory && !st.isRegular))
                     continue;   // not something the File Manager can address
 
-                entries.push_back({ e.path(), st.identity, st.stamp.mtime, st.isDirectory });
+                entries.push_back({ e.path().filename(), st.identity, st.stamp.mtime, st.isDirectory });
             }
         }
         catch(const boost::filesystem::filesystem_error& exc)
@@ -290,7 +290,7 @@ void ItemCache::noteItemFreed(CNID cnid)
     items_.erase(cnid);
 }
 
-ItemPtr ItemCache::itemSnapshot(CNID cnid, bool isDir)
+ItemPtr ItemCache::itemSnapshot(CNID cnid, const fs::path& path, bool isDir)
 {
     auto it = items_.find(cnid);
     if(it == items_.end())
@@ -306,10 +306,12 @@ ItemPtr ItemCache::itemSnapshot(CNID cnid, bool isDir)
         items_.erase(it);
         return {};
     }
+
+    item->relocate(path);   // a recovered rename re-points the live Item
     return item;
 }
 
-ItemPtr ItemCache::realizeValidated(CNID cnid)
+ItemPtr ItemCache::realizeOnce(CNID cnid)
 {
     if(cnid <= 0)
         return {};
@@ -320,20 +322,43 @@ ItemPtr ItemCache::realizeValidated(CNID cnid)
 
     PathStat st = statPath(mapping->path);
     // The binding is gone, the name now holds a different kind of file, or a
-    // different file holds the name (a delete + create).
+    // different file holds the name (a delete + create). Deleting is the diff's
+    // job, not ours: see realizeValidated.
     if(!st.exists || (!st.isDirectory && !st.isRegular)
        || st.isDirectory != mapping->isDir
        || !sameIdentity(mapping->identity, st.identity))
-    {
-        cnidMapper_->deleteCNID(cnid);
-        items_.erase(cnid);
         return {};
-    }
 
-    if(ItemPtr item = itemSnapshot(cnid, st.isDirectory))
+    if(ItemPtr item = itemSnapshot(cnid, mapping->path, st.isDirectory))
         return item;
 
     return makeItem(mapping->parID, cnid, mapping->path, mapping->macname, st.isDirectory);
+}
+
+ItemPtr ItemCache::realizeValidated(CNID cnid)
+{
+    return realizeValidated(cnid, 32);
+}
+
+ItemPtr ItemCache::realizeValidated(CNID cnid, int depth)
+{
+    if(ItemPtr item = realizeOnce(cnid))
+        return item;
+
+    auto mapping = cnidMapper_->lookupCNID(cnid);
+    if(!mapping || depth <= 0)
+        return {};
+
+    // The binding is stale and the file may have moved: re-list the parent so the
+    // diff can recover a same-directory rename (or drop a gone entry), then retry.
+    auto parent = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(mapping->parID, depth - 1));
+    if(!parent)
+        return {};
+
+    flushDirectoryCache(parent);
+    ensureListed(parent);
+
+    return realizeOnce(cnid);
 }
 
 ItemPtr ItemCache::tryResolve(CNID cnid)
@@ -375,10 +400,11 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
 
 ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d)
 {
-    if(ItemPtr item = itemSnapshot(d.cnid, d.isDir))
+    fs::path path = dir->path() / d.posixName;
+    if(ItemPtr item = itemSnapshot(d.cnid, path, d.isDir))
         return item;
 
-    return makeItem(dir->cnid(), d.cnid, dir->path() / d.posixName, std::nullopt, d.isDir);
+    return makeItem(dir->cnid(), d.cnid, path, std::nullopt, d.isDir);
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
@@ -386,7 +412,11 @@ ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
     // Fast path: the name is already decided for this directory.
     if(auto cnid = cnidMapper_->cnidForName(dir->cnid(), name))
         if(ItemPtr item = realizeValidated(*cnid))
-            return item;
+        {
+            // Realizing may have recovered a rename, invalidating this name.
+            if(cnidMapper_->cnidForName(dir->cnid(), name) == cnid)
+                return item;
+        }
 
     if(!ensureListed(dir))
         throw OSErrorException(ioErr);

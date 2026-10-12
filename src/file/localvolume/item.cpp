@@ -46,6 +46,20 @@ void Item::moveItem(const fs::path& newPath, mac_string_view newName)
     }
 }
 
+void Item::relocate(const fs::path& newPath)
+{
+    if(path_ == newPath)
+        return;
+
+    if(path_.filename() != newPath.filename())
+    {
+        name_.clear();
+        nameDecided_ = false;
+    }
+
+    path_ = newPath;
+}
+
 const int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904)/4);
 
 ItemInfo Item::getInfo()

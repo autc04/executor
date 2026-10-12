@@ -104,6 +104,11 @@ public:
     virtual void deleteItem();
     virtual void moveItem(const fs::path& newPath, mac_string_view newName);
 
+    // Re-point a realized Item at a moved binding, keeping the object itself (so
+    // an open FCB survives a host rename). The Mac name is re-derived only when
+    // the entry's own name changed, not when an ancestor directory moved.
+    void relocate(const fs::path& newPath);
+
     virtual ItemInfo getInfo();
     virtual void setInfo(ItemInfo info);
 };

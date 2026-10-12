@@ -678,19 +678,28 @@ TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
     EXPECT_EQ((std::set<std::string> { "inner" }), namesOf(fmList(after->cnid)));
 }
 
-// Phase 8: an external rename (a different inode at a new name) is delete +
-// create until Phase 10 recovers it.
-TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
+// Phase 10: only same-directory renames are recovered. A host move across
+// directories is delete + create, a new CNID.
+TEST_F(LocalVolumeFixture, CrossDirectoryHostMoveIsDeleteCreate)
 {
-    hostFile("old", "data");
-    auto before = fmGet(rootDirID_, "old");
+    hostDir("src");
+    hostDir("dst");
+    hostFile("src/f", "data");
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+
+    auto before = fmGet(src->cnid, "f");
     ASSERT_TRUE(before.has_value());
 
-    fs::rename(host("old"), host("new"));
-    bumpMtime("");
+    fs::rename(host("src/f"), host("dst/f"));
+    bumpMtime("src");
+    bumpMtime("dst");
 
-    EXPECT_FALSE(fmGet(rootDirID_, "old").has_value());
-    auto after = fmGet(rootDirID_, "new");
+    EXPECT_FALSE(fmGet(src->cnid, "f").has_value());
+    auto after = fmGet(dst->cnid, "f");
     ASSERT_TRUE(after.has_value());
     EXPECT_NE(before->cnid, after->cnid);
 }
@@ -781,14 +790,12 @@ TEST_F(LocalVolumeFixture, SidecarNameWinsOverMacBinary)
 }
 
 // --------------------------------------------------------------------------
-// Target behaviour (disabled until its phase lands; run with
-//   --gtest_also_run_disabled_tests)
+// Rename recovery and hard links (Phase 10)
 // --------------------------------------------------------------------------
 
-// Phase 10: a host-side rename within one directory keeps the CNID (the re-list
-// matches its children by inode). A move to another directory stays delete +
-// create.
-TEST_F(LocalVolumeFixture, DISABLED_SameDirectoryHostRenameKeepsCnid)
+// A host-side rename within one directory keeps the CNID, adopts the new host
+// name, and re-derives the Mac name.
+TEST_F(LocalVolumeFixture, SameDirectoryHostRenameKeepsCnid)
 {
     hostFile("old", "data");
     auto before = fmGet(rootDirID_, "old");
@@ -798,6 +805,7 @@ TEST_F(LocalVolumeFixture, DISABLED_SameDirectoryHostRenameKeepsCnid)
     bumpMtime("");
 
     EXPECT_FALSE(fmGet(rootDirID_, "old").has_value());
+    EXPECT_EQ((std::set<std::string> { "new" }), namesOf(fmList(rootDirID_)));
     auto after = fmGet(rootDirID_, "new");
     ASSERT_TRUE(after.has_value());
     EXPECT_EQ(before->cnid, after->cnid);
@@ -817,8 +825,9 @@ TEST_F(LocalVolumeFixture, ListingOrderIsMacNamePrefixMajor)
     EXPECT_EQ("B", list[1].name);
 }
 
-// Phase 10: a hard-linked file keeps a CNID distinct from its sibling.
-TEST_F(LocalVolumeFixture, DISABLED_HardLinkedNamesAreDistinct)
+// A hard-linked inode holds one binding per name, so the names get distinct
+// CNIDs; deleting one leaves the other's CNID alone.
+TEST_F(LocalVolumeFixture, HardLinkedNamesAreDistinct)
 {
     hostFile("orig", "data");
     boost::system::error_code ec;
@@ -831,6 +840,93 @@ TEST_F(LocalVolumeFixture, DISABLED_HardLinkedNamesAreDistinct)
     ASSERT_TRUE(a.has_value());
     ASSERT_TRUE(b.has_value());
     EXPECT_NE(a->cnid, b->cnid);
+
+    ASSERT_EQ(noErr, fmDelete(rootDirID_, "link"));
+    EXPECT_FALSE(fmGet(rootDirID_, "link").has_value());
+    auto a2 = fmGet(rootDirID_, "orig");
+    ASSERT_TRUE(a2.has_value());
+    EXPECT_EQ(a->cnid, a2->cnid);
+}
+
+// Adding a hard link to a listed directory leaves the original name's CNID
+// alone; the new name is a new entry.
+TEST_F(LocalVolumeFixture, AddedHardLinkGetsNewCnid)
+{
+    hostFile("orig", "data");
+    auto orig = fmGet(rootDirID_, "orig");
+    ASSERT_TRUE(orig.has_value());
+
+    boost::system::error_code ec;
+    fs::create_hard_link(host("orig"), host("link"), ec);
+    if(ec)
+        GTEST_SKIP() << "hard links unsupported: " << ec.message();
+    bumpMtime("");
+
+    EXPECT_EQ((std::set<std::string> { "link", "orig" }), namesOf(fmList(rootDirID_)));
+    auto orig2 = fmGet(rootDirID_, "orig");
+    ASSERT_TRUE(orig2.has_value());
+    EXPECT_EQ(orig->cnid, orig2->cnid);
+
+    auto link = fmGet(rootDirID_, "link");
+    ASSERT_TRUE(link.has_value());
+    EXPECT_NE(orig->cnid, link->cnid);
+}
+
+// Renaming one of two hard-linked names keeps that name's CNID; the sibling is
+// untouched.
+TEST_F(LocalVolumeFixture, RenamingOneHardLinkKeepsItsCnid)
+{
+    hostFile("a", "data");
+    boost::system::error_code ec;
+    fs::create_hard_link(host("a"), host("b"), ec);
+    if(ec)
+        GTEST_SKIP() << "hard links unsupported: " << ec.message();
+
+    auto a = fmGet(rootDirID_, "a");
+    auto b = fmGet(rootDirID_, "b");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    ASSERT_NE(a->cnid, b->cnid);
+
+    fs::rename(host("b"), host("c"));
+    bumpMtime("");
+
+    EXPECT_FALSE(fmGet(rootDirID_, "b").has_value());
+    auto c = fmGet(rootDirID_, "c");
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(b->cnid, c->cnid);
+
+    auto a2 = fmGet(rootDirID_, "a");
+    ASSERT_TRUE(a2.has_value());
+    EXPECT_EQ(a->cnid, a2->cnid);
+}
+
+// An open file survives a same-directory host rename: the Item is updated in
+// place, and the rename is recovered on a fresh lookup.
+TEST_F(LocalVolumeFixture, HostRenameRecoveredWhileFileIsOpen)
+{
+    hostFile("old", "hello, world");
+    auto before = fmGet(rootDirID_, "old");
+    ASSERT_TRUE(before.has_value());
+
+    short refNum = fmOpen(rootDirID_, "old");
+    ASSERT_GE(refNum, 0);
+    EXPECT_EQ("hello, world", fmRead(refNum, 32));
+
+    fs::rename(host("old"), host("new"));
+    bumpMtime("");
+
+    // The guest's handle still reads the file (its fd follows the inode)...
+    fmSetFPos(refNum, 0);
+    EXPECT_EQ("hello, world", fmRead(refNum, 32));
+
+    // ...and the rename is recovered even while the file is open.
+    auto after = fmGet(rootDirID_, "new");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+    EXPECT_FALSE(fmGet(rootDirID_, "old").has_value());
+
+    fmClose(refNum);
 }
 
 // --------------------------------------------------------------------------

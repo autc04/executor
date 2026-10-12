@@ -34,10 +34,11 @@ public:
         bool isDir;
     };
 
-    // A host entry offered to the per-directory diff.
+    // A host entry offered to the per-directory diff. Only the name is kept: the
+    // entry's full path is derived from the parent's chain when needed.
     struct DirEntry
     {
-        fs::path path;
+        fs::path posixName;
         FileIdentity identity;
         std::uint64_t mtime;
         bool isDir;
@@ -51,12 +52,14 @@ public:
         fs::path nameSource;
     };
 
-    // Reconcile a fresh scan of `dirID` against its stored children, keyed by
-    // host inode: an inode seen again at the same name keeps its CNID and Mac
-    // name; an inode seen under a new name is a rename (a new CNID, until
-    // Phase 10); a scanned inode with no record is new; a stored child absent
-    // from the scan is gone. No names are decided. Returns the surviving entries
-    // in scan order.
+    // Reconcile a fresh scan of `dirID` against its stored children, per
+    // *Reconciliation* in the plan: a child whose name and kind are unchanged
+    // keeps its CNID and Mac name; a child with exactly one occurrence at a new
+    // name was renamed (keep the CNID, adopt the name, drop the Mac name); a
+    // child with no occurrence is gone; a child with several unmatched
+    // occurrences is dropped and each occurrence becomes a new entry. A
+    // same-inode record in another directory is never a match. No names are
+    // decided. Returns entries in scan order (kept/renamed first).
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> entries) = 0;
 
     // The record for a CNID, or nothing. No host validation is done here; the
