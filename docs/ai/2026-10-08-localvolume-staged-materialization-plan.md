@@ -499,19 +499,22 @@ match, pinned by `DisambiguatedNamesStableAcrossDelete`,
 ### Materialized-rep staleness
 
 A rep caches parsed state (`MacBinaryFile::header_`,
-`AppleSingleDoubleFile::descriptors`) and can outlive the listing that built
-it. A rep is a function of **all** the host files it reads, not just the primary
-one: AppleDouble and Basilisk depend on `._*`/`%*` and `.rsrc`/`.finf`, and
-xattr-backed metadata likewise. So each `FileRep` must expose the host
-dependencies it was built from (existence plus `(mtime, size)`), and the stamp is
-taken over that set — creating, deleting, or modifying a sidecar invalidates the
-rep and may change which rep wins (the gauntlet re-runs). At the start of
+`AppleSingleDoubleFile::descriptors`) and can outlive the listing that built it.
+A rep is a function of **all** the host files classification consults — not just
+the primary one and not just the ones the winning rep reads: AppleDouble and
+Basilisk read `._*`/`%*` and `.rsrc`/`.finf`, and xattr-backed metadata likewise.
+The **presence or absence of a candidate is itself part of the result** — a Plain
+file becomes AppleDouble once its `._foo` appears — so the stamp must span the
+**candidate paths the factories probe**, each recorded as `(exists, mtime, size)`;
+an absent candidate is a stamp value, not an omission. Creating, deleting, or
+modifying any candidate changes the stamp, the gauntlet re-runs, and the winning
+rep may change. At the start of
 `open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`, drop the rep if the stamp
 changed. Do not revalidate a rep whose fork is currently open — the guest holds
 it, so the change surfaces on reopen.
 
-`FileRep` exposes the host paths it reads (`dependencies()`); the rep's stamp is a
-**composite** of their `(mtime, size)`, recomputed on validation.
+`FileRep::dependencies()` reports the paths the rep itself reads; the candidate set
+for the stamp is the (larger) set the factories probed, including absent entries.
 
 ### Memory bound
 
@@ -959,6 +962,10 @@ otherwise unknown, keeping full-group `NameResolve` as the fallback.
   re-list (stats); eviction under the item budget, then re-access, preserves
   CNIDs/names; an in-place edit of a MacBinary header is reflected by `getInfo`;
   a file↔directory kind change at a name is a new inode and hence a new entry.
+- **Rep dependencies**: with the primary file untouched, creating, deleting, or
+  modifying a sidecar (`._*`, `%*`, `.rsrc`, `.finf`) is reflected by `getInfo` on
+  the next access — including a Plain file *becoming* AppleDouble when its `._*`
+  appears, and becoming Plain again when it is removed.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
   `--gtest_also_run_disabled_tests`). The validation and naming tests above are
   enabled.
