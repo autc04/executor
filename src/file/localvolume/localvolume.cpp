@@ -274,10 +274,11 @@ LocalVolume::FCBExtension& LocalVolume::openFCBX()
     return fcbExtensions[index];
 }
 
-FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
+void LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
 {
     CNID cnid = item->cnid();
 
+    // Every open FCB for this item reopens its fork once the rep is swapped.
     for(int i = 0; i < NFCB; i++)
     {
         if(ROMlib_fcblocks[i].fdfnum == cnid
@@ -285,53 +286,16 @@ FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactor
         {
             FCBExtension& fcbx = fcbExtensions[i];
             assert(fcbx.refNum == i * 94 + 2);
-            fcbx.file = {};
             fcbx.access = {};
         }
     }
 
-    fs::path path = item->path();
-    fs::path tempPath = path.parent_path() / fs::unique_path();
-
-    itemCache->flushItem(item);
-    item->moveItem(tempPath, mac_string_view());
-    betterFactory->createFile(path);
-    // The CNID stays ours, but the host file that carries it is now the fresh
-    // placeholder just created: re-key the binding to its inode.
-    itemCache->rebindItem(cnid);
-    auto newItem = std::dynamic_pointer_cast<FileItem>(itemCache->tryResolve(cnid));
-
-    assert(newItem->cnid() == cnid);
-
-    auto copydata = [](const std::unique_ptr<OpenFile>& from, const std::unique_ptr<OpenFile>& to) {
-        size_t sz = from->getEOF();
-        to->setEOF(sz);
-
-        const size_t bufSize = 1024 * 1024;
-        std::unique_ptr<uint8_t[]> buffer(new uint8_t[bufSize]);
-        for(size_t offset = 0; offset < sz; offset += bufSize)
-        {
-            size_t sz1 = std::min(bufSize, sz - offset);
-            from->read(offset, buffer.get(), sz1);
-            to->write(offset, buffer.get(), sz1);
-        }
-    };
-
-    try
-    {
-        copydata(item->open(fsRdPerm), newItem->open(fsRdWrPerm));
-        copydata(item->openRF(fsRdPerm), newItem->openRF(fsRdWrPerm));
-    }
-    catch(const std::exception& e)
-    {
-        std::cout << e.what() << std::endl;
-    }
-    newItem->setInfo(item->getInfo());
-    item->deleteItem();
-
-
-    newItem->resWriteAccessRefNum = item->resWriteAccessRefNum;
-    newItem->dataWriteAccessRefNum = item->dataWriteAccessRefNum;
+    // The upgrade targets (AppleDouble, Mac) only *add* the richer encoding's
+    // storage beside the existing data fork, so the host file keeps its inode —
+    // and the item keeps its CNID. Swapping the rep is all that is left.
+    betterFactory->createFile(item->path());
+    item->setRep(nullptr);
+    item->ensureMaterialized();
 
     for(int i = 0; i < NFCB; i++)
     {
@@ -340,18 +304,16 @@ FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactor
         {
             FCBExtension& fcbx = fcbExtensions[i];
             assert(fcbx.refNum == i * 94 + 2);
-            fcbx.file = newItem;
+            fcbx.file = item;
 
             int8_t perm = (fcbx.fcb->fcbMdRByt & WRITEBIT) ? fsRdWrPerm : fsRdPerm;
 
             if(fcbx.fcb->fcbMdRByt & RESOURCEBIT)
-                fcbx.access = newItem->openRF(perm);
+                fcbx.access = item->openRF(perm);
             else
-                fcbx.access = newItem->open(perm);
+                fcbx.access = item->open(perm);
         }
     }
-
-    return newItem;
 }
 
 void LocalVolume::openCommon(GUEST<short>& refNum, ItemPtr item, Fork fork, int8_t permission)
@@ -520,7 +482,7 @@ void LocalVolume::setInfoCommon(const ItemPtr& item, CInfoPBPtr pb, InfoKind inf
         }
         catch(const UpgradeRequiredException&)
         {
-            fitem = upgradeItem(fitem, upgradedItemFactory);
+            upgradeItem(fitem, upgradedItemFactory);
             fitem->setInfo(info);
         }
         // TODO: if(infoKind == InfoKind::CatInfo)) ioFlBkDat

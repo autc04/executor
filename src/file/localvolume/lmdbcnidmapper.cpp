@@ -366,11 +366,6 @@ void LMDBCNIDMapper::nameGroup(CNID parID, const std::vector<NameRequest>& group
     throw std::logic_error("LMDBCNIDMapper::nameGroup not implemented");
 }
 
-void LMDBCNIDMapper::setIdentity(CNID cnid, const FileIdentity& identity)
-{
-    throw std::logic_error("LMDBCNIDMapper::setIdentity not implemented");
-}
-
 void LMDBCNIDMapper::deleteCNID(lmdb::txn& txn, CNID cnid)
 {
     auto mapping = getMapping(txn, cnid);

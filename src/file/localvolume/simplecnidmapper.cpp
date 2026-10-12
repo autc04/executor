@@ -66,7 +66,10 @@ CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path,
         {
             CNID cnid = iit->second;
             auto mit = mappings_.find(cnid);
-            if(mit != mappings_.end() && mit->second.parID == parID && mit->second.path == path)
+            // A kind change at a name is not the same item, even if the host
+            // reused the inode.
+            if(mit != mappings_.end() && mit->second.parID == parID && mit->second.path == path
+               && mit->second.isDir == isDir)
             {
                 mit->second.mtime = mtime;
                 return cnid;
@@ -88,7 +91,7 @@ CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path,
         auto mit = mappings_.find(*existing);
         if(mit != mappings_.end())
         {
-            if(sameIdentity(mit->second.identity, identity))
+            if(mit->second.isDir == isDir && sameIdentity(mit->second.identity, identity))
             {
                 mit->second.identity = identity;
                 mit->second.mtime = mtime;
@@ -134,7 +137,10 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             {
                 CNID candidate = iit->second;
                 auto mit = mappings_.find(candidate);
-                if(mit != mappings_.end() && mit->second.parID == dirID && mit->second.path == e.path)
+                // A kind change at a name is not the same item, even if the host
+                // reused the inode.
+                if(mit != mappings_.end() && mit->second.parID == dirID && mit->second.path == e.path
+                   && mit->second.isDir == e.isDir)
                     match = candidate;
             }
         }
@@ -269,24 +275,6 @@ void SimpleCNIDMapper::forgetRecordName(StoredMapping& rec)
     auto nit = it->second.find(foldName(*rec.macname));
     if(nit != it->second.end() && nit->second == rec.cnid)
         it->second.erase(nit);
-}
-
-void SimpleCNIDMapper::setIdentity(CNID cnid, const FileIdentity& identity)
-{
-    auto it = mappings_.find(cnid);
-    if(it == mappings_.end())
-        return;
-
-    if(it->second.identity.valid)
-    {
-        auto iit = inodeIndex_.find(inodeKey(it->second.identity));
-        if(iit != inodeIndex_.end() && iit->second == cnid)
-            inodeIndex_.erase(iit);
-    }
-
-    it->second.identity = identity;
-    if(identity.valid)
-        inodeIndex_[inodeKey(identity)] = cnid;
 }
 
 void SimpleCNIDMapper::deleteCNID(CNID cnid)

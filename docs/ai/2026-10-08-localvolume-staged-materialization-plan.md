@@ -373,8 +373,9 @@ external reference (see *Caching*).
 `ItemCache::items_` (`cnid -> weak_ptr<Item>`) is the realization registry, backed
 by an LRU that owns the realized `Item`s (files *and* directories). So "find an
 already-realized child" is answered there, not by the parent. `upgradeItem`
-becomes a `FileRep` swap (it still rewrites the host file into the richer
-encoding).
+becomes a `FileRep` swap: the upgrade targets (AppleDouble, Mac) only *add* their
+storage beside the existing data fork, so the host file keeps its inode — and the
+item its CNID.
 
 ## Caching
 
@@ -448,10 +449,12 @@ indexes, the diff, and path lookup — there is no bare `(dev, ino)` anywhere:
   filesystem without inodes).
 
 A reused inode (a file deleted and a new one allocated the same inode before
-re-enumeration) will match in the diff and reuse the CNID; a name-keyed diff has
-the same class of race. On Windows, `GetFileAttributesEx` exposes no inode, so
-both the stat helper and the directory scan need a handle-based variant
-(`GetFileInformationByHandle`) there.
+re-enumeration) will match in the diff and reuse the CNID, provided the kind is
+unchanged; a name-keyed diff has the same class of race. A **kind change at a
+name is never a match**, even when the host reused the inode — the entry is a new
+item. On Windows, `GetFileAttributesEx` exposes no inode, so both the stat helper
+and the directory scan need a handle-based variant (`GetFileInformationByHandle`)
+there.
 
 There is deliberately **no per-entry `(filename, mtime)` level**: per-entry
 metadata is not cached — `Item::getInfo` stats live, and fork/Finder-info reads
@@ -463,8 +466,8 @@ Reconciliation *is* L1: a host change is observed on the next access to the
 affected directory, with no FileManager operation. The mapper matches the fresh
 scan against its stored children **by inode**:
 
-- an inode seen again at the same name is unchanged (keeps its CNID and decided
-  `macName`);
+- an inode seen again at the same name **with the same kind** is unchanged (keeps
+  its CNID and decided `macName`);
 - an inode seen at a new name **within this directory** is a same-directory
   **rename**; the CNID follows and the name updates;
 - a scanned inode with no stored record is **new** (new CNID);
@@ -477,8 +480,9 @@ rename detection is deliberately not attempted (Phase 11).
 Consequences:
 
 - A **same-directory external rename keeps the CNID** (Decision 3); a
-  delete-and-recreate at the same name, a kind change at a name, or a move to
-  another directory is a new CNID (the inode differs or the binding is gone).
+  delete-and-recreate at the same name, a **kind change** at a name, or a move to
+  another directory is a new CNID (the match requires the kind as well as the
+  inode, and a differing inode means the binding is gone).
 - **Path resolution** descends by stat + `(dev, ino)` (see *Stage model*,
   CNIDResolve) and lists no ancestor; a stale binding is validated or recreated.
 - **Read errors**: a scan that fails must **not** be cached as a valid (empty)
@@ -860,10 +864,12 @@ every listing/metadata call site and the `dynamic_cast` sites.
 - **Validation, not recovery:** on access, if the record's path no longer exists or
   its `(dev, ino)` no longer matches, flush the `Item` and the mapper entry. A moved
   item therefore gets a **new** CNID; rename preservation comes later (Phase 11).
-- **An in-place host replacement keeps the CNID explicitly.** An encoding upgrade
-  (`upgradeItem`) swaps the host file under a live CNID, which identity validation
-  would read as a fresh file; the upgrade re-keys the binding to the new inode
-  (`setIdentity`) before re-realizing.
+- **A kind change is a new item**, even when the host reused the inode; the diff
+  and path lookup require the kind to match as well as the inode.
+- **An encoding upgrade swaps the `FileRep`, not the file.** The upgrade targets
+  (AppleDouble, Mac) only *add* their storage beside the existing data fork, so
+  `upgradeItem` rewrites nothing and the host file keeps its inode — and the item
+  its CNID.
 - **Hard links are out of scope** (Phase 11).
 
 **Risk:** inode fidelity (`d_ino == 0`) and Windows (no inode from the cheap stat).
@@ -901,6 +907,22 @@ rename detection is deliberately not attempted — it cannot be done efficiently
 Today a name request resolves the whole `macNamePrefix` group. Add, as an
 optimization, single-item (order-dependent) assignment for a name whose group is
 otherwise unknown, keeping full-group `NameResolve` as the fallback.
+
+### Phase 13 — Drop Boost.Filesystem in favour of platform APIs
+
+`boost::filesystem` is a lowest-common-denominator wrapper, and the design now
+needs detail it does not expose. Replace it with platform-specific code:
+
+- directory scans that read the inode and kind straight from `readdir`
+  (`d_ino`/`d_type`) or `FindFirstFile`, so listing no longer runs a `stat` per
+  entry to learn its identity;
+- a Windows `statPath` that exposes identity (`GetFileInformationByHandle`),
+  instead of today's path-keyed fallback;
+- optionally, a real change signal for directory staleness
+  (inotify/FSEvents/`ReadDirectoryChangesW`) to replace the `(mtime, size)` stamp.
+
+Keep `boost::filesystem` behind the `fs` alias as the fallback for platforms
+without a native path.
 
 ## Testing
 
@@ -979,7 +1001,7 @@ otherwise unknown, keeping full-group `NameResolve` as the fallback.
   entries keep their CNID and `macName`; a repeated listing validates but does not
   re-list (stats); eviction under the item budget, then re-access, preserves
   CNIDs/names; an in-place edit of a MacBinary header is reflected by `getInfo`;
-  a file↔directory kind change at a name is a new inode and hence a new entry.
+  a file↔directory kind change at a name is a new entry, whatever the inode.
 - **Rep dependencies**: with the primary file untouched, creating, deleting, or
   modifying a sidecar (`._*`, `%*`, `.rsrc`, `.finf`) is reflected by `getInfo` on
   the next access — including a Plain file *becoming* AppleDouble when its `._*`

@@ -50,7 +50,6 @@ public:
         const FileIdentity& identity, bool isDir, std::uint64_t mtime) override;
     virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) override;
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) override;
-    virtual void setIdentity(CNID cnid, const FileIdentity& identity) override;
     virtual void deleteCNID(CNID cnid) override;
     virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) override;
 };

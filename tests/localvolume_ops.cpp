@@ -656,10 +656,9 @@ TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
     EXPECT_EQ(0u, *after); // from the (zeroed) MacBinary header
 }
 
-// Phase 8: a file replaced by a directory (same name) is rebuilt as a directory.
-// The CNID follows the inode: if the host reused the freed inode the entry is
-// the same one (with its kind updated), otherwise it is a new entry. Both are
-// correct, so only the rebuild is asserted.
+// Phase 8: a kind change at a name is a different item. A file replaced by a
+// directory at the same name is rebuilt as a directory with a new CNID, even
+// when the host reused the freed inode.
 TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
 {
     hostFile("x", "data");
@@ -675,7 +674,7 @@ TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
     auto after = fmGet(rootDirID_, "x");
     ASSERT_TRUE(after.has_value());
     EXPECT_TRUE(after->isDir);
-    EXPECT_GT(after->cnid, 0);
+    EXPECT_NE(before->cnid, after->cnid);
     EXPECT_EQ((std::set<std::string> { "inner" }), namesOf(fmList(after->cnid)));
 }
 
@@ -733,8 +732,9 @@ TEST_F(LocalVolumeFixture, NameResolveIsGroupScoped)
     EXPECT_EQ(2u, localVolumeStats().nameProbes.load()); // now beta.bin too
 }
 
-// Phase 8: an in-place encoding upgrade (Plain -> AppleDouble) rewrites the host
-// file but must keep both the CNID and the Mac name.
+// Phase 8: an encoding upgrade (Plain -> AppleDouble, triggered by setting a
+// non-TEXT type) only adds its storage beside the existing data fork, so it must
+// keep both the CNID and the Mac name.
 TEST_F(LocalVolumeFixture, UpgradePreservesCnidAndName)
 {
     ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));

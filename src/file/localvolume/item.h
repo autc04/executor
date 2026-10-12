@@ -106,9 +106,6 @@ public:
 
     virtual ItemInfo getInfo();
     virtual void setInfo(ItemInfo info);
-
-        // for use by ItemCache only
-    void noteItemFlushed() { cnid_ = -1; }
 };
 
 

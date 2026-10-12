@@ -285,26 +285,6 @@ void ItemCache::flushDirectoryCache(CNID dirID)
     }
 }
 
-void ItemCache::flushItem(ItemPtr item)
-{
-    flushDirectoryCache(item->parID());
-    if(auto dir = std::dynamic_pointer_cast<DirectoryItem>(item))
-        flushDirectoryCache(dir);
-    
-    auto it = items_.find(item->cnid());
-    if(it != items_.end())
-    {
-        if(auto item2 = it->second.lock())
-        {
-            if(item2 == item)
-            {
-                items_.erase(it);
-            }
-        }
-    }
-    item->noteItemFlushed();
-}
-
 void ItemCache::noteItemFreed(CNID cnid)
 {
     items_.erase(cnid);
@@ -533,16 +513,6 @@ void ItemCache::materialize(FileItem& item)
         return;
 
     item.setRep(itemFactory_->createRepForFile(*this, item, fs::directory_entry(item.path())));
-}
-
-void ItemCache::rebindItem(CNID cnid)
-{
-    auto mapping = cnidMapper_->lookupCNID(cnid);
-    if(!mapping)
-        return;
-
-    PathStat st = statPath(mapping->path);
-    cnidMapper_->setIdentity(cnid, st.identity);
 }
 
 void ItemCache::deleteItem(ItemPtr item)

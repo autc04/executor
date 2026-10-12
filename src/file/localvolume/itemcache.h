@@ -102,10 +102,6 @@ public:
     ItemPtr child(const DirectoryItemPtr& dir, mac_string_view name);
     ItemPtr child(const DirectoryItemPtr& dir, int index, bool includeDirectories);
 
-    // Re-key a CNID to the host file currently at the record's path. Preserves
-    // the CNID across an in-place host-file replacement (an encoding upgrade).
-    void rebindItem(CNID cnid);
-
     // Ensure `item`'s Mac name is decided, deciding its directory group if not.
     // Called from Item::name().
     void ensureNamed(Item& item);
@@ -114,7 +110,6 @@ public:
     int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);
     void flushDirectoryCache(CNID dirID);
-    void flushItem(ItemPtr item);
 
     void deleteItem(ItemPtr item);
     void renameItem(ItemPtr item, mac_string_view newName);

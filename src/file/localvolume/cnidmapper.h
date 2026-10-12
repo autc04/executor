@@ -78,11 +78,6 @@ public:
     // Already-decided names are left untouched.
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) = 0;
 
-    // Re-key a CNID to a (possibly different) host inode without changing the
-    // CNID. Used when the host file behind a CNID is replaced in place but the
-    // CNID must be preserved (an encoding upgrade).
-    virtual void setIdentity(CNID cnid, const FileIdentity& identity) = 0;
-
     virtual void deleteCNID(CNID cnid) = 0;
     virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) = 0;
 };

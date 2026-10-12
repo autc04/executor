@@ -79,7 +79,7 @@ class LocalVolume : public Volume, private ItemFactory
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
         const fs::directory_entry& e) override;
 
-    FileItemPtr upgradeItem(FileItemPtr item, ItemFactory* betterFactory);
+    void upgradeItem(FileItemPtr item, ItemFactory* betterFactory);
 
 public:
     std::optional<FSSpec> nativePathToFSSpec(const fs::path& p);
