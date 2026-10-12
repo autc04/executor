@@ -13,50 +13,18 @@ std::pair<std::uint64_t, std::uint64_t> inodeKey(const FileIdentity& id)
 {
     return { id.device, id.inode };
 }
+
+mac_string foldName(mac_string_view name)
+{
+    mac_string folded { name };
+    ROMlib_UprString(folded.data(), false, folded.size());
+    return folded;
+}
 }
 
 SimpleCNIDMapper::SimpleCNIDMapper(fs::path root, mac_string volumeName)
 {
     mappings_.emplace(2, StoredMapping { 1, 2, std::move(root), std::move(volumeName), {}, true, 0 });
-}
-
-std::set<mac_string> SimpleCNIDMapper::namesInUse(CNID dirID)
-{
-    std::set<mac_string> used;
-
-    auto it = children_.find(dirID);
-    if(it == children_.end())
-        return used;
-
-    for(CNID cnid : it->second)
-    {
-        auto mit = mappings_.find(cnid);
-        if(mit != mappings_.end())
-        {
-            mac_string nameUpr = mit->second.macname;
-            ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-            used.insert(std::move(nameUpr));
-        }
-    }
-
-    return used;
-}
-
-mac_string SimpleCNIDMapper::chooseMacName(const fs::path& filename, std::set<mac_string>& usedNames)
-{
-    mac_string macname;
-    int index = 0;
-
-    bool nameIsFree;
-    do
-    {
-        macname = toMacRomanFilename(filename, index++);
-        mac_string nameUpr = macname;
-        ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-        nameIsFree = usedNames.emplace(std::move(nameUpr)).second;
-    } while(!nameIsFree);
-
-    return macname;
 }
 
 std::optional<CNID> SimpleCNIDMapper::childByPath(CNID parID, const fs::path& path) const
@@ -74,14 +42,12 @@ std::optional<CNID> SimpleCNIDMapper::childByPath(CNID parID, const fs::path& pa
     return {};
 }
 
-CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& path, const fs::path& nameSource,
+CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& path,
     const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
-    auto usedNames = namesInUse(parID);
-    mac_string macname = chooseMacName(nameSource, usedNames);
     CNID cnid = nextCNID_++;
 
-    mappings_.emplace(cnid, StoredMapping { parID, cnid, path, std::move(macname), identity, isDir, mtime });
+    mappings_.emplace(cnid, StoredMapping { parID, cnid, path, std::nullopt, identity, isDir, mtime });
     children_[parID].insert(cnid);
     if(identity.valid)
         inodeIndex_[inodeKey(identity)] = cnid;
@@ -89,7 +55,7 @@ CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& path, const fs::
     return cnid;
 }
 
-CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path, const fs::path& nameSource,
+CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path,
     const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
     // 1. Prefer identity: the record this inode already has.
@@ -135,7 +101,7 @@ CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path, const fs::
     }
 
     // 3. A new binding.
-    return createRecord(parID, path, nameSource, identity, isDir, mtime);
+    return createRecord(parID, path, identity, isDir, mtime);
 }
 
 std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dirID,
@@ -194,17 +160,14 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
         }
     }
 
-    // Pass 2: stored children the scan did not match are gone, freeing their
-    // names before Pass 3 picks names for the new entries.
+    // Pass 2: stored children the scan did not match are gone. This also frees
+    // their names for the entries that replace them.
     for(CNID c : stored)
         if(surviving.find(c) == surviving.end())
             deleteCNID(c);
 
-    // Pass 3: refresh the survivors and create the new entries. Names of
-    // survivors are sticky; a delete-and-recreate at a name is then free to
-    // take that name back.
-    std::set<mac_string> usedNames = namesInUse(dirID);
-
+    // Pass 3: refresh the survivors and create the new entries. No names are
+    // decided here; the survivors keep theirs, the new entries stay unnamed.
     std::vector<Mapping> result;
     result.reserve(n);
 
@@ -223,8 +186,7 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
         else
         {
             cnid = nextCNID_++;
-            mac_string macname = chooseMacName(e.nameSource, usedNames);
-            mappings_.emplace(cnid, StoredMapping { dirID, cnid, e.path, std::move(macname), e.identity, e.isDir, e.mtime });
+            mappings_.emplace(cnid, StoredMapping { dirID, cnid, e.path, std::nullopt, e.identity, e.isDir, e.mtime });
             surviving.insert(cnid);
         }
 
@@ -248,6 +210,65 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
 
     const StoredMapping& m = it->second;
     return Mapping { m.parID, m.cnid, m.path, m.macname, m.identity, m.isDir };
+}
+
+std::optional<CNID> SimpleCNIDMapper::cnidForName(CNID parID, mac_string_view macName)
+{
+    auto it = names_.find(parID);
+    if(it == names_.end())
+        return {};
+
+    auto nit = it->second.find(foldName(macName));
+    if(nit == it->second.end())
+        return {};
+    return nit->second;
+}
+
+void SimpleCNIDMapper::nameGroup(CNID parID, const std::vector<NameRequest>& group)
+{
+    // Names can only collide within one prefix group (two names with different
+    // folded prefixes cannot be equal), so the collision set is exactly the
+    // group's already-decided members. Seeding only those keeps naming linear.
+    std::set<mac_string> used;
+    for(const NameRequest& req : group)
+        if(auto mit = mappings_.find(req.cnid); mit != mappings_.end() && mit->second.macname)
+            used.insert(foldName(*mit->second.macname));
+
+    for(const NameRequest& req : group)
+    {
+        auto mit = mappings_.find(req.cnid);
+        if(mit == mappings_.end() || mit->second.parID != parID)
+            continue;
+        if(mit->second.macname)
+            continue;   // already decided; names are sticky
+
+        int index = 0;
+        for(;;)
+        {
+            mac_string candidate = toMacRomanFilename(req.nameSource, index++);
+            mac_string folded = foldName(candidate);
+            if(used.insert(folded).second)
+            {
+                mit->second.macname = std::move(candidate);
+                names_[parID][std::move(folded)] = req.cnid;
+                break;
+            }
+        }
+    }
+}
+
+void SimpleCNIDMapper::forgetRecordName(StoredMapping& rec)
+{
+    if(!rec.macname)
+        return;
+
+    auto it = names_.find(rec.parID);
+    if(it == names_.end())
+        return;
+
+    auto nit = it->second.find(foldName(*rec.macname));
+    if(nit != it->second.end() && nit->second == rec.cnid)
+        it->second.erase(nit);
 }
 
 void SimpleCNIDMapper::setIdentity(CNID cnid, const FileIdentity& identity)
@@ -284,6 +305,8 @@ void SimpleCNIDMapper::deleteCNID(CNID cnid)
             inodeIndex_.erase(iit);
     }
 
+    forgetRecordName(it->second);
+
     if(auto pit = children_.find(parID); pit != children_.end())
         pit->second.erase(cnid);
 
@@ -299,6 +322,9 @@ void SimpleCNIDMapper::deleteCNID(CNID cnid)
     }
 
     mappings_.erase(it);
+
+    if(auto nit = names_.find(parID); nit != names_.end() && nit->second.empty())
+        names_.erase(nit);
 }
 
 void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop)
@@ -315,13 +341,20 @@ void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMa
 
     fs::path newPath = fsop();
 
+    // The name index is keyed by parent, so a move must re-home the entry.
+    forgetRecordName(it->second);
+
+    if(!newMacName.empty())
+        it->second.macname = newMacName;
+
     if(auto pit = children_.find(oldParent); pit != children_.end())
         pit->second.erase(cnid);
 
     it->second.path = newPath;
     it->second.parID = newParent;
-    if(!newMacName.empty())
-        it->second.macname = newMacName;
 
     children_[newParent].insert(cnid);
+
+    if(it->second.macname)
+        names_[newParent][foldName(*it->second.macname)] = cnid;
 }

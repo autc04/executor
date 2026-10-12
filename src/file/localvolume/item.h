@@ -8,6 +8,7 @@
 #include <memory>
 #include <map>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <optional>
 
@@ -81,10 +82,13 @@ protected:
     CNID parID_;
     CNID cnid_;
     fs::path path_;
-    mac_string name_;
+    mac_string name_;             // decided at NameResolve; empty until then
+    bool nameDecided_ = false;
+
+    friend class ItemCache;
 
 public:
-    Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, mac_string_view name = {});
+    Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, std::optional<mac_string> name = {});
     virtual ~Item();
 
     const fs::path& path() const { return path_; }
@@ -92,7 +96,10 @@ public:
     CNID parID() const { return parID_; }
     CNID cnid() const { return cnid_; }
 
-    const mac_string& name() const { return name_; }
+    // The Mac name. Deciding it is NameResolve, so reading it may list the
+    // parent directory's `macNamePrefix` group on first use; every name read goes
+    // through here, so a caller never observes an undecided name.
+    const mac_string& name();
 
     virtual void deleteItem();
     virtual void moveItem(const fs::path& newPath, mac_string_view newName);
@@ -130,13 +137,11 @@ struct Descriptor
     bool isDir = false;
     mac_string prefix;   // case-folded group/sort key (Mac name without disambiguator)
     CNID cnid = 0;
-    mac_string macName;
 };
 
 class DirectoryItem : public Item
 {
     std::vector<Descriptor> descriptors_;            // sorted by (prefix, posixName)
-    std::map<mac_string, size_t> nameIndex_;         // folded macName -> descriptors_ index
     bool    listed_ = false;
     FileStamp stamp_;
     std::optional<int> count_;   // Counted: a tally, without the descriptors
@@ -150,7 +155,6 @@ class DirectoryItem : public Item
     // Select a descriptor from the (valid) listing. Only ItemCache::child() may
     // call these, so the "listed and valid" precondition cannot be violated
     // elsewhere.
-    const Descriptor* childByName(mac_string_view name) const;
     const Descriptor* childByIndex(int index, bool includeDirectories) const;
 public:
     using Item::Item;
@@ -158,6 +162,11 @@ public:
     long dirID() const { return cnid(); }
 
     int countItems() const { return (int)descriptors_.size(); }
+
+    const std::vector<Descriptor>& descriptors() const { return descriptors_; }
+
+    // The [begin, end) range of descriptors whose (folded) prefix equals `prefix`.
+    std::pair<size_t, size_t> groupRange(mac_string_view prefix) const;
 
     virtual void deleteItem();
 };

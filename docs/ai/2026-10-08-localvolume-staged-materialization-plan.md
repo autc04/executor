@@ -235,7 +235,10 @@ The prefix is computed at enumeration and stored on each descriptor. It is
 index is not. A `Listed` directory keeps its descriptors sorted by the folded
 prefix then `posixName`, so a group is exactly the contiguous range of descriptors
 with equal folded prefix, found by binary search — no separate group index.
-Entries in a group are the ones that can collide.
+Entries in a group are the ones that can collide. Because a name's group is a
+function of the name itself, two names from different groups can never be equal,
+so a group's collision set is exactly its own members (already-decided ones plus
+those decided in the current batch) — naming stays linear in the directory size.
 
 ### The final name
 
@@ -820,7 +823,7 @@ LRU (see *Caching*). Sub-steps:
    the read-error policy, external rename = delete + create
    (`ExternalRenameIsDeleteCreate`).
 
-### Phase 6 — Tests for the target behaviour (written first)
+### Phase 6 — Tests for the target behaviour (written first) — DONE
 
 Pin what the FileManager must do, independent of the implementation, and mark the
 ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a same-directory
@@ -829,7 +832,7 @@ host-side rename keeps the CNID (Phase 11); listing order is `macNamePrefix`-maj
 hard-linked name is distinct from its sibling (Phase 11). Later phases add their
 own tests too.
 
-### Phase 7 — Link-free object model
+### Phase 7 — Link-free object model — DONE
 
 Make a `DirectoryItem` own descriptors, not `Item`s. **The mapper keeps its
 current shape** (eager, name-keyed naming); only `DirectoryItem` / `ItemCache`
@@ -846,28 +849,33 @@ change.
 **Deliverable:** no child `Item` is retained by its parent. **Risk:** touches
 every listing/metadata call site and the `dynamic_cast` sites.
 
-### Phase 8 — Identity keyed by CNID
+### Phase 8 — Identity keyed by CNID — DONE
 
 - The mapper record gains an explicit `(dev, ino)` and `mtime`; children are the
   CNID set `parID -> {cnid}` (the name key goes away).
 - Identity is looked up by inode — `(dev, ino) -> cnid` — and `tryResolve(path)`
   stats each component instead of `lookupChild` / `getOrCreateChild` (which go
-  away).
+  away). The identity-or-create step is one mapper call (`resolveChild`), so it can
+  become a single transaction later.
 - **Validation, not recovery:** on access, if the record's path no longer exists or
   its `(dev, ino)` no longer matches, flush the `Item` and the mapper entry. A moved
   item therefore gets a **new** CNID; rename preservation comes later (Phase 11).
+- **An in-place host replacement keeps the CNID explicitly.** An encoding upgrade
+  (`upgradeItem`) swaps the host file under a live CNID, which identity validation
+  would read as a fresh file; the upgrade re-keys the binding to the new inode
+  (`setIdentity`) before re-realizing.
 - **Hard links are out of scope** (Phase 11).
 
 **Risk:** inode fidelity (`d_ino == 0`) and Windows (no inode from the cheap stat).
 
-### Phase 9 — CNIDResolve / NameResolve split (batch-only)
+### Phase 9 — CNIDResolve / NameResolve split (batch-only) — DONE
 
 - `macName` becomes optional on the `Item` and the record; add the
   `(parID, macName case-folded) -> cnid` index.
 - `mapper.nameGroup` decides a whole `macNamePrefix` group at once (Decision 4);
   the `resolveName` funnel owns both the lookup and the state change, and every
-  name read goes through it.
-- Remove eager naming from List / diff.
+  name read goes through it (`Item::name()`).
+- Remove eager naming from List / diff; the `.bin` probe lives only in NameResolve.
 
 **Risk:** the undecided-name obligation spans every name reader.
 

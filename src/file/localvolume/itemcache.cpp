@@ -10,6 +10,77 @@
 
 using namespace Executor;
 
+namespace
+{
+// A generated disambiguator ("#123") is at most this many digits; a group's
+// truncated prefix leaves room for one.
+constexpr size_t maxDisambiguatorDigits = 3;
+
+bool endsWithBin(const mac_string& s)
+{
+    if(s.size() < 4)
+        return false;
+    return s[s.size()-4] == (unsigned char)'.'
+        && std::tolower(s[s.size()-3]) == 'b'
+        && std::tolower(s[s.size()-2]) == 'i'
+        && std::tolower(s[s.size()-1]) == 'n';
+}
+
+bool endsWithDisambiguator(const mac_string& s, size_t& hashPos)
+{
+    size_t hash = s.rfind((unsigned char)'#');
+    if(hash == mac_string::npos || hash + 1 >= s.size())
+        return false;
+
+    for(size_t i = hash + 1; i < s.size(); i++)
+        if(s[i] < (unsigned char)'0' || s[i] > (unsigned char)'9')
+            return false;
+
+    hashPos = hash;
+    return true;
+}
+
+// The grouping key for a Mac name: its first 31 bytes, with a trailing ".bin"
+// and/or "#<digits>" disambiguator stripped, truncated to leave room for a
+// generated disambiguator, and case-folded. Two entries can collide iff their
+// keys are equal, so over-grouping only costs laziness. See *Names* in the plan.
+mac_string macNamePrefix(mac_string_view macName)
+{
+    mac_string s { macName };
+    if(s.size() > 31)
+        s.resize(31);
+
+    for(;;)
+    {
+        if(endsWithBin(s))
+        {
+            s.resize(s.size() - 4);
+            continue;
+        }
+        size_t hash;
+        if(endsWithDisambiguator(s, hash))
+        {
+            s.resize(hash);
+            continue;
+        }
+        break;
+    }
+
+    const size_t maxPrefix = 30 - maxDisambiguatorDigits;
+    if(s.size() > maxPrefix)
+        s.resize(maxPrefix);
+
+    ROMlib_UprString(s.data(), false, s.size());
+    return s;
+}
+
+// The grouping key of a host filename.
+mac_string hostGroupPrefix(const fs::path& posixName)
+{
+    return macNamePrefix(toMacRomanFilename(posixName, 0));
+}
+}
+
 ItemCache::ItemCache(fs::path root,
                 mac_string_view volumeName,
                 std::unique_ptr<CNIDMapper> cnidMapper,
@@ -18,7 +89,7 @@ ItemCache::ItemCache(fs::path root,
     : cnidMapper_(std::move(cnidMapper))
     , itemFactory_(itemFactory)
 {
-    items_[2] = rootDirItem_ = std::make_shared<DirectoryItem>(*this, 1, 2, root, volumeName);
+    items_[2] = rootDirItem_ = std::make_shared<DirectoryItem>(*this, 1, 2, root, mac_string(volumeName));
     retainDirectory(rootDirItem_);
 }
 
@@ -69,29 +140,6 @@ void ItemCache::evictCachedDirectories(const DirectoryItemPtr& protect)
     }
 }
 
-// The grouping/sort key for a Mac name: case-folded, without any trailing
-// disambiguator.  (Phase 7 derives it from the decided name; Phase 9 will derive
-// it lexically from the host name, before naming.)
-static mac_string namePrefix(mac_string_view name)
-{
-    mac_string s { name };
-    size_t hash = s.rfind((unsigned char)'#');
-    if(hash != mac_string::npos && hash + 1 < s.size())
-    {
-        bool digits = true;
-        for(size_t i = hash + 1; i < s.size(); i++)
-            if(s[i] < (unsigned char)'0' || s[i] > (unsigned char)'9')
-            {
-                digits = false;
-                break;
-            }
-        if(digits)
-            s.resize(hash);
-    }
-    ROMlib_UprString(s.data(), false, s.size());
-    return s;
-}
-
 bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 {
     FileStamp stamp = statFile(dir->path());
@@ -115,8 +163,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
                 if(!st.exists || (!st.isDirectory && !st.isRegular))
                     continue;   // not something the File Manager can address
 
-                entries.push_back({ e.path(), nameSourceFor(e.path()), st.identity,
-                                    st.stamp.mtime, st.isDirectory });
+                entries.push_back({ e.path(), st.identity, st.stamp.mtime, st.isDirectory });
             }
         }
         catch(const boost::filesystem::filesystem_error& exc)
@@ -142,13 +189,11 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 
             for(auto& m : mappings)
             {
-                assert(m.macname.size());
                 Descriptor d;
                 d.posixName = m.path.filename();
                 d.isDir = m.isDir;
                 d.cnid = m.cnid;
-                d.macName = m.macname;
-                d.prefix = namePrefix(m.macname);
+                d.prefix = hostGroupPrefix(d.posixName);
                 descriptors.push_back(std::move(d));
             }
 
@@ -339,7 +384,7 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         if(!st.exists || (!st.isDirectory && !st.isRegular))
             return {};
 
-        CNID cnid = cnidMapper_->resolveChild(dir->cnid(), childPath, nameSourceFor(childPath),
+        CNID cnid = cnidMapper_->resolveChild(dir->cnid(), childPath,
             st.identity, st.isDirectory, st.stamp.mtime);
         item = realizeValidated(cnid);
         if(!item)
@@ -353,15 +398,27 @@ ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d
     if(ItemPtr item = itemSnapshot(d.cnid, d.isDir))
         return item;
 
-    return makeItem(dir->cnid(), d.cnid, dir->path() / d.posixName, d.macName, d.isDir);
+    return makeItem(dir->cnid(), d.cnid, dir->path() / d.posixName, std::nullopt, d.isDir);
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
 {
+    // Fast path: the name is already decided for this directory.
+    if(auto cnid = cnidMapper_->cnidForName(dir->cnid(), name))
+        if(ItemPtr item = realizeValidated(*cnid))
+            return item;
+
     if(!ensureListed(dir))
         throw OSErrorException(ioErr);
-    const Descriptor* d = dir->childByName(name);
-    return d ? realizeChild(dir, *d) : ItemPtr {};
+
+    // Decide the group the name falls in, then look it up.
+    resolveNameGroup(dir, macNamePrefix(name));
+
+    if(auto cnid = cnidMapper_->cnidForName(dir->cnid(), name))
+        if(ItemPtr item = realizeValidated(*cnid))
+            return item;
+
+    return {};
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDirectories)
@@ -371,6 +428,7 @@ ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDir
     const Descriptor* d = dir->childByIndex(index, includeDirectories);
     if(!d)
         throw OSErrorException(fnfErr);
+    // The name is decided lazily, when the caller reads item->name().
     return realizeChild(dir, *d);
 }
 
@@ -385,20 +443,74 @@ fs::path ItemCache::nameSourceFor(const fs::path& path)
         return filename;
 
     // Only ".bin" files can be MacBinary (and so rename); probe just those, so
-    // enumeration does not run the format gauntlet for every file.
+    // naming does not run the format gauntlet for every file.
+    localVolumeStats().nameProbes++;
     FileItem probe(*this, 0, 0, path);
     FileRepPtr rep = itemFactory_->createRepForFile(*this, probe, fs::directory_entry(path));
     return rep ? rep->nameSource(filename) : filename;
 }
 
-ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path, mac_string_view name, bool isDir)
+void ItemCache::resolveNameGroup(const DirectoryItemPtr& dir, mac_string_view prefix)
+{
+    if(!ensureListed(dir))
+        return;   // unreadable: leave the names undecided
+
+    auto [begin, end] = dir->groupRange(prefix);
+    if(begin == end)
+        return;
+
+    const auto& descriptors = dir->descriptors();
+
+    std::vector<CNIDMapper::NameRequest> group;
+    group.reserve(end - begin);
+    for(size_t i = begin; i < end; i++)
+    {
+        const Descriptor& d = descriptors[i];
+        // The whole group is offered, so already-decided names seed the collision
+        // set; only the undecided entries need a (probed) name source.
+        if(auto rec = cnidMapper_->lookupCNID(d.cnid); rec && rec->macname)
+            group.push_back({ d.cnid, {} });
+        else
+            group.push_back({ d.cnid, nameSourceFor(dir->path() / d.posixName) });
+    }
+
+    cnidMapper_->nameGroup(dir->cnid(), group);
+}
+
+void ItemCache::ensureNamed(Item& item)
+{
+    if(item.nameDecided_)
+        return;
+
+    if(auto rec = cnidMapper_->lookupCNID(item.cnid()); rec && rec->macname)
+    {
+        item.name_ = *rec->macname;
+        item.nameDecided_ = true;
+        return;
+    }
+
+    auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(item.parID_));
+    if(!dir)
+        return;
+
+    resolveNameGroup(dir, hostGroupPrefix(item.path().filename()));
+
+    if(auto rec = cnidMapper_->lookupCNID(item.cnid()); rec && rec->macname)
+    {
+        item.name_ = *rec->macname;
+        item.nameDecided_ = true;
+    }
+}
+
+ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
+    std::optional<mac_string> name, bool isDir)
 {
     ItemPtr item;
 
     if(isDir)
-        item = std::make_shared<DirectoryItem>(*this, parID, cnid, path, name);
+        item = std::make_shared<DirectoryItem>(*this, parID, cnid, path, std::move(name));
     else
-        item = std::make_shared<FileItem>(*this, parID, cnid, path, name);
+        item = std::make_shared<FileItem>(*this, parID, cnid, path, std::move(name));
 
     localVolumeStats().itemsConstructed++;
 

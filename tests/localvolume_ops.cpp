@@ -490,18 +490,30 @@ TEST_F(LocalVolumeFixture, CaseInsensitiveAmbiguity)
 // Path resolution (F1)
 // --------------------------------------------------------------------------
 
-// Resolving a host path must not enumerate any directory: it walks components
-// through the mapper's (parID, posixFilename) index.
-TEST_F(LocalVolumeFixture, ResolvePathDoesNotEnumerate)
+// Path resolution (F1): resolving the *path* walks every component by stat +
+// (dev, ino) and never enumerates an ancestor. Producing the FSSpec *name* is
+// NameResolve, which decides the target's macNamePrefix group and so lists the
+// target's immediate parent once. The bound asserted is therefore ≤ 1 scan.
+TEST_F(LocalVolumeFixture, ResolvePathListsAtMostTheTargetParent)
 {
     hostDir("a");
     for(int i = 0; i < 50; i++)
         hostFile("a/f" + std::to_string(i), "x");
+    hostDir("sibling");
+    for(int i = 0; i < 50; i++)
+        hostFile("sibling/g" + std::to_string(i), "x");
 
     resetLocalVolumeStats();
     auto spec = nativePathToFSSpec(host("a/f7"));
     ASSERT_TRUE(spec.has_value());
-    EXPECT_EQ(0u, localVolumeStats().directoryIterations.load());
+    EXPECT_EQ(1u, localVolumeStats().directoryIterations.load());
+
+    // The name is correct, and the CNID of the parent matches the FileManager's.
+    EXPECT_EQ("f7", pstring(spec->name));
+    auto a = fmGet(rootDirID_, "a");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->cnid, spec->parID);
+    EXPECT_TRUE(fmGet(spec->parID, "f7").has_value());
 }
 
 // --------------------------------------------------------------------------
@@ -702,6 +714,23 @@ TEST_F(LocalVolumeFixture, ReplacedFileReclaimsItsName)
     EXPECT_EQ("doc", after->name);
     EXPECT_EQ((std::set<std::string> { "doc" }), namesOf(fmList(rootDirID_)));
     EXPECT_EQ(1, *fmChildCount(rootDirID_));
+}
+
+// Phase 9: naming is scoped to one macNamePrefix group. Deciding one entry's
+// name must not probe (or name) another group's entries.
+TEST_F(LocalVolumeFixture, NameResolveIsGroupScoped)
+{
+    hostBytes("alpha.bin", makeMacBinary("alpha", { 1, 2, 3 }, { 4, 5 }));
+    hostBytes("beta.bin", makeMacBinary("beta", { 1, 2, 3 }, { 4, 5 }));
+
+    resetLocalVolumeStats();
+    auto alpha = fmGet(rootDirID_, "alpha");
+    ASSERT_TRUE(alpha.has_value());
+    EXPECT_EQ(1u, localVolumeStats().nameProbes.load()); // only alpha.bin
+
+    auto beta = fmGet(rootDirID_, "beta");
+    ASSERT_TRUE(beta.has_value());
+    EXPECT_EQ(2u, localVolumeStats().nameProbes.load()); // now beta.bin too
 }
 
 // Phase 8: an in-place encoding upgrade (Plain -> AppleDouble) rewrites the host

@@ -28,6 +28,8 @@ struct LocalVolumeStats
     std::atomic<uint64_t> factoryProbes { 0 };
     // Count-stage directory scans (readdir tally; no items constructed).
     std::atomic<uint64_t> countScans { 0 };
+    // ".bin" files probed to derive a Mac name (NameResolve only).
+    std::atomic<uint64_t> nameProbes { 0 };
 };
 
 inline LocalVolumeStats& localVolumeStats()
@@ -52,6 +54,7 @@ inline void resetLocalVolumeStats()
     s.itemsConstructed = 0;
     s.factoryProbes = 0;
     s.countScans = 0;
+    s.nameProbes = 0;
 }
 
 } // namespace Executor

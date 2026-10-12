@@ -67,11 +67,16 @@ class ItemCache
 
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
-    ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path, mac_string_view name, bool isDir);
+    ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path,
+        std::optional<mac_string> name, bool isDir);
 
     // The filename a child's Mac name is derived from (differs from the host
-    // filename only for MacBinary, whose ".bin" is dropped).
+    // filename only for MacBinary, whose ".bin" is dropped). Probes the file.
     fs::path nameSourceFor(const fs::path& path);
+
+    // Decide the Mac names of the `macNamePrefix` group whose folded prefix is
+    // `prefix` (the NameResolve batch). Probes the group's ".bin" entries only.
+    void resolveNameGroup(const DirectoryItemPtr& dir, mac_string_view prefix);
 
 public:
     // Build and install the FileRep for a FileItem (the format gauntlet).
@@ -100,6 +105,10 @@ public:
     // Re-key a CNID to the host file currently at the record's path. Preserves
     // the CNID across an in-place host-file replacement (an encoding upgrade).
     void rebindItem(CNID cnid);
+
+    // Ensure `item`'s Mac name is decided, deciding its directory group if not.
+    // Called from Item::name().
+    void ensureNamed(Item& item);
 
     // Number of visible children, without enumerating/constructing them.
     int countChildren(const DirectoryItemPtr& item);

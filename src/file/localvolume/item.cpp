@@ -3,19 +3,31 @@
 #include "openfile.h"
 
 #include <OSUtil.h>
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 
 using namespace Executor;
 
-Item::Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, mac_string_view name)
-    : itemcache_(itemcache), parID_(parID), cnid_(cnid), path_(std::move(p)), name_(name)
+Item::Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, std::optional<mac_string> name)
+    : itemcache_(itemcache), parID_(parID), cnid_(cnid), path_(std::move(p))
 {
+    if(name)
+    {
+        name_ = std::move(*name);
+        nameDecided_ = true;
+    }
 }
 
 Item::~Item()
 {
     itemcache_.noteItemFreed(cnid_);
+}
+
+const mac_string& Item::name()
+{
+    itemcache_.ensureNamed(*this);
+    return name_;
 }
 
 void Item::deleteItem()
@@ -28,7 +40,10 @@ void Item::moveItem(const fs::path& newPath, mac_string_view newName)
     fs::rename(path(), newPath);
     path_ = newPath;
     if(!newName.empty())
+    {
         name_ = newName;
+        nameDecided_ = true;
+    }
 }
 
 const int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904)/4);
@@ -116,7 +131,10 @@ void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
     rep_->move(newPath);
     path_ = newPath;
     if(!newName.empty())
+    {
         name_ = newName;
+        nameDecided_ = true;
+    }
 }
 
 void DirectoryItem::clearCache()
@@ -126,35 +144,26 @@ void DirectoryItem::clearCache()
     count_.reset();
     countStamp_ = {};
     descriptors_.clear();
-    nameIndex_.clear();
 }
 
 void DirectoryItem::storeDescriptors(std::vector<Descriptor> descriptors, FileStamp stamp)
 {
     descriptors_ = std::move(descriptors);
-    nameIndex_.clear();
-    for(size_t i = 0; i < descriptors_.size(); i++)
-    {
-        mac_string folded = descriptors_[i].macName;
-        ROMlib_UprString(folded.data(), false, folded.size());
-        assert(folded.size());
-        [[maybe_unused]] auto inserted = nameIndex_.emplace(std::move(folded), i).second;
-        assert(inserted);
-    }
-
     listed_ = true;
     stamp_ = stamp;
 }
 
-const Descriptor* DirectoryItem::childByName(mac_string_view name) const
+std::pair<size_t, size_t> DirectoryItem::groupRange(mac_string_view prefix) const
 {
     assert(listed_);
-    mac_string nameUpr { name };
-    ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-    auto it = nameIndex_.find(nameUpr);
-    if(it != nameIndex_.end())
-        return &descriptors_[it->second];
-    return nullptr;
+    mac_string key { prefix };
+
+    auto first = std::lower_bound(descriptors_.begin(), descriptors_.end(), key,
+        [](const Descriptor& d, const mac_string& k) { return d.prefix < k; });
+    auto last = std::upper_bound(first, descriptors_.end(), key,
+        [](const mac_string& k, const Descriptor& d) { return k < d.prefix; });
+
+    return { (size_t)(first - descriptors_.begin()), (size_t)(last - descriptors_.begin()) };
 }
 
 const Descriptor* DirectoryItem::childByIndex(int index, bool includeDirectories) const
