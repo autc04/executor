@@ -7,6 +7,8 @@
 
 #include <memory>
 #include <map>
+#include <unordered_map>
+#include <vector>
 #include <optional>
 
 namespace Executor
@@ -119,31 +121,43 @@ public:
         { throw std::logic_error("createFile unimplemented"); }
 };
 
+// A listed directory entry: the host name, its kind, the grouping key it sorts
+// and resolves by, and its identity. It is not an Item — children are realized
+// from descriptors on demand and dropped again when nothing holds them.
+struct Descriptor
+{
+    fs::path posixName;
+    bool isDir = false;
+    mac_string prefix;   // case-folded group/sort key (Mac name without disambiguator)
+    CNID cnid = 0;
+    mac_string macName;
+};
+
 class DirectoryItem : public Item
 {
-    std::vector<ItemPtr>    contents_;
-    std::vector<ItemPtr>    files_;
-    std::map<mac_string, ItemPtr> contents_by_name_;
-    bool    cache_valid_ = false;
+    std::vector<Descriptor> descriptors_;            // sorted by (prefix, posixName)
+    std::map<mac_string, size_t> nameIndex_;         // folded macName -> descriptors_ index
+    bool    listed_ = false;
     FileStamp stamp_;
-    std::optional<int> count_;   // Counted: a tally, without the children
+    std::optional<int> count_;   // Counted: a tally, without the descriptors
     FileStamp countStamp_;       // the stamp that tally is valid for
 
     friend class ItemCache;
     void clearCache();
-    void populateCache(std::vector<ItemPtr> items, FileStamp stamp);
-    bool isCached() const { return cache_valid_; }
+    void storeDescriptors(std::vector<Descriptor> descriptors, FileStamp stamp);
+    bool isListed() const { return listed_; }
 
-    // Select a child from the contents. Only ItemCache::child() may call these,
-    // so the "enumerated and valid" precondition cannot be violated elsewhere.
-    ItemPtr tryResolve(mac_string_view name);
-    ItemPtr resolve(int index, bool includeDirectories);
+    // Select a descriptor from the (valid) listing. Only ItemCache::child() may
+    // call these, so the "listed and valid" precondition cannot be violated
+    // elsewhere.
+    const Descriptor* childByName(mac_string_view name) const;
+    const Descriptor* childByIndex(int index, bool includeDirectories) const;
 public:
     using Item::Item;
 
     long dirID() const { return cnid(); }
 
-    int countItems() { return contents_.size(); }
+    int countItems() const { return (int)descriptors_.size(); }
 
     virtual void deleteItem();
 };

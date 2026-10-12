@@ -16,6 +16,7 @@ class FileItem;
 class ItemFactory;
 class CNIDMapper;
 class DirectoryItem;
+struct Descriptor;
 
 using ItemPtr = std::shared_ptr<Item>;
 using DirectoryItemPtr = std::shared_ptr<DirectoryItem>;
@@ -34,19 +35,27 @@ class ItemCache
     struct CachedDirectory
     {
         DirectoryItemPtr directory;
+        size_t charge = 0;
     };
     std::list<CachedDirectory> cachedDirectories_;
-    size_t cachedItemCount_ = 0; // total items retained across enumerated dirs
+    size_t cachedItemCount_ = 0; // total charge retained
 
+    // A listed directory is charged by its descriptor count, a merely counted
+    // one by 1. DirectoryItems are retained (LRU) so a listing or tally survives
+    // between accesses; files are realized transiently.
+    size_t chargeOf(const DirectoryItemPtr& dir) const;
+    void retainDirectory(const DirectoryItemPtr& dir);
     void evictCachedDirectories(const DirectoryItemPtr& protect);
-    void touchCachedDirectory(const DirectoryItemPtr& dir);
     void clearCachedDirectory(const DirectoryItemPtr& dir);
     ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
 
-    // Ensure `dir` is enumerated and valid; re-enumerates if the host changed.
+    // Realize a descriptor's Item (from the registry, else freshly built).
+    ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
+
+    // Ensure `dir` is listed and valid; re-lists if the host changed.
     // Returns false if a fresh scan failed (the directory could not be read).
     // Private: obtain children through child(), which owns this precondition.
-    bool ensureEnumerated(const DirectoryItemPtr& item);
+    bool ensureListed(const DirectoryItemPtr& item);
 
     // Construct an identity Item (DirectoryItem or bare FileItem) from a host
     // entry, without running the format gauntlet. Returns null for entries that

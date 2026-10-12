@@ -121,56 +121,55 @@ void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
 
 void DirectoryItem::clearCache()
 {
-    cache_valid_ = false;
+    listed_ = false;
     stamp_ = {};
     count_.reset();
     countStamp_ = {};
-    contents_.clear();
-    contents_by_name_.clear();
-    files_.clear();
+    descriptors_.clear();
+    nameIndex_.clear();
 }
 
-void DirectoryItem::populateCache(std::vector<ItemPtr> items, FileStamp stamp)
+void DirectoryItem::storeDescriptors(std::vector<Descriptor> descriptors, FileStamp stamp)
 {
-    contents_ = std::move(items);
-    contents_by_name_.clear();
-    files_.clear();
-
-    for(const ItemPtr& item : contents_)
+    descriptors_ = std::move(descriptors);
+    nameIndex_.clear();
+    for(size_t i = 0; i < descriptors_.size(); i++)
     {
-        mac_string nameUpr = item->name();
-        ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-
-        assert(nameUpr.size());
-        [[maybe_unused]] auto inserted = contents_by_name_.emplace(nameUpr, item).second;
+        mac_string folded = descriptors_[i].macName;
+        ROMlib_UprString(folded.data(), false, folded.size());
+        assert(folded.size());
+        [[maybe_unused]] auto inserted = nameIndex_.emplace(std::move(folded), i).second;
         assert(inserted);
-
-        if(!dynamic_cast<DirectoryItem*>(item.get()))
-            files_.push_back(item);
     }
 
-    cache_valid_ = true;
+    listed_ = true;
     stamp_ = stamp;
 }
 
-ItemPtr DirectoryItem::tryResolve(mac_string_view name)
+const Descriptor* DirectoryItem::childByName(mac_string_view name) const
 {
-    assert(cache_valid_);
+    assert(listed_);
     mac_string nameUpr { name };
     ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-    auto it = contents_by_name_.find(nameUpr);
-    if(it != contents_by_name_.end())
-        return it->second;
-    return {};
+    auto it = nameIndex_.find(nameUpr);
+    if(it != nameIndex_.end())
+        return &descriptors_[it->second];
+    return nullptr;
 }
 
-ItemPtr DirectoryItem::resolve(int index, bool includeDirectories)
+const Descriptor* DirectoryItem::childByIndex(int index, bool includeDirectories) const
 {
-    assert(cache_valid_);
-    const auto& array = includeDirectories ? contents_ : files_;
-    if(index >= 1 && index <= array.size())
-        return array[index-1];
-    throw OSErrorException(fnfErr);
+    assert(listed_);
+    if(index < 1)
+        return nullptr;
+    for(const Descriptor& d : descriptors_)
+    {
+        if(!includeDirectories && d.isDir)
+            continue;
+        if(--index == 0)
+            return &d;
+    }
+    return nullptr;
 }
 
 void DirectoryItem::deleteItem()

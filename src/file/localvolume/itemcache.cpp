@@ -19,52 +19,84 @@ ItemCache::ItemCache(fs::path root,
     , itemFactory_(itemFactory)
 {
     items_[2] = rootDirItem_ = std::make_shared<DirectoryItem>(*this, 1, 2, root, volumeName);
+    retainDirectory(rootDirItem_);
 }
 
 ItemCache::~ItemCache()
 {
 }
 
+size_t ItemCache::chargeOf(const DirectoryItemPtr& dir) const
+{
+    return dir->isListed() ? std::max<size_t>(1, (size_t)dir->countItems()) : 1;
+}
+
 void ItemCache::clearCachedDirectory(const DirectoryItemPtr& dir)
 {
-    if(dir->isCached())
-        cachedItemCount_ -= (size_t)dir->countItems();
     dir->clearCache();
+}
+
+void ItemCache::retainDirectory(const DirectoryItemPtr& dir)
+{
+    cachedDirectories_.remove_if([&](const CachedDirectory& p) {
+        if(p.directory == dir)
+        {
+            cachedItemCount_ -= p.charge;
+            return true;
+        }
+        return false;
+    });
+    size_t charge = chargeOf(dir);
+    cachedDirectories_.push_back({ dir, charge });
+    cachedItemCount_ += charge;
 }
 
 void ItemCache::evictCachedDirectories(const DirectoryItemPtr& protect)
 {
-    // Memory-only policy: bound the total number of enumerated items. The root
-    // and the directory currently in use are never evicted; if they alone exceed
-    // the budget, we simply keep them.
+    // Memory-only policy: bound the retained charge. The directory in use is
+    // never evicted; if it alone exceeds the budget, we simply keep it.
     const size_t maxCachedItems = localVolumeItemBudget();
     while(cachedItemCount_ > maxCachedItems)
     {
         auto it = std::find_if(cachedDirectories_.begin(), cachedDirectories_.end(),
-            [&](const auto& p) {
-                return p.directory != rootDirItem_ && p.directory != protect;
-            });
+            [&](const auto& p) { return p.directory != protect; });
         if(it == cachedDirectories_.end())
             break;
 
         clearCachedDirectory(it->directory);
+        cachedItemCount_ -= it->charge;
         cachedDirectories_.erase(it);
     }
 }
 
-void ItemCache::touchCachedDirectory(const DirectoryItemPtr& dir)
+// The grouping/sort key for a Mac name: case-folded, without any trailing
+// disambiguator.  (Phase 7 derives it from the decided name; Phase 9 will derive
+// it lexically from the host name, before naming.)
+static mac_string namePrefix(mac_string_view name)
 {
-    cachedDirectories_.remove_if([&](const auto& p) { return p.directory == dir; });
-    cachedDirectories_.push_back({dir});
+    mac_string s { name };
+    size_t hash = s.rfind((unsigned char)'#');
+    if(hash != mac_string::npos && hash + 1 < s.size())
+    {
+        bool digits = true;
+        for(size_t i = hash + 1; i < s.size(); i++)
+            if(s[i] < (unsigned char)'0' || s[i] > (unsigned char)'9')
+            {
+                digits = false;
+                break;
+            }
+        if(digits)
+            s.resize(hash);
+    }
+    ROMlib_UprString(s.data(), false, s.size());
+    return s;
 }
 
-bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
+bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 {
     FileStamp stamp = statFile(dir->path());
-    if(dir->isCached() && dir->stamp_ == stamp)
+    if(dir->isListed() && dir->stamp_ == stamp)
         return true;   // L0: the stamp is unchanged, so everything is still valid
-
-    touchCachedDirectory(dir);
 
     // L1: re-scan. Re-stat after the readdir and only accept a *consistent*
     // (before == after) stamp, so a change racing our own scan is caught.
@@ -82,9 +114,9 @@ bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
         {
             std::cerr << exc.what() << std::endl;
             ok = false;
-            // Fill the cache with what we saw (nothing) and report the failure
+            // Fill the listing with what we saw (nothing) and report the failure
             // through the return value; child() turns it into ioErr, since the
-            // directory being enumerated there is the one being queried.
+            // directory being listed there is the one being queried.
         }
 
         FileStamp after = statFile(dir->path());
@@ -96,47 +128,40 @@ bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
             std::vector<CNIDMapper::Mapping> mappings =
                 cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
 
-            std::vector<ItemPtr> items;
-            items.reserve(mappings.size());
+            std::vector<Descriptor> descriptors;
+            descriptors.reserve(mappings.size());
 
             for(auto& m : mappings)
             {
-                ItemPtr item;
+                bool isDir = fs::is_directory(m.entry.path());
 
+                // A kind change (file <-> directory at the same name) keeps the
+                // mapping but must not keep a realized Item of the old type.
                 auto itemIt = items_.find(m.cnid);
                 if(itemIt != items_.end())
-                {
-                    item = itemIt->second.lock();
-
-                    // A kind change (file <-> directory at the same name) keeps
-                    // the mapping but must rebuild the Item as the new type.
-                    if(item)
-                    {
-                        bool wantDir = fs::is_directory(m.entry.path());
-                        bool isDir = std::dynamic_pointer_cast<DirectoryItem>(item) != nullptr;
-                        if(wantDir != isDir)
-                        {
+                    if(ItemPtr item = itemIt->second.lock())
+                        if((std::dynamic_pointer_cast<DirectoryItem>(item) != nullptr) != isDir)
                             items_.erase(itemIt);
-                            item.reset();
-                        }
-                    }
-                }
 
                 assert(m.macname.size());
-                if(!item)
-                    item = makeItem(m.parID, m.cnid, m.entry, m.macname);
-
-                if(!item)
-                    continue;
-
-                items.push_back(item);
-                items_.emplace(m.cnid, item);
+                Descriptor d;
+                d.posixName = m.entry.path().filename();
+                d.isDir = isDir;
+                d.cnid = m.cnid;
+                d.macName = m.macname;
+                d.prefix = namePrefix(m.macname);
+                descriptors.push_back(std::move(d));
             }
 
-            if(dir->isCached())
-                cachedItemCount_ -= (size_t)dir->countItems();
-            dir->populateCache(std::move(items), after);
-            cachedItemCount_ += (size_t)dir->countItems();
+            std::sort(descriptors.begin(), descriptors.end(),
+                [](const Descriptor& a, const Descriptor& b) {
+                    if(a.prefix != b.prefix)
+                        return a.prefix < b.prefix;
+                    return a.posixName.native() < b.posixName.native();
+                });
+
+            dir->storeDescriptors(std::move(descriptors), after);
+            retainDirectory(dir);
             evictCachedDirectories(dir);
             return ok;
         }
@@ -149,15 +174,19 @@ bool ItemCache::ensureEnumerated(const DirectoryItemPtr& dir)
 
 int ItemCache::countChildren(const DirectoryItemPtr& dir)
 {
-    // Enumerate implies Count.
-    if(dir->isCached())
+    // List implies Count.
+    if(dir->isListed())
         return dir->countItems();
 
     for(int attempt = 0; attempt < 3; attempt++)
     {
         FileStamp before = statFile(dir->path());
         if(dir->count_ && dir->countStamp_ == before)
+        {
+            retainDirectory(dir);
+            evictCachedDirectories(dir);
             return *dir->count_;
+        }
 
         int count = 0;
         localVolumeStats().countScans++;
@@ -169,7 +198,7 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
         }
         catch(const boost::filesystem::filesystem_error&)
         {
-            // Same policy as ensureEnumerated: report what we saw rather than
+            // Same policy as ensureListed: report what we saw rather than
             // fail the caller.
         }
 
@@ -178,6 +207,8 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
         {
             dir->count_ = count;
             dir->countStamp_ = after;
+            retainDirectory(dir);
+            evictCachedDirectories(dir);
             return count;
         }
     }
@@ -186,11 +217,15 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
 {
-    if(item->isCached())
-    {
-        clearCachedDirectory(item);
-        cachedDirectories_.remove_if([&](const auto& p) { return p.directory == item; });
-    }
+    clearCachedDirectory(item);
+    cachedDirectories_.remove_if([&](const CachedDirectory& p) {
+        if(p.directory == item)
+        {
+            cachedItemCount_ -= p.charge;
+            return true;
+        }
+        return false;
+    });
 }
 
 void ItemCache::flushDirectoryCache(CNID dirID)
@@ -290,18 +325,38 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
     return item;
 }
 
+ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d)
+{
+    {
+        auto it = items_.find(d.cnid);
+        if(it != items_.end())
+            if(ItemPtr item = it->second.lock())
+                return item;
+    }
+
+    ItemPtr item = makeItem(dir->cnid(), d.cnid,
+        fs::directory_entry(dir->path() / d.posixName), d.macName);
+    if(item)
+        items_.emplace(d.cnid, item);
+    return item;
+}
+
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
 {
-    if(!ensureEnumerated(dir))
+    if(!ensureListed(dir))
         throw OSErrorException(ioErr);
-    return dir->tryResolve(name);
+    const Descriptor* d = dir->childByName(name);
+    return d ? realizeChild(dir, *d) : ItemPtr {};
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDirectories)
 {
-    if(!ensureEnumerated(dir))
+    if(!ensureListed(dir))
         throw OSErrorException(ioErr);
-    return dir->resolve(index, includeDirectories);
+    const Descriptor* d = dir->childByIndex(index, includeDirectories);
+    if(!d)
+        throw OSErrorException(fnfErr);
+    return realizeChild(dir, *d);
 }
 
 ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)
@@ -346,6 +401,14 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::directory_entry& e,
         return {};
 
     localVolumeStats().itemsConstructed++;
+
+    // Retain realized directories so a listing or tally survives between
+    // accesses; files are realized transiently (retained from Phase 10).
+    if(auto dir = std::dynamic_pointer_cast<DirectoryItem>(item))
+    {
+        retainDirectory(dir);
+        evictCachedDirectories(dir);
+    }
     return item;
 }
 

@@ -734,7 +734,7 @@ TEST_F(LocalVolumeFixture, DISABLED_SameDirectoryHostRenameKeepsCnid)
 // Phase 7: the listing order is `macNamePrefix`-major (case-folded), host path as
 // the tie-break — not raw host-path order. "a" and "B" are in different groups,
 // so the folded order (a, B) differs from the byte order (B, a).
-TEST_F(LocalVolumeFixture, DISABLED_ListingOrderIsMacNamePrefixMajor)
+TEST_F(LocalVolumeFixture, ListingOrderIsMacNamePrefixMajor)
 {
     hostFile("B");
     hostFile("a");
