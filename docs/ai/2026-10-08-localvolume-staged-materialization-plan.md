@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–3 and 5 done; Phase 4 sub-step 1 done (rep naming rule); Phase 4 sub-steps 2–4 and Phases 6–7 planned
+- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–12 reach it.
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -459,7 +459,7 @@ Consequences:
   other traps are inherently un-transactional (HFS is not transactional either).
 
 CNID changes made cross-instance through LMDB, with no host change, are invisible
-to the stamp; that is Phase 6. Identity stability across re-enumeration (CNIDs and
+to the stamp; that is Phase 10. Identity stability across re-enumeration (CNIDs and
 decided names survive for an unchanged entry) is provided by the mapper's inode
 match, pinned by `DisambiguatedNamesStableAcrossDelete`,
 `MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove` —
@@ -556,7 +556,7 @@ Operations:
   `ItemCache::makeItem` makes the kind decision; `ItemFactory::createRepForFile`
   runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
-  the host filename. *(done — Phase 4 sub-step 1: `FileRep::nameSource`.)*
+  the host filename. *(done — Phase 4: `FileRep::nameSource`.)*
 
 ## Access and invalidation flows
 
@@ -570,7 +570,7 @@ identity primitives of *Caching* with `ItemCache`'s realization:
 rec = mapper.record(cnid)
 st  = statPath(rec.path)
 if st missing, or st.(dev, ino) != rec.(dev, ino), or kind changed:
-    mapper.deleteCNID(cnid); drop items_[cnid]; return {}     # Phase 7: inode recovery first
+    mapper.deleteCNID(cnid); drop items_[cnid]; return {}     # Phase 11: inode recovery first
 item = items_[cnid].lock(), else realize from rec + st and register
 return item
 ```
@@ -665,7 +665,12 @@ Moving it onto `DirectoryItem` (via `shared_from_this`) or onto a separate
 
 ## Phased plan
 
-### Phase 0 — Test harness and baseline — DONE
+Phases marked *(based on older design)* were implemented against the earlier
+name-keyed, all-or-nothing object model. The code exists and mostly still works,
+but each must be re-examined and reshaped for the link-free design. New phases
+that take the implementation from here to the target design follow them.
+
+### Phase 0 — Test harness and baseline — DONE (based on older design)
 
 Built the native harness:
 
@@ -693,7 +698,7 @@ listing did not finish within 5 minutes — F4 in practice.
 - **Name disambiguation is stable across deletion**: the mapper reuses mappings
   by path. Covered by `DisambiguatedNamesStableAcrossDelete`.
 
-### Phase 1 — Path resolution without ancestor enumeration (F1) — DONE
+### Phase 1 — Path resolution without ancestor enumeration (F1) — DONE (based on older design)
 
 `SimpleCNIDMapper` stores per-directory children as `(host filename → cnid)`
 (the `(parID, posixName)` lookup + diff index); added `lookupChild` /
@@ -701,14 +706,14 @@ listing did not finish within 5 minutes — F4 in practice.
 instead of `cacheDirectory` on each ancestor. Guard:
 `ResolvePathDoesNotEnumerate` (zero directory scans).
 
-### Phase 2 — Count without enumerating (F3) — DONE
+### Phase 2 — Count without enumerating (F3) — DONE (based on older design)
 
 `ItemCache::countChildren` (readdir + hidden filter; no CNID/item/factory work),
 used for `ioDrNmFls` as the **Count** stage, distinct from Enumerate. Guard:
 `ListingDoesNotMaterializeSubdirectories`. Count's validation-stamp caching is
 Phase 5.
 
-### Phase 3 — Object model + deferred materialization — DONE
+### Phase 3 — Object model + deferred materialization — DONE (based on older design)
 
 Split the format concern out of `Item` into `FileRep` (Variant B) and defer the
 format gauntlet from Enumerate to Materialize. Deliverable: scanning a directory
@@ -729,29 +734,16 @@ no longer probes every file's format. **Risk:** wide but mechanical; touched
   `directoryIterations=1, itemsConstructed=100, factoryProbes=500` (probes happen
   only when an entry is actually accessed, not during the scan).
 
-### Phase 4 — Resolve and group-scoped naming
+### Phase 4 — Rep naming rule — DONE (based on older design; superseded by Phase 9)
 
-Decide an item's `macName` separately from its identity, at the right time and
-at the right granularity. Four sub-steps:
+- **DONE** — `FileRep::nameSource()` lets the rep decide the displayed name
+  (MacBinary drops `.bin`), applied within the then-current eager, whole-directory
+  naming pass. Covered by `MacBinaryStripsBinExtension` and
+  `SidecarNameWinsOverMacBinary`.
 
-1. **DONE — rep naming rule.** `FileRep::nameSource()` lets the rep decide the
-   displayed name (MacBinary drops `.bin`), applied within the existing eager,
-   whole-directory naming pass. Covered by `MacBinaryStripsBinExtension` and
-   `SidecarNameWinsOverMacBinary`.
-2. **Model and responsibility split for lazy Resolve.** Let a name be
-   *undecided*; move naming out of the mapper's enumeration into an explicit
-   whole-directory **Resolve**. Resolve is still triggered at the end of
-   Enumerate, so observable behaviour is unchanged — this step only prepares the
-   structure.
-3. **Whole-directory lazy Resolve.** Trigger Resolve where names are actually
-   needed, not at Enumerate, so that Enumerate alone (count, path-keyed identity)
-   never decides names.
-4. **Group-scoped Resolve.** Narrow a Resolve to the `macNamePrefix` group that
-   can actually conflict, instead of the whole directory.
+The phase's former name-resolution sub-steps are superseded by Phase 9.
 
-**Risk:** correctness of lazy / undecided names.
-
-### Phase 5 — Caching redesign — DONE
+### Phase 5 — Caching redesign — DONE (based on older design)
 
 Replace the LRU + 1 s timeout with validation-based staleness and a memory-only
 LRU (see *Caching*). Sub-steps:
@@ -768,18 +760,75 @@ LRU (see *Caching*). Sub-steps:
    the read-error policy, external rename = delete + create
    (`ExternalRenameIsDeleteCreate`).
 
-### Phase 6 — CNID persistence, transactions, multi-instance sharing
+### Phase 6 — Tests for the target behaviour (written first)
 
-Re-enable `LMDBCNIDMapper`: persist the `cnid -> record` table and the
-`(parID, posixName) -> cnid` index, and make Resolve a **transactional
-read-modify-write** (Decision 9). LMDB's single-writer model then lets two
-Executor instances share CNID and naming decisions for the same volume.
+Pin what the FileManager must do, independent of the implementation, and mark the
+ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a host-side rename
+keeps the CNID (Phase 8); listing order is `macNamePrefix`-major (Phase 7);
+unrelated groups stay undecided after a name lookup (Phase 9); a hard-linked name
+is distinct from its sibling (Phase 11). Later phases add their own tests too.
 
-### Phase 7 — Inode-based rename tracking
+### Phase 7 — Link-free object model
 
-Use the stored `(dev, inode)` to keep an item's CNID when its host file is
-renamed outside the FileManager (currently an external rename looks like
-delete + create). Nothing above depends on this.
+Make a `DirectoryItem` own descriptors, not `Item`s. **The mapper keeps its
+current shape** (eager, name-keyed naming); only `DirectoryItem` / `ItemCache`
+change.
+
+- `DirectoryItem` stores `descriptors_` sorted by `(macNamePrefix, posixName)`
+  (per-descriptor `cnid`), plus `listed_` / `stamp_`; drop `contents_` /
+  `files_` / `contents_by_name_`.
+- `resolve(index)` walks descriptors and realizes entries on demand.
+- `ItemCache` keeps `items_` weak and adds an LRU over *all* `Item`s;
+  `ensureEnumerated` → `ensureListed`; the `child()` funnel stays.
+
+**Deliverable:** no child `Item` is retained by its parent. **Risk:** touches
+every listing/metadata call site and the `dynamic_cast` sites.
+
+### Phase 8 — Identity keyed by CNID
+
+- The mapper record gains an explicit `(dev, ino)` and `mtime`; children are the
+  CNID set `parID -> {cnid}` (the name key goes away).
+- Identity is looked up by inode — `(dev, ino) -> cnid` — and `tryResolve(path)`
+  stats each component instead of `lookupChild` / `getOrCreateChild` (which go
+  away).
+- **Validation, not recovery:** on access, if the record's path no longer exists or
+  its `(dev, ino)` no longer matches, flush the `Item` and the mapper entry. A moved
+  item therefore gets a **new** CNID; rename preservation comes later (Phase 11).
+- **Hard links are out of scope** (Phase 11).
+
+**Risk:** inode fidelity (`d_ino == 0`) and Windows (no inode from the cheap stat).
+
+### Phase 9 — CNIDResolve / NameResolve split (batch-only)
+
+- `macName` becomes optional on the `Item` and the record; add the
+  `(parID, macName case-folded) -> cnid` index.
+- `mapper.nameGroup` decides a whole `macNamePrefix` group at once (Decision 4);
+  the `resolveName` funnel owns both the lookup and the state change, and every
+  name read goes through it.
+- Remove eager naming from List / diff.
+
+**Risk:** the undecided-name obligation spans every name reader.
+
+### Phase 10 — CNID persistence, transactions, multi-instance sharing
+
+Re-enable `LMDBCNIDMapper`: persist the record table and the indexes, and make the
+per-directory diff and `nameGroup` **transactional read-modify-writes**
+(Decision 9). LMDB's single-writer model then lets two Executor instances share
+CNID and naming decisions for the same volume.
+
+### Phase 11 — Same-directory rename recovery, and hard links
+
+Use the stored `(dev, ino)` to keep a CNID when a file is renamed **within one
+directory**: the re-list matches the scan to the stored children by inode, so a
+rename reuses the CNID instead of delete + create, and hard-linked names
+(`nlink > 1`) get distinct CNIDs keyed on `(dev, ino, posixName)`. Cross-directory
+rename detection is deliberately not attempted — it cannot be done efficiently.
+
+### Phase 12 — Single-item name resolution
+
+Today a name request resolves the whole `macNamePrefix` group. Add, as an
+optimization, single-item (order-dependent) assignment for a name whose group is
+otherwise unknown, keeping full-group `NameResolve` as the fallback.
 
 ## Testing
 
@@ -848,7 +897,7 @@ delete + create). Nothing above depends on this.
 - **Instrumentation**: a directory is Listed once and reused while valid
   (`ListingEnumeratesOnceWhileCached`), and the `countScans` counter backs
   `CountScansOnceWhileValid`.
-- **Validation (Phase 5)**: an external add/remove inside a Listed directory is
+- **Validation**: an external add/remove inside a Listed directory is
   visible on the next access; a **host-side rename keeps the CNID**; unchanged
   entries keep their CNID and `macName`; a repeated listing validates but does not
   re-list (stats); eviction under the item budget, then re-access, preserves
@@ -866,7 +915,7 @@ against regressing F1/F3.
 ## Out of scope
 
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
-- Re-enabling the LMDB mapper, except insofar as it affects Phase 6.
+- Re-enabling the LMDB mapper, except insofar as it affects Phase 10.
 - HFS backend behaviour.
 
 ## Future Ideas
