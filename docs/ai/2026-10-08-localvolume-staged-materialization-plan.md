@@ -157,10 +157,13 @@ model; those marked **[revisit]** may need a further decision before their phase
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
 3. **[revised] Identity is keyed by the host inode, not by name.** A `CNID`
-   follows the *file*: a rename keeps it, and a delete-and-recreate at the same
-   name gets a new one. The mapper assigns the `CNID` (and its `parID`) at
-   **CNIDResolve**; the `macName` is decided separately, at **NameResolve**, and
-   is therefore optional until then. `macName` never determines the `CNID`.
+   follows the *file*: a **same-directory external rename** keeps it, and a
+   delete-and-recreate at the same name gets a new one. (A cross-directory host
+   move is seen as delete + create, so it does not; a FileManager-initiated move
+   keeps the CNID through an explicit `moveCNID`.) The mapper assigns the `CNID`
+   (and its `parID`) at **CNIDResolve**; the `macName` is decided separately, at
+   **NameResolve**, and is therefore optional until then. `macName` never
+   determines the `CNID`.
 4. **Naming avoids known conflicts, and is batch-only for now.** Deciding a name
    assigns a `macName` that does not collide with any name already assigned in
    that directory. A "resolve my name" request triggers a `NameResolve` of the
@@ -816,10 +819,11 @@ LRU (see *Caching*). Sub-steps:
 ### Phase 6 — Tests for the target behaviour (written first)
 
 Pin what the FileManager must do, independent of the implementation, and mark the
-ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a host-side rename
-keeps the CNID (Phase 8); listing order is `macNamePrefix`-major (Phase 7);
-unrelated groups stay undecided after a name lookup (Phase 9); a hard-linked name
-is distinct from its sibling (Phase 11). Later phases add their own tests too.
+ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a same-directory
+host-side rename keeps the CNID (Phase 8); listing order is `macNamePrefix`-major
+(Phase 7); unrelated groups stay undecided after a name lookup (Phase 9); a
+hard-linked name is distinct from its sibling (Phase 11). Later phases add their
+own tests too.
 
 ### Phase 7 — Link-free object model
 
@@ -957,7 +961,8 @@ otherwise unknown, keeping full-group `NameResolve` as the fallback.
   (`ListingEnumeratesOnceWhileCached`), and the `countScans` counter backs
   `CountScansOnceWhileValid`.
 - **Validation**: an external add/remove inside a Listed directory is
-  visible on the next access; a **host-side rename keeps the CNID**; unchanged
+  visible on the next access; a **same-directory host-side rename keeps the
+  CNID** (a cross-directory host move is delete + create); unchanged
   entries keep their CNID and `macName`; a repeated listing validates but does not
   re-list (stats); eviction under the item budget, then re-access, preserves
   CNIDs/names; an in-place edit of a MacBinary header is reflected by `getInfo`;
