@@ -526,8 +526,12 @@ drops the LRU's strong reference (the item then dies unless externally
 referenced), and is safe because re-realization rebuilds from the mapper. Charge
 **total items** (Σ live `Item`s) rather than directory count — the risk is one
 huge directory (e.g. `/nix/store`), not many small ones. Default budget:
-**500,000 items**. The root is pinned only as a cheap heuristic (the volume
-anchor / `resolveDir(2)`), not because the item graph is rooted anywhere.
+**500,000 items**.
+
+**TODO (Phase 7): drop the root pinning.** Pinning the root (CNID 2) was a
+leftover from the rooted-tree model. In the link-free model an `Item` is retained
+only by the LRU or an external reference, so the root is just another cached
+directory and should be evictable like any other; remove the special case.
 
 Evicting a `DirectoryItem` frees its descriptor list; the mapper record survives,
 so a later List rebuilds it with the same CNIDs. An open FCB **owns** its
@@ -835,8 +839,9 @@ change.
   (per-descriptor `cnid`), plus `listed_` / `stamp_`; drop `contents_` /
   `files_` / `contents_by_name_`.
 - `resolve(index)` walks descriptors and realizes entries on demand.
-- `ItemCache` keeps `items_` weak and adds an LRU over *all* `Item`s;
-  `ensureEnumerated` → `ensureListed`; the `child()` funnel stays.
+- `ItemCache` keeps `items_` weak and adds an LRU over *all* `Item`s, with **no
+  root pinning** (see *Caching*); `ensureEnumerated` → `ensureListed`; the
+  `child()` funnel stays.
 
 **Deliverable:** no child `Item` is retained by its parent. **Risk:** touches
 every listing/metadata call site and the `dynamic_cast` sites.
