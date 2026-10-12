@@ -709,6 +709,59 @@ TEST_F(LocalVolumeFixture, SidecarNameWinsOverMacBinary)
 }
 
 // --------------------------------------------------------------------------
+// Target behaviour (disabled until its phase lands; run with
+//   --gtest_also_run_disabled_tests)
+// --------------------------------------------------------------------------
+
+// Phase 11: a host-side rename within one directory keeps the CNID (the re-list
+// matches its children by inode). A move to another directory stays delete +
+// create.
+TEST_F(LocalVolumeFixture, DISABLED_SameDirectoryHostRenameKeepsCnid)
+{
+    hostFile("old", "data");
+    auto before = fmGet(rootDirID_, "old");
+    ASSERT_TRUE(before.has_value());
+
+    fs::rename(host("old"), host("new"));
+    bumpMtime("");
+
+    EXPECT_FALSE(fmGet(rootDirID_, "old").has_value());
+    auto after = fmGet(rootDirID_, "new");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+}
+
+// Phase 7: the listing order is `macNamePrefix`-major (case-folded), host path as
+// the tie-break — not raw host-path order. "a" and "B" are in different groups,
+// so the folded order (a, B) differs from the byte order (B, a).
+TEST_F(LocalVolumeFixture, DISABLED_ListingOrderIsMacNamePrefixMajor)
+{
+    hostFile("B");
+    hostFile("a");
+
+    auto list = fmList(rootDirID_);
+    ASSERT_EQ(2u, list.size());
+    EXPECT_EQ("a", list[0].name);
+    EXPECT_EQ("B", list[1].name);
+}
+
+// Phase 11: a hard-linked file keeps a CNID distinct from its sibling.
+TEST_F(LocalVolumeFixture, DISABLED_HardLinkedNamesAreDistinct)
+{
+    hostFile("orig", "data");
+    boost::system::error_code ec;
+    fs::create_hard_link(host("orig"), host("link"), ec);
+    if(ec)
+        GTEST_SKIP() << "hard links unsupported: " << ec.message();
+
+    auto a = fmGet(rootDirID_, "orig");
+    auto b = fmGet(rootDirID_, "link");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_NE(a->cnid, b->cnid);
+}
+
+// --------------------------------------------------------------------------
 // Benchmark (not CTest-gated; run explicitly)
 //   build/tests --gtest_also_run_disabled_tests \
 //               --gtest_filter='*BenchmarkLargeDirectory*'

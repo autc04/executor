@@ -824,7 +824,7 @@ LRU (see *Caching*). Sub-steps:
 
 Pin what the FileManager must do, independent of the implementation, and mark the
 ones that cannot pass yet `xfail` / `DISABLED_` (see *Testing*): a same-directory
-host-side rename keeps the CNID (Phase 8); listing order is `macNamePrefix`-major
+host-side rename keeps the CNID (Phase 11); listing order is `macNamePrefix`-major
 (Phase 7); unrelated groups stay undecided after a name lookup (Phase 9); a
 hard-linked name is distinct from its sibling (Phase 11). Later phases add their
 own tests too.
