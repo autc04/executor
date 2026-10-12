@@ -42,11 +42,12 @@ public:
 
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> realPaths) override;
     virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
-    // Not implemented yet; the LMDB backend is disabled and will be reworked in
-    // Phase 6 of docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
-    virtual std::optional<Mapping> lookupChild(CNID parID, const fs::path& filename) override;
-    virtual Mapping getOrCreateChild(CNID parID, const fs::path& path, const fs::path& filename,
-        const fs::path& nameSource) override;
+    // Not implemented yet; the LMDB backend is disabled and will be reworked
+    // together with its indexes in Phase 10 of
+    // docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
+    virtual CNID resolveChild(CNID parID, const fs::path& path, const fs::path& nameSource,
+        const FileIdentity& identity, bool isDir, std::uint64_t mtime) override;
+    virtual void setIdentity(CNID cnid, const FileIdentity& identity) override;
     virtual void deleteCNID(CNID cnid) override;
     virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) override;
 };

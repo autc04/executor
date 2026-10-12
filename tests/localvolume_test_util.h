@@ -340,6 +340,28 @@ protected:
         return (uint32_t)ipb.hFileInfo.ioFlFndrInfo.fdType;
     }
 
+    // Set a file's fdType (PBSetCatInfo), which upgrades a plain file to a
+    // richer rep when it cannot store the type itself.
+    OSErr fmSetType(long parentDirID, std::string_view name, uint32_t type)
+    {
+        CInfoPBRec ipb;
+        std::memset(&ipb, 42, sizeof(ipb));
+        ipb.hFileInfo.ioCompletion = nullptr;
+        ipb.hFileInfo.ioVRefNum = vRefNum_;
+        ipb.hFileInfo.ioDirID = parentDirID;
+        auto n = str255(name);
+        ipb.hFileInfo.ioNamePtr = n.data();
+        ipb.hFileInfo.ioFDirIndex = 0;
+        PBGetCatInfoSync(&ipb);
+        if(ipb.hFileInfo.ioResult != noErr)
+            return ipb.hFileInfo.ioResult;
+
+        ipb.hFileInfo.ioDirID = parentDirID;   // PBGetCatInfo overwrote it
+        ipb.hFileInfo.ioFlFndrInfo.fdType = type;
+        PBSetCatInfoSync(&ipb);
+        return ipb.hFileInfo.ioResult;
+    }
+
     std::optional<int> fmChildCount(long dirID)
     {
         Str255 buffer;

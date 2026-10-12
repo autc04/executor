@@ -644,15 +644,16 @@ TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
     EXPECT_EQ(0u, *after); // from the (zeroed) MacBinary header
 }
 
-// Phase 5.5: a file replaced by a directory (same name) is rebuilt as a
-// directory, keeping its CNID.
+// Phase 8: a file replaced by a directory (same name) is rebuilt as a directory.
+// The CNID follows the inode: if the host reused the freed inode the entry is
+// the same one (with its kind updated), otherwise it is a new entry. Both are
+// correct, so only the rebuild is asserted.
 TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
 {
     hostFile("x", "data");
     auto before = fmGet(rootDirID_, "x");
     ASSERT_TRUE(before.has_value());
     EXPECT_FALSE(before->isDir);
-    long cnid = before->cnid;
 
     fs::remove(host("x"));
     hostDir("x");
@@ -662,12 +663,12 @@ TEST_F(LocalVolumeFixture, KindChangeRebuildsItem)
     auto after = fmGet(rootDirID_, "x");
     ASSERT_TRUE(after.has_value());
     EXPECT_TRUE(after->isDir);
-    EXPECT_EQ(cnid, after->cnid); // identity is keyed by (parID, posixName)
+    EXPECT_GT(after->cnid, 0);
     EXPECT_EQ((std::set<std::string> { "inner" }), namesOf(fmList(after->cnid)));
 }
 
-// Phase 5.5: an external rename is seen as delete + create (a fresh CNID) until
-// Phase 7 inode tracking.
+// Phase 8: an external rename (a different inode at a new name) is delete +
+// create until Phase 11 recovers it.
 TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
 {
     hostFile("old", "data");
@@ -681,6 +682,48 @@ TEST_F(LocalVolumeFixture, ExternalRenameIsDeleteCreate)
     auto after = fmGet(rootDirID_, "new");
     ASSERT_TRUE(after.has_value());
     EXPECT_NE(before->cnid, after->cnid);
+}
+
+// Phase 8: a file replaced by a new file at the same name must take the name
+// back, not a disambiguated one. (The old entry's name is freed before the new
+// entry is named, whether or not the host reused the inode.)
+TEST_F(LocalVolumeFixture, ReplacedFileReclaimsItsName)
+{
+    hostFile("doc", "first");
+    auto before = fmGet(rootDirID_, "doc");
+    ASSERT_TRUE(before.has_value());
+
+    fs::remove(host("doc"));
+    hostFile("doc", "second, different length");
+    bumpMtime("");
+
+    auto after = fmGet(rootDirID_, "doc");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ("doc", after->name);
+    EXPECT_EQ((std::set<std::string> { "doc" }), namesOf(fmList(rootDirID_)));
+    EXPECT_EQ(1, *fmChildCount(rootDirID_));
+}
+
+// Phase 8: an in-place encoding upgrade (Plain -> AppleDouble) rewrites the host
+// file but must keep both the CNID and the Mac name.
+TEST_F(LocalVolumeFixture, UpgradePreservesCnidAndName)
+{
+    ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));
+    auto before = fmGet(rootDirID_, "doc");
+    ASSERT_TRUE(before.has_value());
+    ASSERT_EQ(0x54455854u, *fmGetType(rootDirID_, "doc")); // the plain default
+
+    const uint32_t newType = 0x41424344u; // 'ABCD'
+    ASSERT_EQ(noErr, fmSetType(rootDirID_, "doc", newType));
+
+    auto after = fmGet(rootDirID_, "doc");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+    EXPECT_EQ("doc", after->name);
+    ASSERT_TRUE(fmGetType(rootDirID_, "doc").has_value());
+    EXPECT_EQ(newType, *fmGetType(rootDirID_, "doc"));
+    EXPECT_EQ((std::set<std::string> { "doc" }), namesOf(fmList(rootDirID_)));
+    EXPECT_EQ(1, *fmChildCount(rootDirID_));
 }
 
 // --------------------------------------------------------------------------

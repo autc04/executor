@@ -107,8 +107,17 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
         try
         {
             for(const auto& e : fs::directory_iterator(dir->path()))
-                if(!itemFactory_->isHidden(e))
-                    entries.push_back({ e, nameSourceFor(e.path()) });
+            {
+                if(itemFactory_->isHidden(e))
+                    continue;
+
+                PathStat st = statPath(e.path());
+                if(!st.exists || (!st.isDirectory && !st.isRegular))
+                    continue;   // not something the File Manager can address
+
+                entries.push_back({ e.path(), nameSourceFor(e.path()), st.identity,
+                                    st.stamp.mtime, st.isDirectory });
+            }
         }
         catch(const boost::filesystem::filesystem_error& exc)
         {
@@ -133,20 +142,10 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 
             for(auto& m : mappings)
             {
-                bool isDir = fs::is_directory(m.entry.path());
-
-                // A kind change (file <-> directory at the same name) keeps the
-                // mapping but must not keep a realized Item of the old type.
-                auto itemIt = items_.find(m.cnid);
-                if(itemIt != items_.end())
-                    if(ItemPtr item = itemIt->second.lock())
-                        if((std::dynamic_pointer_cast<DirectoryItem>(item) != nullptr) != isDir)
-                            items_.erase(itemIt);
-
                 assert(m.macname.size());
                 Descriptor d;
-                d.posixName = m.entry.path().filename();
-                d.isDir = isDir;
+                d.posixName = m.path.filename();
+                d.isDir = m.isDir;
                 d.cnid = m.cnid;
                 d.macName = m.macname;
                 d.prefix = namePrefix(m.macname);
@@ -266,29 +265,55 @@ void ItemCache::noteItemFreed(CNID cnid)
     items_.erase(cnid);
 }
 
-ItemPtr ItemCache::tryResolve(CNID cnid)
+ItemPtr ItemCache::itemSnapshot(CNID cnid, bool isDir)
 {
+    auto it = items_.find(cnid);
+    if(it == items_.end())
+        return {};
+
+    ItemPtr item = it->second.lock();
+    if(!item)
+        return {};
+
+    bool itemIsDir = std::dynamic_pointer_cast<DirectoryItem>(item) != nullptr;
+    if(itemIsDir != isDir)
     {
-        auto it = items_.find(cnid);
-        if(it != items_.end())
-            if(ItemPtr item = it->second.lock())
-                return item;
+        items_.erase(it);
+        return {};
+    }
+    return item;
+}
+
+ItemPtr ItemCache::realizeValidated(CNID cnid)
+{
+    if(cnid <= 0)
+        return {};
+
+    auto mapping = cnidMapper_->lookupCNID(cnid);
+    if(!mapping)
+        return {};
+
+    PathStat st = statPath(mapping->path);
+    // The binding is gone, the name now holds a different kind of file, or a
+    // different file holds the name (a delete + create).
+    if(!st.exists || (!st.isDirectory && !st.isRegular)
+       || st.isDirectory != mapping->isDir
+       || !sameIdentity(mapping->identity, st.identity))
+    {
+        cnidMapper_->deleteCNID(cnid);
+        items_.erase(cnid);
+        return {};
     }
 
-    auto optionalMapping = cnidMapper_->lookupCNID(cnid);
-    if(!optionalMapping)
-        return {};
-    auto& m = *optionalMapping;
-    
-    if(ItemPtr item = makeItem(m.parID, m.cnid, m.entry, m.macname))
-    {
-        items_.emplace(item->cnid(), item);
+    if(ItemPtr item = itemSnapshot(cnid, st.isDirectory))
         return item;
-    }
-    else
-    {
-        return {};
-    }
+
+    return makeItem(mapping->parID, cnid, mapping->path, mapping->macname, st.isDirectory);
+}
+
+ItemPtr ItemCache::tryResolve(CNID cnid)
+{
+    return realizeValidated(cnid);
 }
 
 ItemPtr ItemCache::tryResolve(fs::path inPath)
@@ -309,16 +334,14 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         const fs::path& elem = *pathIter;
         fs::path childPath = dir->path() / elem;
 
-        if(!fs::exists(childPath))
+        // Stat-first: descend by host identity, never enumerating the parent.
+        PathStat st = statPath(childPath);
+        if(!st.exists || (!st.isDirectory && !st.isRegular))
             return {};
 
-        // Resolve the child by (parent CNID, filename) instead of enumerating
-        // the whole parent directory.
-        auto mapping = cnidMapper_->lookupChild(dir->cnid(), elem);
-        if(!mapping)
-            mapping = cnidMapper_->getOrCreateChild(dir->cnid(), childPath, elem, nameSourceFor(childPath));
-
-        item = itemForMapping(*mapping);
+        CNID cnid = cnidMapper_->resolveChild(dir->cnid(), childPath, nameSourceFor(childPath),
+            st.identity, st.isDirectory, st.stamp.mtime);
+        item = realizeValidated(cnid);
         if(!item)
             return {};
     }
@@ -327,18 +350,10 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
 
 ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d)
 {
-    {
-        auto it = items_.find(d.cnid);
-        if(it != items_.end())
-            if(ItemPtr item = it->second.lock())
-                return item;
-    }
+    if(ItemPtr item = itemSnapshot(d.cnid, d.isDir))
+        return item;
 
-    ItemPtr item = makeItem(dir->cnid(), d.cnid,
-        fs::directory_entry(dir->path() / d.posixName), d.macName);
-    if(item)
-        items_.emplace(d.cnid, item);
-    return item;
+    return makeItem(dir->cnid(), d.cnid, dir->path() / d.posixName, d.macName, d.isDir);
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
@@ -359,19 +374,6 @@ ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDir
     return realizeChild(dir, *d);
 }
 
-ItemPtr ItemCache::itemForMapping(const CNIDMapper::Mapping& mapping)
-{
-    auto it = items_.find(mapping.cnid);
-    if(it != items_.end())
-        if(ItemPtr item = it->second.lock())
-            return item;
-
-    ItemPtr item = makeItem(mapping.parID, mapping.cnid, mapping.entry, mapping.macname);
-    if(item)
-        items_.emplace(mapping.cnid, item);
-    return item;
-}
-
 fs::path ItemCache::nameSourceFor(const fs::path& path)
 {
     fs::path filename = path.filename();
@@ -389,26 +391,27 @@ fs::path ItemCache::nameSourceFor(const fs::path& path)
     return rep ? rep->nameSource(filename) : filename;
 }
 
-ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name)
+ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path, mac_string_view name, bool isDir)
 {
     ItemPtr item;
 
-    if(fs::is_directory(e.path()))
-        item = std::make_shared<DirectoryItem>(*this, parID, cnid, e.path(), name);
-    else if(fs::is_regular_file(e.path()))
-        item = std::make_shared<FileItem>(*this, parID, cnid, e.path(), name);
+    if(isDir)
+        item = std::make_shared<DirectoryItem>(*this, parID, cnid, path, name);
     else
-        return {};
+        item = std::make_shared<FileItem>(*this, parID, cnid, path, name);
 
     localVolumeStats().itemsConstructed++;
 
     // Retain realized directories so a listing or tally survives between
     // accesses; files are realized transiently (retained from Phase 10).
-    if(auto dir = std::dynamic_pointer_cast<DirectoryItem>(item))
+    if(isDir)
     {
+        auto dir = std::static_pointer_cast<DirectoryItem>(item);
         retainDirectory(dir);
         evictCachedDirectories(dir);
     }
+
+    items_[cnid] = item;
     return item;
 }
 
@@ -418,6 +421,16 @@ void ItemCache::materialize(FileItem& item)
         return;
 
     item.setRep(itemFactory_->createRepForFile(*this, item, fs::directory_entry(item.path())));
+}
+
+void ItemCache::rebindItem(CNID cnid)
+{
+    auto mapping = cnidMapper_->lookupCNID(cnid);
+    if(!mapping)
+        return;
+
+    PathStat st = statPath(mapping->path);
+    cnidMapper_->setIdentity(cnid, st.identity);
 }
 
 void ItemCache::deleteItem(ItemPtr item)

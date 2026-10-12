@@ -296,6 +296,9 @@ FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactor
     itemCache->flushItem(item);
     item->moveItem(tempPath, mac_string_view());
     betterFactory->createFile(path);
+    // The CNID stays ours, but the host file that carries it is now the fresh
+    // placeholder just created: re-key the binding to its inode.
+    itemCache->rebindItem(cnid);
     auto newItem = std::dynamic_pointer_cast<FileItem>(itemCache->tryResolve(cnid));
 
     assert(newItem->cnid() == cnid);

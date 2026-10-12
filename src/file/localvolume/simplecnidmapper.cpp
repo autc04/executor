@@ -7,9 +7,17 @@
 
 using namespace Executor;
 
+namespace
+{
+std::pair<std::uint64_t, std::uint64_t> inodeKey(const FileIdentity& id)
+{
+    return { id.device, id.inode };
+}
+}
+
 SimpleCNIDMapper::SimpleCNIDMapper(fs::path root, mac_string volumeName)
 {
-    mappings_.emplace(2, StoredMapping { 1, 2, root, std::move(volumeName) });
+    mappings_.emplace(2, StoredMapping { 1, 2, std::move(root), std::move(volumeName), {}, true, 0 });
 }
 
 std::set<mac_string> SimpleCNIDMapper::namesInUse(CNID dirID)
@@ -20,7 +28,7 @@ std::set<mac_string> SimpleCNIDMapper::namesInUse(CNID dirID)
     if(it == children_.end())
         return used;
 
-    for(auto& [filename, cnid] : it->second)
+    for(CNID cnid : it->second)
     {
         auto mit = mappings_.find(cnid);
         if(mit != mappings_.end())
@@ -51,96 +59,185 @@ mac_string SimpleCNIDMapper::chooseMacName(const fs::path& filename, std::set<ma
     return macname;
 }
 
-std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupChild(CNID parID, const fs::path& filename)
+std::optional<CNID> SimpleCNIDMapper::childByPath(CNID parID, const fs::path& path) const
 {
-    auto dirIt = children_.find(parID);
-    if(dirIt == children_.end())
+    auto it = children_.find(parID);
+    if(it == children_.end())
         return {};
 
-    auto childIt = dirIt->second.find(filename.string());
-    if(childIt == dirIt->second.end())
-        return {};
-
-    auto mit = mappings_.find(childIt->second);
-    if(mit == mappings_.end())
-        return {};
-
-    return Mapping { mit->second.parID, mit->second.cnid,
-        fs::directory_entry(mit->second.path), mit->second.macname };
+    for(CNID cnid : it->second)
+    {
+        auto mit = mappings_.find(cnid);
+        if(mit != mappings_.end() && mit->second.path == path)
+            return cnid;
+    }
+    return {};
 }
 
-CNIDMapper::Mapping SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::path& path,
-    const fs::path& filename, const fs::path& nameSource)
+CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& path, const fs::path& nameSource,
+    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
-    if(auto existing = lookupChild(parID, filename))
-        return *existing;
-
     auto usedNames = namesInUse(parID);
     mac_string macname = chooseMacName(nameSource, usedNames);
     CNID cnid = nextCNID_++;
 
-    mappings_.emplace(cnid, StoredMapping { parID, cnid, path, macname });
-    children_[parID].emplace(filename.string(), cnid);
+    mappings_.emplace(cnid, StoredMapping { parID, cnid, path, std::move(macname), identity, isDir, mtime });
+    children_[parID].insert(cnid);
+    if(identity.valid)
+        inodeIndex_[inodeKey(identity)] = cnid;
 
-    return Mapping { parID, cnid, fs::directory_entry(path), macname };
+    return cnid;
+}
+
+CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path, const fs::path& nameSource,
+    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
+{
+    // 1. Prefer identity: the record this inode already has.
+    if(identity.valid)
+    {
+        auto iit = inodeIndex_.find(inodeKey(identity));
+        if(iit != inodeIndex_.end())
+        {
+            CNID cnid = iit->second;
+            auto mit = mappings_.find(cnid);
+            if(mit != mappings_.end() && mit->second.parID == parID && mit->second.path == path)
+            {
+                mit->second.mtime = mtime;
+                return cnid;
+            }
+
+            // The inode now lives here under a new name, or in another
+            // directory: the old binding is stale (delete + create).
+            if(mit != mappings_.end())
+                deleteCNID(cnid);
+            else
+                inodeIndex_.erase(iit);
+        }
+    }
+
+    // 2. An existing binding at the same path. A different *known* identity
+    //    means the file was replaced (delete + create).
+    if(auto existing = childByPath(parID, path))
+    {
+        auto mit = mappings_.find(*existing);
+        if(mit != mappings_.end())
+        {
+            if(sameIdentity(mit->second.identity, identity))
+            {
+                mit->second.identity = identity;
+                mit->second.mtime = mtime;
+                if(identity.valid)
+                    inodeIndex_[inodeKey(identity)] = *existing;
+                return *existing;
+            }
+            deleteCNID(*existing);
+        }
+    }
+
+    // 3. A new binding.
+    return createRecord(parID, path, nameSource, identity, isDir, mtime);
 }
 
 std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dirID,
-        std::vector<DirEntry> realPaths)
+        std::vector<DirEntry> entries)
 {
-    auto& children = children_[dirID];
+    std::vector<CNID> stored;
+    if(auto it = children_.find(dirID); it != children_.end())
+        stored.assign(it->second.begin(), it->second.end());
 
-    std::sort(realPaths.begin(), realPaths.end(),
-        [](const DirEntry& a, const DirEntry& b) { return a.entry < b.entry; });
+    const size_t n = entries.size();
+    std::vector<CNID> reused(n, 0);   // 0 = the entry is new
+    std::set<CNID> surviving;
 
-    // Names already assigned in this directory, including lazily-created
-    // identities, so a new entry never takes an existing entry's name.
-    std::set<mac_string> usedNames = namesInUse(dirID);
+    // Fallback for entries with no usable inode: match by host path. Built once,
+    // lazily, from the stored children.
+    std::map<std::string, CNID> byPath;
+    bool byPathBuilt = false;
 
-    std::vector<Mapping> dirMappings;
-    dirMappings.reserve(realPaths.size());
-
-    ChildIndex newChildren;
-    newChildren.reserve(realPaths.size());
-
-    for(auto& de : realPaths)
+    // Pass 1: match each scanned entry to a stored record, by identity (or, when
+    // the host gives no usable inode, by path).
+    for(size_t i = 0; i < n; i++)
     {
-        const std::string filename = de.entry.path().filename().string();
+        const DirEntry& e = entries[i];
+        CNID match = 0;
 
-        CNID cnid;
-        auto cit = children.find(filename);
-        if(cit != children.end())
+        if(e.identity.valid)
         {
-            // use existing mapping
-            cnid = cit->second;
+            auto iit = inodeIndex_.find(inodeKey(e.identity));
+            if(iit != inodeIndex_.end())
+            {
+                CNID candidate = iit->second;
+                auto mit = mappings_.find(candidate);
+                if(mit != mappings_.end() && mit->second.parID == dirID && mit->second.path == e.path)
+                    match = candidate;
+            }
         }
         else
         {
-            // new mapping
-            cnid = nextCNID_++;
-            mac_string macname = chooseMacName(de.nameSource, usedNames);
-            mappings_.emplace(cnid, StoredMapping { dirID, cnid, de.entry.path(), macname });
+            if(!byPathBuilt)
+            {
+                for(CNID c : stored)
+                    if(auto mit = mappings_.find(c); mit != mappings_.end())
+                        byPath.emplace(mit->second.path.string(), c);
+                byPathBuilt = true;
+            }
+
+            auto bit = byPath.find(e.path.string());
+            if(bit != byPath.end())
+                match = bit->second;
         }
 
-        auto mit = mappings_.find(cnid);
-        assert(mit != mappings_.end());
-        dirMappings.push_back({ dirID, cnid, std::move(de.entry), mit->second.macname });
-        newChildren.emplace(filename, cnid);
+        if(match && surviving.find(match) == surviving.end())
+        {
+            reused[i] = match;
+            surviving.insert(match);
+        }
     }
 
-    // Stored children not seen in the scan are gone; drop their mappings
-    // (recursively, for directories). Collect first: deleteCNID mutates
-    // children_[dirID].
-    std::vector<CNID> deleted;
-    for(auto& [filename, cnid] : children)
-        if(newChildren.find(filename) == newChildren.end())
-            deleted.push_back(cnid);
-    for(CNID cnid : deleted)
-        deleteCNID(cnid);
+    // Pass 2: stored children the scan did not match are gone, freeing their
+    // names before Pass 3 picks names for the new entries.
+    for(CNID c : stored)
+        if(surviving.find(c) == surviving.end())
+            deleteCNID(c);
 
-    children = std::move(newChildren);
+    // Pass 3: refresh the survivors and create the new entries. Names of
+    // survivors are sticky; a delete-and-recreate at a name is then free to
+    // take that name back.
+    std::set<mac_string> usedNames = namesInUse(dirID);
 
-    return dirMappings;
+    std::vector<Mapping> result;
+    result.reserve(n);
+
+    for(size_t i = 0; i < n; i++)
+    {
+        const DirEntry& e = entries[i];
+        CNID cnid = reused[i];
+
+        if(cnid)
+        {
+            auto& rec = mappings_.at(cnid);
+            rec.identity = e.identity;
+            rec.mtime = e.mtime;
+            rec.isDir = e.isDir;
+        }
+        else
+        {
+            cnid = nextCNID_++;
+            mac_string macname = chooseMacName(e.nameSource, usedNames);
+            mappings_.emplace(cnid, StoredMapping { dirID, cnid, e.path, std::move(macname), e.identity, e.isDir, e.mtime });
+            surviving.insert(cnid);
+        }
+
+        if(e.identity.valid)
+            inodeIndex_[inodeKey(e.identity)] = cnid;
+
+        const auto& rec = mappings_.at(cnid);
+        result.push_back({ dirID, cnid, e.path, rec.macname, e.identity, e.isDir });
+    }
+
+    children_[dirID] = std::move(surviving);
+
+    return result;
 }
 
 std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
@@ -149,26 +246,26 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
     if(it == mappings_.end())
         return {};
 
-    if(fs::exists(it->second.path))
+    const StoredMapping& m = it->second;
+    return Mapping { m.parID, m.cnid, m.path, m.macname, m.identity, m.isDir };
+}
+
+void SimpleCNIDMapper::setIdentity(CNID cnid, const FileIdentity& identity)
+{
+    auto it = mappings_.find(cnid);
+    if(it == mappings_.end())
+        return;
+
+    if(it->second.identity.valid)
     {
-        try
-        {
-            return Mapping {
-                it->second.parID,
-                it->second.cnid,
-                fs::directory_entry(it->second.path),
-                it->second.macname
-            };
-        }
-        catch(const fs::filesystem_error&)
-        {
-            // file no longer exists,
-            // pass through
-        }
+        auto iit = inodeIndex_.find(inodeKey(it->second.identity));
+        if(iit != inodeIndex_.end() && iit->second == cnid)
+            inodeIndex_.erase(iit);
     }
 
-    deleteCNID(cnid);
-    return {};
+    it->second.identity = identity;
+    if(identity.valid)
+        inodeIndex_[inodeKey(identity)] = cnid;
 }
 
 void SimpleCNIDMapper::deleteCNID(CNID cnid)
@@ -178,29 +275,30 @@ void SimpleCNIDMapper::deleteCNID(CNID cnid)
         return;
 
     CNID parID = it->second.parID;
-    std::string filename = it->second.path.filename().string();
+    FileIdentity identity = it->second.identity;
 
-    auto parentIt = children_.find(parID);
-    if(parentIt != children_.end())
-        parentIt->second.erase(filename);
-
-    mappings_.erase(it);
-
-    auto dirIt = children_.find(cnid);
-    if(dirIt != children_.end())
+    if(identity.valid)
     {
-        // deleteCNID is only invoked for empty directories by ItemCache,
-        // but mapDirectoryContents and lookupCNID above also invoke it
-        // on files and directories that have been deleted or moved by other
-        // programs.
-        std::vector<CNID> childList;
-        childList.reserve(dirIt->second.size());
-        for(auto& [childFilename, childCnid] : dirIt->second)
-            childList.push_back(childCnid);
+        auto iit = inodeIndex_.find(inodeKey(identity));
+        if(iit != inodeIndex_.end() && iit->second == cnid)
+            inodeIndex_.erase(iit);
+    }
+
+    if(auto pit = children_.find(parID); pit != children_.end())
+        pit->second.erase(cnid);
+
+    // deleteCNID is only invoked for empty directories by ItemCache, but the
+    // diff above also invokes it on files and directories that have been
+    // deleted or moved by other programs.
+    if(auto cit = children_.find(cnid); cit != children_.end())
+    {
+        std::vector<CNID> childList(cit->second.begin(), cit->second.end());
+        children_.erase(cit);
         for(CNID childCnid : childList)
             deleteCNID(childCnid);
-        children_.erase(cnid);
     }
+
+    mappings_.erase(it);
 }
 
 void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop)
@@ -215,18 +313,15 @@ void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMa
     if(oldParent == newParent && newMacName.empty())
         return;
 
-    std::string oldFilename = it->second.path.filename().string();
-
     fs::path newPath = fsop();
+
+    if(auto pit = children_.find(oldParent); pit != children_.end())
+        pit->second.erase(cnid);
 
     it->second.path = newPath;
     it->second.parID = newParent;
     if(!newMacName.empty())
         it->second.macname = newMacName;
 
-    auto parentIt = children_.find(oldParent);
-    if(parentIt != children_.end())
-        parentIt->second.erase(oldFilename);
-
-    children_[newParent].emplace(newPath.filename().string(), cnid);
+    children_[newParent].insert(cnid);
 }

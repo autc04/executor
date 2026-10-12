@@ -179,10 +179,10 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
         auto cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
         for(auto& entry : sortedRealDirEntries)
         {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.entry.path())
+            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path)
                 ++cachedMappingIt;
 
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.entry.path())
+            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path)
             {
                 mac_string nameUpr = cachedMappingIt->macname;
                 ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
@@ -197,17 +197,17 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
         cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
         for(auto& entry : sortedRealDirEntries)
         {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.entry.path())
+            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path)
             {
                 // discard mapping
                 deleteCNID(txn, cachedMappingIt->cnid);
                 ++cachedMappingIt;
             }
 
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.entry.path())
+            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path)
             {
                 // use existing mapping
-                dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, std::move(entry.entry), cachedMappingIt->macname});
+                dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, entry.path, cachedMappingIt->macname, {}, entry.isDir});
                 newContents.push_back(cachedMappingIt->cnid);
 
                 ++cachedMappingIt;
@@ -232,15 +232,17 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
 
                 Mapping newMapping {
                     dirID, newCNID++,
-                    std::move(entry.entry),
-                    std::move(macname)
+                    entry.path,
+                    std::move(macname),
+                    {},
+                    entry.isDir
                 };
                 dirMappings.push_back(newMapping);
                 newContents.push_back(newMapping.cnid);
 
                 setMapping(txn, {
                     newMapping.parID, newMapping.cnid,
-                    newMapping.entry.path(),
+                    newMapping.path,
                     std::move(newMapping.macname)
                 });
             }
@@ -261,7 +263,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
     auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
     auto directoryContents = getDirectory(txn, dirID);
     std::sort(realDirEntries.begin(), realDirEntries.end(),
-        [](const DirEntry& a, const DirEntry& b) { return a.entry < b.entry; });
+        [](const DirEntry& a, const DirEntry& b) { return a.path < b.path; });
 
     if(directoryContents.size() != realDirEntries.size())
     {
@@ -279,7 +281,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
         {
             auto optMapping = getMapping(txn, *cachedIt);
 
-            if(!optMapping || optMapping->path != realIt->entry.path())
+            if(!optMapping || optMapping->path != realIt->path)
             {
                 txn.abort();
                 return updateDirectoryContents(dirID, realDirEntries);
@@ -297,7 +299,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID
         auto realIt = realDirEntries.begin();
         for(;cachedMappingIt != cachedMappingEnd; ++cachedMappingIt, ++realIt)
         {
-            dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, std::move(realIt->entry), cachedMappingIt->macname});
+            dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, realIt->path, cachedMappingIt->macname, {}, realIt->isDir});
         }
     }
     
@@ -323,8 +325,10 @@ std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
                     return Mapping {
                         mapping->parID,
                         mapping->cnid,
-                        fs::directory_entry(mapping->path),
-                        mapping->macname
+                        mapping->path,
+                        mapping->macname,
+                        {},
+                        false
                     };
                 }
                 catch(const fs::filesystem_error&)
@@ -344,16 +348,17 @@ std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
     });
 }
 
-std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupChild(CNID parID, const fs::path& filename)
+CNID LMDBCNIDMapper::resolveChild(CNID parID, const fs::path& path, const fs::path& nameSource,
+    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
-    // Phase 6 will add the (parID, posixFilename) index to this backend.
-    throw std::logic_error("LMDBCNIDMapper::lookupChild not implemented");
+    // The LMDB backend is disabled; it is reworked together with its indexes in
+    // Phase 10 of docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
+    throw std::logic_error("LMDBCNIDMapper::resolveChild not implemented");
 }
 
-CNIDMapper::Mapping LMDBCNIDMapper::getOrCreateChild(CNID parID, const fs::path& path,
-    const fs::path& filename, const fs::path& nameSource)
+void LMDBCNIDMapper::setIdentity(CNID cnid, const FileIdentity& identity)
 {
-    throw std::logic_error("LMDBCNIDMapper::getOrCreateChild not implemented");
+    throw std::logic_error("LMDBCNIDMapper::setIdentity not implemented");
 }
 
 void LMDBCNIDMapper::deleteCNID(lmdb::txn& txn, CNID cnid)

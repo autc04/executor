@@ -47,7 +47,15 @@ class ItemCache
     void retainDirectory(const DirectoryItemPtr& dir);
     void evictCachedDirectories(const DirectoryItemPtr& protect);
     void clearCachedDirectory(const DirectoryItemPtr& dir);
-    ItemPtr itemForMapping(const CNIDMapper::Mapping& mapping);
+
+    // A live, already-realized Item, if its kind still matches. Otherwise the
+    // registry entry is dropped so the Item can be rebuilt.
+    ItemPtr itemSnapshot(CNID cnid, bool isDir);
+
+    // Validate a CNID's binding against the host and realize the Item: stat the
+    // record's path, drop the binding if it is gone or its identity/kind
+    // changed, and otherwise return the (possibly newly built) Item.
+    ItemPtr realizeValidated(CNID cnid);
 
     // Realize a descriptor's Item (from the registry, else freshly built).
     ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
@@ -57,10 +65,9 @@ class ItemCache
     // Private: obtain children through child(), which owns this precondition.
     bool ensureListed(const DirectoryItemPtr& item);
 
-    // Construct an identity Item (DirectoryItem or bare FileItem) from a host
-    // entry, without running the format gauntlet. Returns null for entries that
-    // are neither a regular file nor a directory.
-    ItemPtr makeItem(CNID parID, CNID cnid, const fs::directory_entry& e, mac_string_view name);
+    // Construct an identity Item from known host file data, without running the
+    // format gauntlet, and register it.
+    ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path, mac_string_view name, bool isDir);
 
     // The filename a child's Mac name is derived from (differs from the host
     // filename only for MacBinary, whose ".bin" is dropped).
@@ -89,6 +96,10 @@ public:
     // itself cannot be read.
     ItemPtr child(const DirectoryItemPtr& dir, mac_string_view name);
     ItemPtr child(const DirectoryItemPtr& dir, int index, bool includeDirectories);
+
+    // Re-key a CNID to the host file currently at the record's path. Preserves
+    // the CNID across an in-place host-file replacement (an encoding upgrade).
+    void rebindItem(CNID cnid);
 
     // Number of visible children, without enumerating/constructing them.
     int countChildren(const DirectoryItemPtr& item);
