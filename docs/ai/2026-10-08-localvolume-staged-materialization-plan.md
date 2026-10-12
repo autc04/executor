@@ -37,8 +37,9 @@ holds a descriptor list rather than child `Item`s, identity lives in the
 The file-format concern is **split out of `Item`** (into a `FileRep`), so an
 `Item` can exist without knowing its format, and **a `CNID` is keyed by the host
 file's inode**, not by name. The headline fixes are that **path resolution must
-not enumerate any directory** and that **reporting a count must not enumerate or
-materialize the directory's contents**.
+not list any ancestor** (at most the target's immediate parent, to name it) and
+that **reporting a count must not enumerate or materialize the directory's
+contents**.
 
 ## Findings (motivation)
 
@@ -225,11 +226,13 @@ stripAll(x) | endsWith ".bin" = stripAll(stripBin(x))
 - `maxDisambiguatorDigits = 3`; truncate to `30 - 3 = 27` bytes to leave room for
   a generated `#999`.
 
-The prefix is computed at enumeration and stored on each descriptor. A `Listed`
-directory keeps its descriptors sorted by `(macNamePrefix, posixName)`, so a group
-is exactly the contiguous range of descriptors with equal prefix, found by binary
-search — no separate group index. Entries in a group are the ones that can
-collide.
+The prefix is computed at enumeration and stored on each descriptor. It is
+**case-folded** (the same MacRoman upper-casing the mapper's name index uses), so
+`Foo` and `foo` are one group — grouping must not be case-sensitive while the name
+index is not. A `Listed` directory keeps its descriptors sorted by the folded
+prefix then `posixName`, so a group is exactly the contiguous range of descriptors
+with equal folded prefix, found by binary search — no separate group index.
+Entries in a group are the ones that can collide.
 
 ### The final name
 
@@ -238,6 +241,14 @@ winning rep: MacBinary → stripped; every other rep → raw. The rule belongs t
 the rep, not a standalone extension check: a `foo.bin` with a `._foo.bin`
 companion is AppleDouble and keeps `foo.bin`. The mapper's `macName` field holds
 the chosen name.
+
+The `macNamePrefix` grouping key is **lexical** (it always strips a trailing
+`.bin`), so List needs no format knowledge of any file. Deciding the *final* name
+does: for a `.bin` entry the winning rep decides whether `.bin` survives, so
+**NameResolve materializes the `.bin` entries of its group** — the only entries
+whose name can change. Probing `.bin` files is the expensive part of naming and is
+deliberately kept out of List: a `Listed` directory has descriptors but has not
+probed any file, and nothing is Materialized merely because its parent was listed.
 
 ## Stage model
 
@@ -420,15 +431,21 @@ only, never discovers a new entry, so List remains the bulk path and the miss
 fallback. The `(parID, macName)` index is likewise only as fresh as the last List
 or NameResolve; a hit from it is still validated by `(dev, ino)` at realization.
 
-Two limits bound inode identity. **Hard links** (one inode, several names) are not
-injective, so `nlink > 1` entries key identity on `(dev, ino, posixName)` (distinct
-per name, no rename tracking) — this is why `nlink` is stored — and `/nix/store`
-can contain hard-linked files. And some filesystems/mounts supply no usable inode
-(`d_ino == 0`), so identity needs a name-keyed fallback. A reused inode (a file
-deleted and a new one allocated the same inode before re-enumeration) will match
-in the diff and reuse the CNID; a name-keyed diff has the same class of race. On
-Windows, `GetFileAttributesEx` exposes no inode, so both the stat helper and the
-directory scan need a handle-based variant (`GetFileInformationByHandle`) there.
+Identity is expressed as a single **`IdentityKey`**, used uniformly by records,
+indexes, the diff, and path lookup — there is no bare `(dev, ino)` anywhere:
+
+- `(dev, ino)` — the default, for `nlink == 1`.
+- `(dev, ino, posixName)` — for `nlink > 1` (one inode, several names), so
+  hard-linked names stay distinct. **Deferred to Phase 11**; Phase 8 assumes
+  `nlink == 1`.
+- a name-keyed form as the fallback when no inode is usable (`d_ino == 0`, or a
+  filesystem without inodes).
+
+A reused inode (a file deleted and a new one allocated the same inode before
+re-enumeration) will match in the diff and reuse the CNID; a name-keyed diff has
+the same class of race. On Windows, `GetFileAttributesEx` exposes no inode, so
+both the stat helper and the directory scan need a handle-based variant
+(`GetFileInformationByHandle`) there.
 
 There is deliberately **no per-entry `(filename, mtime)` level**: per-entry
 metadata is not cached — `Item::getInfo` stats live, and fork/Finder-info reads
@@ -442,24 +459,38 @@ scan against its stored children **by inode**:
 
 - an inode seen again at the same name is unchanged (keeps its CNID and decided
   `macName`);
-- an inode seen at a new name is a **rename**; the CNID follows and the name
-  updates;
+- an inode seen at a new name **within this directory** is a same-directory
+  **rename**; the CNID follows and the name updates;
 - a scanned inode with no stored record is **new** (new CNID);
 - a stored inode absent from the scan is gone (`deleteCNID`ed, recursively).
 
+Reconciliation is **per directory**: a move to another directory shows up as a
+delete in the old one and a create in the new one (a new CNID). Cross-directory
+rename detection is deliberately not attempted (Phase 11).
+
 Consequences:
 
-- An **external rename keeps the CNID** (Decision 3); a delete-and-recreate at the
-  same name, or a kind change at a name, is a new CNID (the inode differs).
+- A **same-directory external rename keeps the CNID** (Decision 3); a
+  delete-and-recreate at the same name, a kind change at a name, or a move to
+  another directory is a new CNID (the inode differs or the binding is gone).
 - **Path resolution** descends by stat + `(dev, ino)` (see *Stage model*,
-  CNIDResolve) and never enumerates; a stale binding is validated or recreated.
-- **Read errors**: a directory that cannot be read reports `ioErr` from the lookup
-  funnel (`ItemCache::child`).
+  CNIDResolve) and lists no ancestor; a stale binding is validated or recreated.
+- **Read errors**: a scan that fails must **not** be cached as a valid (empty)
+  listing — the directory is left invalid so the next access retries. A requested
+  directory that cannot be read reports `ioErr` — the listing funnel
+  (`ItemCache::child`) and `Count` alike. In a path walk, a component that does not
+  exist is `fnfErr`, and one that exists but cannot be `stat`ed is `ioErr`;
+  `nativePathToFSSpec` maps both to `nullopt`.
 - The staleness bound is "as of the last access". Changes racing the guest's
   other traps are inherently un-transactional (HFS is not transactional either).
 
-CNID changes made cross-instance through LMDB, with no host change, are invisible
-to the stamp; that is Phase 10. Identity stability across re-enumeration (CNIDs and
+CNID and naming changes made cross-instance through LMDB, with no host change, are
+invisible to the stamp. They stay coherent because the design reads mapper state
+**live** and never caches a mapper-derived answer in memory (names are sticky, and
+a name read re-reads inside a transaction, which LMDB serializes); Phase 10 adds
+only that atomicity. Caching such an answer (a `(parID, macName) -> cnid` result,
+or an `Item`'s `macName`) would require a mapper generation checked like the stamp.
+Identity stability across re-enumeration (CNIDs and
 decided names survive for an unchanged entry) is provided by the mapper's inode
 match, pinned by `DisambiguatedNamesStableAcrossDelete`,
 `MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove` —
@@ -469,11 +500,18 @@ match, pinned by `DisambiguatedNamesStableAcrossDelete`,
 
 A rep caches parsed state (`MacBinaryFile::header_`,
 `AppleSingleDoubleFile::descriptors`) and can outlive the listing that built
-it. Record the primary host file's `(mtime, size)` on the `FileItem` at
-Materialize; at the start of `open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`,
-drop the rep if the stamp changed (it rematerializes). Do not revalidate a rep
-whose fork is currently open — the guest holds it, so the change surfaces on
-reopen.
+it. A rep is a function of **all** the host files it reads, not just the primary
+one: AppleDouble and Basilisk depend on `._*`/`%*` and `.rsrc`/`.finf`, and
+xattr-backed metadata likewise. So each `FileRep` must expose the host
+dependencies it was built from (existence plus `(mtime, size)`), and the stamp is
+taken over that set — creating, deleting, or modifying a sidecar invalidates the
+rep and may change which rep wins (the gauntlet re-runs). At the start of
+`open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`, drop the rep if the stamp
+changed. Do not revalidate a rep whose fork is currently open — the guest holds
+it, so the change surfaces on reopen.
+
+`FileRep` exposes the host paths it reads (`dependencies()`); the rep's stamp is a
+**composite** of their `(mtime, size)`, recomputed on validation.
 
 ### Memory bound
 
@@ -486,8 +524,11 @@ huge directory (e.g. `/nix/store`), not many small ones. Default budget:
 anchor / `resolveDir(2)`), not because the item graph is rooted anywhere.
 
 Evicting a `DirectoryItem` frees its descriptor list; the mapper record survives,
-so a later List rebuilds it with the same CNIDs. Items referenced by an open FCB
-survive. This removes the 1 s / 20-directory policy entirely.
+so a later List rebuilds it with the same CNIDs. An open FCB **owns** its
+`FileItem` through a strong reference in the FCB table, released when the FCB
+closes; while it is open, an external delete or rename of the host file does not
+affect the open handle (the OS keeps the fd on the inode). This removes the
+1 s / 20-directory policy entirely.
 
 ## Component changes (sketch)
 
@@ -523,9 +564,10 @@ Operations:
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
-- `ItemCache::tryResolve(fs::path)`: **stat-first** — stat each component, resolve
-  `(dev, ino)` via the mapper, and never enumerate an ancestor. *(Phase 1 used a
-  `(parID, posixName)` lookup; superseded.)*
+- `ItemCache::tryResolve(fs::path)`: **stat-first** — stat each component and
+  resolve `(dev, ino)` via the mapper; **no ancestor is ever listed**. Naming the
+  last component lists its immediate parent once (via `resolveName`). *(Phase 1
+  used a `(parID, posixName)` lookup; superseded.)*
 - `ItemCache::child(...)`: the lookup funnel — ensure the directory is Listed and
   valid, then select (see *Stage model*).
 - `getInfoCommon`'s directory branch: use **Count** (`countChildren`), which keeps
@@ -662,6 +704,14 @@ Moving it onto `DirectoryItem` (via `shared_from_this`) or onto a separate
   `resolveName` funnel, mutating the `DirectoryItem`.
 - **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing.
 - The mapper stays a dumb value store throughout.
+
+### Filesystem contracts
+
+- **Symlinks are followed transparently and are not items**: a symlink to a file is
+  that file (whichever rep its target wins), a symlink to a directory is that
+  directory, and identity is the target's inode. A link whose target escapes the
+  volume root is hidden — possible only when the root is not `/` (e.g. a Windows
+  drive).
 
 ## Phased plan
 
@@ -814,7 +864,9 @@ every listing/metadata call site and the `dynamic_cast` sites.
 Re-enable `LMDBCNIDMapper`: persist the record table and the indexes, and make the
 per-directory diff and `nameGroup` **transactional read-modify-writes**
 (Decision 9). LMDB's single-writer model then lets two Executor instances share
-CNID and naming decisions for the same volume.
+CNID and naming decisions for the same volume. Cross-instance coherence rests on
+reading mapper state live (see *Caching*); it needs no generation counter until an
+in-memory mapper cache is introduced.
 
 ### Phase 11 — Same-directory rename recovery, and hard links
 
@@ -871,8 +923,9 @@ otherwise unknown, keeping full-group `NameResolve` as the fallback.
   move-with-rename and rename-within-directory) keep the CNID; source drops,
   destination gains; counts update; collisions → `dupFNErr`.
 - **Identity by inode** (Decision 3):
-  - a **host-side** rename of a listed child keeps its CNID and updates its name
-    and `parID` on the next access;
+  - a **host-side** rename of a listed child **within its directory** keeps its
+    CNID and updates its name on the next access (a move to another directory is
+    delete + create, a new CNID);
   - a delete-and-recreate at the same name gets a **new** CNID;
   - a **hard-linked** file (`nlink > 1`) keeps distinct CNIDs for its distinct
     names (the `(dev, ino, posixName)` key), and renaming one name does not
@@ -889,9 +942,12 @@ otherwise unknown, keeping full-group `NameResolve` as the fallback.
 - **Group-scoped NameResolve**: naming one group leaves other groups' names
   undecided until asked; a name lookup for one entry does not force a
   whole-directory naming pass; a caller never observes an undecided name.
-- **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — a path resolve
-  performs zero directory scans and resolves components by stat + `(dev, ino)`;
+- **Path resolution (F1)**: `ResolvePathDoesNotEnumerate` — resolving the *path*
+  performs zero directory scans (components resolve by stat + `(dev, ino)`), and
   the resulting CNID matches a later FileManager access to the same entry.
+  Producing the `FSSpec` *name* may list the target's immediate parent once
+  (`resolveName`); the test asserts that bound (0 scans for the walk, ≤1 for the
+  parent), not literally zero.
 - **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — counting a
   subdirectory constructs no `Item`s for its children and keeps no descriptors.
 - **Instrumentation**: a directory is Listed once and reused while valid
