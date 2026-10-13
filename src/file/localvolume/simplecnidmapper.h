@@ -22,7 +22,6 @@ class SimpleCNIDMapper : public CNIDMapper
         std::optional<mac_string> macname;
         FileIdentity identity;
         bool isDir = false;
-        std::uint64_t mtime = 0;
     };
     std::unordered_map<CNID, StoredMapping> mappings_;
 
@@ -36,8 +35,6 @@ class SimpleCNIDMapper : public CNIDMapper
     std::unordered_map<CNID, std::map<mac_string, CNID>> names_;
 
     fs::path pathOf(CNID cnid) const;
-    CNID createRecord(CNID parID, const fs::path& posixName,
-        const FileIdentity& identity, bool isDir, std::uint64_t mtime);
     void forgetRecordName(StoredMapping& rec);
     Mapping mappingFor(CNID cnid, const fs::path& dirPath) const;
 
@@ -46,8 +43,9 @@ public:
 
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> entries) override;
     virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
-    virtual CNID resolveChild(CNID parID, const fs::path& path,
-        const FileIdentity& identity, bool isDir, std::uint64_t mtime) override;
+    virtual std::optional<Mapping> lookupPosixName(CNID parID, const fs::path& posixName) override;
+    virtual CNID createRecord(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir) override;
     virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) override;
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) override;
     virtual void deleteCNID(CNID cnid) override;

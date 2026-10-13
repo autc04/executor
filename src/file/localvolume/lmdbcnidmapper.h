@@ -45,8 +45,9 @@ public:
     // Not implemented yet; the LMDB backend is disabled and will be reworked
     // together with its indexes in Phase 11 of
     // docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
-    virtual CNID resolveChild(CNID parID, const fs::path& path,
-        const FileIdentity& identity, bool isDir, std::uint64_t mtime) override;
+    virtual std::optional<Mapping> lookupPosixName(CNID parID, const fs::path& posixName) override;
+    virtual CNID createRecord(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir) override;
     virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) override;
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) override;
     virtual void deleteCNID(CNID cnid) override;

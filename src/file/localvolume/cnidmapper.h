@@ -40,7 +40,6 @@ public:
     {
         fs::path posixName;
         FileIdentity identity;
-        std::uint64_t mtime;
         bool isDir;
     };
 
@@ -66,11 +65,14 @@ public:
     // caller validates (see ItemCache). 
     virtual std::optional<Mapping> lookupCNID(CNID cnid) = 0;
 
-    // The CNID for the child of `parID` living at `path`, creating a record when
-    // there is none. Identity is preferred over the path; a different inode at an
-    // existing path is delete + create. No name is decided.
-    virtual CNID resolveChild(CNID parID, const fs::path& path,
-        const FileIdentity& identity, bool isDir, std::uint64_t mtime) = 0;
+    // The record for the child of `parID` stored under `posixName`, or nothing.
+    // A pure lookup: the mapper neither validates nor creates.
+    virtual std::optional<Mapping> lookupPosixName(CNID parID, const fs::path& posixName) = 0;
+
+    // Bind `posixName` under `parID` to a fresh CNID. Replacing a child means
+    // delete then create, which the caller does; the mapper only assigns.
+    virtual CNID createRecord(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir) = 0;
 
     // The child of `parID` whose decided Mac name is `macName` (case-folded), or
     // nothing.

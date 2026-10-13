@@ -163,7 +163,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
                 if(!st.exists || (!st.isDirectory && !st.isRegular))
                     continue;   // not something the File Manager can address
 
-                entries.push_back({ e.path().filename(), st.identity, st.stamp.mtime, st.isDirectory });
+                entries.push_back({ e.path().filename(), st.identity, st.isDirectory });
             }
         }
         catch(const boost::filesystem::filesystem_error& exc)
@@ -389,8 +389,7 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         if(!st.exists || (!st.isDirectory && !st.isRegular))
             return {};
 
-        CNID cnid = cnidMapper_->resolveChild(dir->cnid(), childPath,
-            st.identity, st.isDirectory, st.stamp.mtime);
+        CNID cnid = resolveChild(dir->cnid(), elem, st);
         item = realizeValidated(cnid);
         if(!item)
             return {};
@@ -405,6 +404,21 @@ ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d
         return item;
 
     return makeItem(dir->cnid(), d.cnid, path, std::nullopt, d.isDir);
+}
+
+CNID ItemCache::resolveChild(CNID parID, const fs::path& posixName, const PathStat& st)
+{
+    if(auto mapping = cnidMapper_->lookupPosixName(parID, posixName))
+    {
+        // The same host file still holds the name, so reuse its CNID. A different
+        // kind, or a different file (the inode changed), is a new item.
+        if(mapping->isDir == st.isDirectory && sameIdentity(mapping->identity, st.identity))
+            return mapping->cnid;
+
+        cnidMapper_->deleteCNID(mapping->cnid);
+    }
+
+    return cnidMapper_->createRecord(parID, posixName, st.identity, st.isDirectory);
 }
 
 ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)

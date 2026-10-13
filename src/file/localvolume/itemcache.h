@@ -66,6 +66,12 @@ class ItemCache
     // Realize a descriptor's Item (from the registry, else freshly built).
     ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
+    // The CNID for the child of `parID` named `posixName`, creating a record when
+    // there is none. The same identity and kind reuse the CNID; any other file at
+    // that name is a different item, so the old record is dropped and a fresh CNID
+    // is assigned. No name is decided.
+    CNID resolveChild(CNID parID, const fs::path& posixName, const PathStat& st);
+
     // Ensure `dir` is listed and valid; re-lists if the host changed.
     // Returns false if a fresh scan failed (the directory could not be read).
     // Private: obtain children through child(), which owns this precondition.

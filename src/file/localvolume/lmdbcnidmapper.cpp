@@ -348,12 +348,17 @@ std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
     });
 }
 
-CNID LMDBCNIDMapper::resolveChild(CNID parID, const fs::path& path,
-    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
+std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupPosixName(CNID parID, const fs::path& posixName)
 {
     // The LMDB backend is disabled; it is reworked together with its indexes in
     // Phase 11 of docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
-    throw std::logic_error("LMDBCNIDMapper::resolveChild not implemented");
+    throw std::logic_error("LMDBCNIDMapper::lookupPosixName not implemented");
+}
+
+CNID LMDBCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
+    const FileIdentity& identity, bool isDir)
+{
+    throw std::logic_error("LMDBCNIDMapper::createRecord not implemented");
 }
 
 std::optional<CNID> LMDBCNIDMapper::cnidForName(CNID parID, mac_string_view macName)

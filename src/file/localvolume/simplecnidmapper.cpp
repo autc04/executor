@@ -28,7 +28,7 @@ SimpleCNIDMapper::SimpleCNIDMapper(fs::path root, mac_string volumeName)
 {
     // The volume root (CNID 2) carries no name of its own; pathOf() special-cases
     // it to rootPath_.
-    mappings_.emplace(2, StoredMapping { 1, 2, fs::path(), std::move(volumeName), {}, true, 0 });
+    mappings_.emplace(2, StoredMapping { 1, 2, fs::path(), std::move(volumeName), {}, true });
 }
 
 fs::path SimpleCNIDMapper::pathOf(CNID cnid) const
@@ -54,11 +54,11 @@ fs::path SimpleCNIDMapper::pathOf(CNID cnid) const
 }
 
 CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
-    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
+    const FileIdentity& identity, bool isDir)
 {
     CNID cnid = nextCNID_++;
 
-    mappings_.emplace(cnid, StoredMapping { parID, cnid, posixName, std::nullopt, identity, isDir, mtime });
+    mappings_.emplace(cnid, StoredMapping { parID, cnid, posixName, std::nullopt, identity, isDir });
     posixNames_[parID][posixName] = cnid;
 
     return cnid;
@@ -104,8 +104,6 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
                 continue;
 
             consumed[i] = true;
-            rec.identity = e.identity;   // adopt an inode that is usable now
-            rec.mtime = e.mtime;
             surviving.insert(rec.cnid);
         }
     }
@@ -146,8 +144,6 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             forgetRecordName(rec);   // the Mac name is re-derived
             rec.macname.reset();
             rec.posixName = entries[i].posixName;
-            rec.identity = entries[i].identity;
-            rec.mtime = entries[i].mtime;
             dirMap[rec.posixName] = cnid;
             surviving.insert(cnid);
         }
@@ -170,7 +166,7 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
         if(!consumed[i])
             result.push_back(mappingFor(
                 createRecord(dirID, entries[i].posixName, entries[i].identity,
-                    entries[i].isDir, entries[i].mtime),
+                    entries[i].isDir),
                 dirPath));
 
     return result;
@@ -186,29 +182,17 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
     return Mapping { m.parID, m.cnid, pathOf(cnid), m.macname, m.identity, m.isDir };
 }
 
-CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path,
-    const FileIdentity& identity, bool isDir, std::uint64_t mtime)
+std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupPosixName(CNID parID, const fs::path& posixName)
 {
-    const fs::path posixName = path.filename();
+    auto dirIt = posixNames_.find(parID);
+    if(dirIt == posixNames_.end())
+        return {};
 
-    if(auto dirIt = posixNames_.find(parID); dirIt != posixNames_.end())
-    {
-        if(auto it = dirIt->second.find(posixName); it != dirIt->second.end())
-        {
-            auto& rec = mappings_.at(it->second);
-            if(rec.isDir == isDir && sameIdentity(rec.identity, identity))
-            {
-                rec.identity = identity;
-                rec.mtime = mtime;
-                return it->second;
-            }
+    auto it = dirIt->second.find(posixName);
+    if(it == dirIt->second.end())
+        return {};
 
-            // A different known identity or kind at this name: delete + create.
-            deleteCNID(it->second);
-        }
-    }
-
-    return createRecord(parID, posixName, identity, isDir, mtime);
+    return mappingFor(it->second, pathOf(parID));
 }
 
 std::optional<CNID> SimpleCNIDMapper::cnidForName(CNID parID, mac_string_view macName)
