@@ -464,9 +464,13 @@ because a CNID denotes a **binding**, not an inode: one inode may have several
 bindings (hard links), each with its own CNID.
 
 Identity is stored **in the record**, not in a separate index: a record is
-`{ parID, posixName, macName?, identity, kind, mtime }`, and a staleness check
-always starts from a CNID, so it already has the identity in hand. The mapper keeps
-only two parent-keyed maps:
+`{ parID, posixName, macName?, identity, kind }`, and a staleness check
+always starts from a CNID, so it already has the identity in hand. The record's
+`identity` is written when the binding is created (and when a rename re-points
+it), never re-stamped by a match: the stored value *is* the reference the
+comparison is against, and re-stamping it could only ever turn an unusable
+identity into a usable one, which cannot happen while every identity comes from
+the same `stat`. The mapper keeps only two parent-keyed maps:
 
 - `parID -> { posixName -> cnid }` — the directory's **child set** *and* the
   `(parID, posixName) -> cnid` lookup (this replaces a separate child list);
@@ -511,7 +515,7 @@ the directory being re-listed, let `occ(c)` be the scanned entries whose identit
 matches `c`:
 
 - some occurrence matches `posixName` **and** kind → unchanged: keep the CNID and
-  the decided `macName`, refresh identity/kind/`mtime`;
+  the decided `macName`;
 - else exactly one occurrence → same-directory **rename**: keep the CNID, adopt the
   new `posixName`, clear the `macName` (it is re-derived), update the binding;
 - else no occurrence → gone: `deleteCNID(c)`, recursively;
@@ -611,11 +615,11 @@ affect the open handle (the OS keeps the fd on the inode). This removes the
 Backing store, per volume (a **dumb value store**; resolving and staleness policy
 live in `ItemCache`):
 
-- **record** per CNID: `{ parID, posixName, macName?, identity, kind, mtime }`. The
+- **record** per CNID: `{ parID, posixName, macName?, identity, kind }`. The
   host **path is derived** from the `parID` chain and `posixName`, never stored, so
   renaming a directory invalidates no record. `identity` is `(dev, ino)` or a name
   key; there is no `nlink` (see *Binding staleness*). `macName` is optional until
-  NameResolve; `mtime` is an explicit snapshot, not a cached `fs::directory_entry`.
+  NameResolve.
 - `parID -> { posixName -> cnid }` — the directory's child set and the
   `(parID, posixName) -> cnid` lookup.
 - `parID -> { macName case-folded -> cnid }` — name lookup, populated at NameResolve.
@@ -696,10 +700,11 @@ The binding check deletes nothing: it flushes the parent so the diff can reconci
 an already-realized `items_` entry is trusted (the "as of last access" bound). If the
 item is open, the diff **updates it in place** rather than replacing it.
 
-Parts: the mapper answers `record` / `cnidForName` / `resolveChild` /
-`mapDirectoryContents` / `nameGroup`; `ItemCache` owns `items_`, realization,
-`ensureListed`; and `resolveName(dir, hint)` is the single directory-side funnel
-(below).
+Parts: the mapper answers `record` / `lookupPosixName` / `cnidForName` /
+`mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`
+primitives; `ItemCache` owns `items_`, realization, `ensureListed`, and the
+identity/kind policy of `resolveChild`; and `resolveName(dir, hint)` is the single
+directory-side funnel (below).
 
 **By CNID** (`resolveDir(dirID)`, `tryResolve(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
@@ -732,11 +737,11 @@ written for now; benchmark when the backend matters.
 2. dir = root (cnid 2)
 3. for each component c but the last:
      st   = statPath(dir.path / c); if missing -> fail
-     cnid = mapper.resolveChild(dir.cnid, c, st)      # identity-or-create
+     cnid = cache.resolveChild(dir.cnid, c, st)       # identity-or-create policy
      dir  = realizeValidated(cnid); must be a DirectoryItem else ENOTDIR
 4. last component c:
      st   = statPath(dir.path / c); if missing -> fail
-     cnid = mapper.resolveChild(dir.cnid, c, st)
+     cnid = cache.resolveChild(dir.cnid, c, st)
      resolveName(dir, /*hint*/ posixName = c)                   # lists only this dir
      return realizeValidated(cnid)
 ```
