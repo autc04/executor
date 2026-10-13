@@ -2,6 +2,7 @@
 #include <OSUtil.h>
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -52,52 +53,13 @@ fs::path SimpleCNIDMapper::pathOf(CNID cnid) const
     return path;
 }
 
-std::optional<CNID> SimpleCNIDMapper::childByName(CNID parID, const fs::path& posixName) const
-{
-    auto it = children_.find(parID);
-    if(it == children_.end())
-        return {};
-
-    for(CNID cnid : it->second)
-    {
-        auto mit = mappings_.find(cnid);
-        if(mit != mappings_.end() && mit->second.posixName == posixName)
-            return cnid;
-    }
-    return {};
-}
-
-void SimpleCNIDMapper::addBinding(const StoredMapping& rec)
-{
-    if(rec.identity.valid)
-        bindings_[inodeKey(rec.identity)].insert(rec.cnid);
-}
-
-void SimpleCNIDMapper::setRecordIdentity(StoredMapping& rec, const FileIdentity& identity)
-{
-    if(rec.identity.valid)
-    {
-        auto it = bindings_.find(inodeKey(rec.identity));
-        if(it != bindings_.end())
-        {
-            it->second.erase(rec.cnid);
-            if(it->second.empty())
-                bindings_.erase(it);
-        }
-    }
-
-    rec.identity = identity;
-    addBinding(rec);
-}
-
 CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
     const FileIdentity& identity, bool isDir, std::uint64_t mtime)
 {
     CNID cnid = nextCNID_++;
 
     mappings_.emplace(cnid, StoredMapping { parID, cnid, posixName, std::nullopt, identity, isDir, mtime });
-    children_[parID].insert(cnid);
-    addBinding(mappings_.at(cnid));
+    posixNames_[parID][posixName] = cnid;
 
     return cnid;
 }
@@ -113,90 +75,65 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
 {
     const fs::path dirPath = pathOf(dirID);
 
-    std::vector<CNID> stored;
-    if(auto it = children_.find(dirID); it != children_.end())
+    std::vector<std::pair<fs::path, CNID>> stored;
+    if(auto it = posixNames_.find(dirID); it != posixNames_.end())
         stored.assign(it->second.begin(), it->second.end());
-    std::sort(stored.begin(), stored.end());   // deterministic order
 
     const size_t n = entries.size();
-
-    // occ: stored child -> the scanned entries that share its identity. Built
-    // from the scan (not a name -> cnid map of the resolver's kind).
-    std::unordered_map<CNID, std::vector<size_t>> occ;
-
-    // Fallback for entries with no usable inode: match by host name.
-    std::unordered_map<std::string, CNID> byName;
-    bool byNameBuilt = false;
-
-    for(size_t i = 0; i < n; i++)
-    {
-        const DirEntry& e = entries[i];
-
-        if(e.identity.valid)
-        {
-            auto bit = bindings_.find(inodeKey(e.identity));
-            if(bit != bindings_.end())
-                for(CNID c : bit->second)
-                    if(auto mit = mappings_.find(c); mit != mappings_.end() && mit->second.parID == dirID)
-                        occ[c].push_back(i);
-        }
-        else
-        {
-            if(!byNameBuilt)
-            {
-                for(CNID c : stored)
-                    if(auto mit = mappings_.find(c); mit != mappings_.end())
-                        byName.emplace(mit->second.posixName.string(), c);
-                byNameBuilt = true;
-            }
-
-            auto bit = byName.find(e.posixName.string());
-            if(bit != byName.end())
-                occ[bit->second].push_back(i);
-        }
-    }
-
     std::vector<bool> consumed(n, false);
     std::set<CNID> surviving;
 
-    // Keep: a child whose name and kind are unchanged.
-    for(CNID c : stored)
+    // Pass 1: a child whose name, kind and identity still match a scanned entry is
+    // unchanged. A child's name is unique, so each entry matches at most one child.
+    if(auto dirIt = posixNames_.find(dirID); dirIt != posixNames_.end())
     {
-        auto oit = occ.find(c);
-        if(oit == occ.end())
-            continue;
-
-        const StoredMapping& rec = mappings_.at(c);
-        for(size_t i : oit->second)
+        for(size_t i = 0; i < n; i++)
         {
-            if(consumed[i])
-                continue;
             const DirEntry& e = entries[i];
-            if(e.posixName != rec.posixName || e.isDir != rec.isDir)
+
+            auto eit = dirIt->second.find(e.posixName);
+            if(eit == dirIt->second.end())
+                continue;
+
+            auto mit = mappings_.find(eit->second);
+            if(mit == mappings_.end())
+                continue;
+
+            StoredMapping& rec = mit->second;
+            if(rec.isDir != e.isDir || !sameIdentity(rec.identity, e.identity))
                 continue;
 
             consumed[i] = true;
-            auto& m = mappings_.at(c);
-            setRecordIdentity(m, e.identity);
-            m.mtime = e.mtime;
-            surviving.insert(c);
-            break;
+            rec.identity = e.identity;   // adopt an inode that is usable now
+            rec.mtime = e.mtime;
+            surviving.insert(rec.cnid);
         }
     }
 
-    // Rename or delete the rest.
-    for(CNID c : stored)
-    {
-        if(surviving.count(c))
-            continue;
+    // The inode pairing for rename recovery is scratch, built from the scan.
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::vector<size_t>> byInode;
+    for(size_t i = 0; i < n; i++)
+        if(entries[i].identity.valid && !consumed[i])
+            byInode[inodeKey(entries[i].identity)].push_back(i);
 
-        auto& rec = mappings_.at(c);
+    // Pass 2: a child that was not kept was renamed, split, or is gone. Process in
+    // CNID order so the result does not depend on scan order.
+    std::vector<CNID> remaining;
+    for(auto& [name, cnid] : stored)
+        if(!surviving.count(cnid))
+            remaining.push_back(cnid);
+    std::sort(remaining.begin(), remaining.end());
+
+    for(CNID cnid : remaining)
+    {
+        auto& rec = mappings_.at(cnid);
 
         std::vector<size_t> rem;
-        if(auto oit = occ.find(c); oit != occ.end())
-            for(size_t i : oit->second)
-                if(!consumed[i])
-                    rem.push_back(i);
+        if(rec.identity.valid)
+            if(auto bit = byInode.find(inodeKey(rec.identity)); bit != byInode.end())
+                for(size_t i : bit->second)
+                    if(!consumed[i])
+                        rem.push_back(i);
 
         if(rem.size() == 1 && entries[rem[0]].isDir == rec.isDir)
         {
@@ -204,36 +141,37 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             size_t i = rem[0];
             consumed[i] = true;
 
+            auto& dirMap = posixNames_[dirID];
+            dirMap.erase(rec.posixName);
             forgetRecordName(rec);   // the Mac name is re-derived
             rec.macname.reset();
             rec.posixName = entries[i].posixName;
-            setRecordIdentity(rec, entries[i].identity);
+            rec.identity = entries[i].identity;
             rec.mtime = entries[i].mtime;
-            surviving.insert(c);
+            dirMap[rec.posixName] = cnid;
+            surviving.insert(cnid);
         }
         else
         {
             // No occurrence: gone. Several: the old CNID is dropped and each
             // occurrence becomes a new entry.
-            deleteCNID(c);
+            deleteCNID(cnid);
         }
     }
 
     std::vector<Mapping> result;
     result.reserve(n);
 
-    for(CNID c : stored)
-        if(surviving.count(c))
-            result.push_back(mappingFor(c, dirPath));
+    for(auto& [name, cnid] : stored)
+        if(surviving.count(cnid))
+            result.push_back(mappingFor(cnid, dirPath));
 
     for(size_t i = 0; i < n; i++)
         if(!consumed[i])
-        {
-            CNID c = createRecord(dirID, entries[i].posixName, entries[i].identity,
-                entries[i].isDir, entries[i].mtime);
-            consumed[i] = true;
-            result.push_back(mappingFor(c, dirPath));
-        }
+            result.push_back(mappingFor(
+                createRecord(dirID, entries[i].posixName, entries[i].identity,
+                    entries[i].isDir, entries[i].mtime),
+                dirPath));
 
     return result;
 }
@@ -253,38 +191,23 @@ CNID SimpleCNIDMapper::resolveChild(CNID parID, const fs::path& path,
 {
     const fs::path posixName = path.filename();
 
-    // 1. An identity match (a hard link has several bindings).
-    if(identity.valid)
+    if(auto dirIt = posixNames_.find(parID); dirIt != posixNames_.end())
     {
-        auto bit = bindings_.find(inodeKey(identity));
-        if(bit != bindings_.end())
-            for(CNID cnid : bit->second)
-            {
-                auto mit = mappings_.find(cnid);
-                if(mit != mappings_.end() && mit->second.parID == parID
-                   && mit->second.posixName == posixName && mit->second.isDir == isDir)
-                {
-                    mit->second.mtime = mtime;
-                    return cnid;
-                }
-            }
-    }
-
-    // 2. An existing binding at this exact name. A different known identity or
-    //    kind means the entry was replaced (delete + create).
-    if(auto existing = childByName(parID, posixName))
-    {
-        auto& rec = mappings_.at(*existing);
-        if(rec.isDir == isDir && sameIdentity(rec.identity, identity))
+        if(auto it = dirIt->second.find(posixName); it != dirIt->second.end())
         {
-            setRecordIdentity(rec, identity);
-            rec.mtime = mtime;
-            return *existing;
+            auto& rec = mappings_.at(it->second);
+            if(rec.isDir == isDir && sameIdentity(rec.identity, identity))
+            {
+                rec.identity = identity;
+                rec.mtime = mtime;
+                return it->second;
+            }
+
+            // A different known identity or kind at this name: delete + create.
+            deleteCNID(it->second);
         }
-        deleteCNID(*existing);
     }
 
-    // 3. A new binding.
     return createRecord(parID, posixName, identity, isDir, mtime);
 }
 
@@ -354,30 +277,27 @@ void SimpleCNIDMapper::deleteCNID(CNID cnid)
         return;
 
     CNID parID = it->second.parID;
-
-    if(it->second.identity.valid)
-    {
-        auto bit = bindings_.find(inodeKey(it->second.identity));
-        if(bit != bindings_.end())
-        {
-            bit->second.erase(cnid);
-            if(bit->second.empty())
-                bindings_.erase(bit);
-        }
-    }
+    fs::path posixName = it->second.posixName;
 
     forgetRecordName(it->second);
 
-    if(auto pit = children_.find(parID); pit != children_.end())
-        pit->second.erase(cnid);
-
-    // deleteCNID is only invoked for empty directories by ItemCache, but the
-    // diff above also invokes it on files and directories that have been
-    // deleted or moved by other programs.
-    if(auto cit = children_.find(cnid); cit != children_.end())
+    if(auto pit = posixNames_.find(parID); pit != posixNames_.end())
     {
-        std::vector<CNID> childList(cit->second.begin(), cit->second.end());
-        children_.erase(cit);
+        pit->second.erase(posixName);
+        if(pit->second.empty())
+            posixNames_.erase(pit);
+    }
+
+    // deleteCNID is only invoked for empty directories by ItemCache, but the diff
+    // above also invokes it on files and directories that have been deleted or
+    // moved by other programs.
+    if(auto cit = posixNames_.find(cnid); cit != posixNames_.end())
+    {
+        std::vector<CNID> childList;
+        childList.reserve(cit->second.size());
+        for(auto& [name, child] : cit->second)
+            childList.push_back(child);
+        posixNames_.erase(cit);
         for(CNID childCnid : childList)
             deleteCNID(childCnid);
     }
@@ -402,20 +322,24 @@ void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMa
 
     fs::path newPath = fsop();
 
-    // The name index is keyed by parent, so a move must re-home the entry.
+    // Both name maps are keyed by parent, so a move re-homes the entries.
     forgetRecordName(it->second);
 
     if(!newMacName.empty())
         it->second.macname = newMacName;
 
-    if(auto pit = children_.find(oldParent); pit != children_.end())
-        pit->second.erase(cnid);
+    fs::path oldName = it->second.posixName;
+    if(auto pit = posixNames_.find(oldParent); pit != posixNames_.end())
+    {
+        pit->second.erase(oldName);
+        if(pit->second.empty())
+            posixNames_.erase(pit);
+    }
 
     it->second.posixName = newPath.filename();
     it->second.parID = newParent;
 
-    children_[newParent].insert(cnid);
-
+    posixNames_[newParent][it->second.posixName] = cnid;
     if(it->second.macname)
         names_[newParent][foldName(*it->second.macname)] = cnid;
 }

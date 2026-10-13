@@ -1,8 +1,8 @@
 #pragma once
 
 #include "cnidmapper.h"
-#include <set>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -26,23 +26,18 @@ class SimpleCNIDMapper : public CNIDMapper
     };
     std::unordered_map<CNID, StoredMapping> mappings_;
 
-    // Directory contents: parID -> set of child CNIDs.
-    using ChildSet = std::set<CNID>;
-    std::unordered_map<CNID, ChildSet> children_;
+    // parID -> (host name -> child CNID): a directory's child set *and* the
+    // (parID, posixName) -> cnid lookup. There is no inode-keyed index: identity
+    // lives in the record, and inode pairing is built from the scan while
+    // re-listing a directory. See *Binding staleness* in the plan.
+    std::unordered_map<CNID, std::map<fs::path, CNID>> posixNames_;
 
-    // Identity index: (device, inode) -> the CNIDs bound to it. A regular file
-    // has one binding; a hard-linked inode has one per name.
-    std::map<std::pair<std::uint64_t, std::uint64_t>, ChildSet> bindings_;
-
-    // Name index: parID -> (case-folded Mac name -> cnid), for decided names.
+    // parID -> (case-folded Mac name -> cnid), populated at NameResolve.
     std::unordered_map<CNID, std::map<mac_string, CNID>> names_;
 
     fs::path pathOf(CNID cnid) const;
-    std::optional<CNID> childByName(CNID parID, const fs::path& posixName) const;
     CNID createRecord(CNID parID, const fs::path& posixName,
         const FileIdentity& identity, bool isDir, std::uint64_t mtime);
-    void setRecordIdentity(StoredMapping& rec, const FileIdentity& identity);
-    void addBinding(const StoredMapping& rec);
     void forgetRecordName(StoredMapping& rec);
     Mapping mappingFor(CNID cnid, const fs::path& dirPath) const;
 

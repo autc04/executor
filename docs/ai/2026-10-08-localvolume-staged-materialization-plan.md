@@ -419,9 +419,9 @@ All three checks are validation-at-access; none is timer-based.
   is the only writer of bindings.
 - **Rep** staleness is orthogonal: it validates the format layer against the host
   files, never reads or writes a binding, and never escalates.
-- The `(parID, macName)` and inode indexes are maintained by the diff, not validated
-  on read; a hit is a hint, still subject to the binding check. "Is the name
-  decided?" is a decidedness flag, not staleness.
+- The `(parID, macName)` and posix-name maps are maintained by the diff, not
+  validated on read; a hit is a hint, still subject to the binding check. "Is the
+  name decided?" is a decidedness flag, not staleness.
 
 ### Listing staleness
 
@@ -460,14 +460,30 @@ List or NameResolve, and a hit from it is still validated here.
 
 Identity is `(dev, ino)` when the host supplies a usable inode, otherwise a name
 key `(parID, posixName)`. There is no other form — in particular no `nlink` case —
-because a CNID denotes a **binding**, not an inode:
+because a CNID denotes a **binding**, not an inode: one inode may have several
+bindings (hard links), each with its own CNID.
 
-- one inode may have several bindings (hard links); each `(parID, posixName)` has
-  its own CNID;
-- the index is therefore `(dev, ino) -> { (parID, posixName) -> cnid }`;
-- the name-keyed form is the fallback when no inode is usable (`d_ino == 0`, a
-  filesystem without inodes, or Windows' `GetFileAttributesEx`, which exposes none
-  and needs a handle-based variant, `GetFileInformationByHandle`).
+Identity is stored **in the record**, not in a separate index: a record is
+`{ parID, posixName, macName?, identity, kind, mtime }`, and a staleness check
+always starts from a CNID, so it already has the identity in hand. The mapper keeps
+only two parent-keyed maps:
+
+- `parID -> { posixName -> cnid }` — the directory's **child set** *and* the
+  `(parID, posixName) -> cnid` lookup (this replaces a separate child list);
+- `parID -> { macName (case-folded) -> cnid }` — name lookup, populated at
+  NameResolve.
+
+There is deliberately **no inode-keyed index**. An inode→bindings lookup is only
+useful for cross-directory move detection, which cannot be done efficiently and is
+not attempted, and recording an inode "wherever it happens to be seen" would
+misfire in the presence of hard links. Within one directory the inode pairing is
+needed only while re-listing that directory, so it is built from the scan itself (a
+transient map, O(n+m)) rather than kept as an index.
+
+When no inode is usable (`d_ino == 0`, a filesystem without inodes, or Windows'
+`GetFileAttributesEx`, which exposes none and needs a handle-based variant,
+`GetFileInformationByHandle`), the posix-name map *is* the identity: move detection
+is off, and there is no false move.
 
 A binding failure is **not** resolved in place: the file may have moved, so nothing
 is dropped or deleted — the parent's listing is flushed, the following diff
@@ -508,9 +524,11 @@ CNID). Reconciliation is **per directory**; cross-directory rename detection is
 deliberately not attempted (Phase 10).
 
 The rules are order-independent and cover the regular, hard-link and no-inode cases
-uniformly: with a usable inode `(dev, ino)` groups a file's bindings (one for a
-regular file, several for hard links); with no usable inode the match is name-keyed,
-so there is no move detection and no false move.
+uniformly. With a usable inode, the scan's entries are paired with the directory's
+stored children by `(dev, ino)` — one child for a regular file, one per hard-linked
+name; that pairing is scratch built from the scan (see *Binding staleness*), not an
+index. With no usable inode the match is name-keyed, so there is no move detection
+and no false move.
 
 Consequences:
 
@@ -598,24 +616,21 @@ live in `ItemCache`):
   renaming a directory invalidates no record. `identity` is `(dev, ino)` or a name
   key; there is no `nlink` (see *Binding staleness*). `macName` is optional until
   NameResolve; `mtime` is an explicit snapshot, not a cached `fs::directory_entry`.
-- `(dev, ino) -> { (parID, posixName) -> cnid }` — an inode's bindings: one for a
-  regular file, one per name for hard links. Stat-first path resolution looks up the
-  whole binding set; rename recovery matches within it.
-- `parID -> {cnid}` — the directory child set: the reconciliation diff and the
-  names-in-use set.
-- `(parID, macName case-folded) -> cnid` — name lookup without listing.
+- `parID -> { posixName -> cnid }` — the directory's child set and the
+  `(parID, posixName) -> cnid` lookup.
+- `parID -> { macName case-folded -> cnid }` — name lookup, populated at NameResolve.
 
-It keeps no top-level `(parID, posixName) -> cnid` lookup: path resolution stats each
-component and looks up the inode, and `posixName` appears only nested under an inode.
+There is no inode-keyed index: the inode pairing is done from the scan while
+re-listing a directory (see *Binding staleness*).
 
 Operations:
 
-- CNIDResolve: look up `(dev, ino)`, or create a record under a parent.
-- **Resolve / diff** (the batch form): match the fresh scan against the stored
-  children by binding (inode, then name and kind) — reuse, rename, create, or
+- CNIDResolve: look up `(parID, posixName)`, or create a record under a parent.
+- **Resolve / diff** (the batch form): pair the fresh scan with the stored children
+  by `(dev, ino)` (built from the scan) and by name — reuse, rename, create, or
   delete, per *Reconciliation* — then NameResolve the affected groups.
   `lookupChild`/`getOrCreateChild` go away.
-- `deleteCNID`/`moveCNID` maintain the three indexes above.
+- `deleteCNID`/`moveCNID` maintain the two maps above.
 - A group's naming is a read-modify-write; larger operations are handed to the
   mapper as a `std::function` so the transaction shape is backend-neutral
   (Decision 9).
@@ -906,7 +921,8 @@ every listing/metadata call site and the `dynamic_cast` sites.
 - Identity is looked up by inode — `(dev, ino) -> cnid` — and `tryResolve(path)`
   stats each component instead of `lookupChild` / `getOrCreateChild` (which go
   away). The identity-or-create step is one mapper call (`resolveChild`), so it can
-  become a single transaction later.
+  become a single transaction later. *(Phase 10 replaces the inode index with the
+  posix-name map; see *Binding staleness*.)*
 - **Validation, not recovery:** on access, if the record's path no longer exists or
   its `(dev, ino)` no longer matches, flush the `Item` and the mapper entry. A moved
   item therefore gets a **new** CNID; rename preservation comes later (Phase 10,
@@ -938,7 +954,8 @@ every listing/metadata call site and the `dynamic_cast` sites.
 not the inode alone, so one inode may hold several bindings (hard links), each with
 its own CNID. Identity is `(dev, ino)` (or a name key when no inode is usable) and
 `nlink` is dropped; the record stores `posixName` and the path is derived from the
-`parID` chain, so a directory rename invalidates no record.
+`parID` chain, so a directory rename invalidates no record. There is no inode-keyed
+index (see *Binding staleness*); the posix-name map doubles as the child set.
 
 **Rename recovery.** The per-directory diff matches a stored child `c` against the
 scanned entries with the same identity, per *Reconciliation*: one matching
