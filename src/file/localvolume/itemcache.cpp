@@ -191,6 +191,16 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 
             for(auto& m : mappings)
             {
+                // The diff may have recovered a rename (or dropped the entry), so
+                // re-point any live Item at its current path before anything can
+                // use the stale one: a live Item is otherwise only relocated when
+                // it is handed out, which leaves the invariant unenforced between
+                // a listing and the next hand-out. relocate() also clears a cached
+                // Mac name when the name changed, matching the record's reset.
+                if(auto itemIt = items_.find(m.cnid); itemIt != items_.end())
+                    if(ItemPtr item = itemIt->second.lock())
+                        item->relocate(dir->path() / m.posixName);
+
                 Descriptor d;
                 d.posixName = m.posixName;
                 d.isDir = m.isDir;
