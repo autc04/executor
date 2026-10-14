@@ -27,10 +27,9 @@ class ItemCache
 {
     std::unique_ptr<CNIDMapper> cnidMapper_;
     ItemFactory *itemFactory_;
+    const fs::path rootPath_;
 
     std::unordered_map<CNID, std::weak_ptr<Item>> items_; 
-    
-    DirectoryItemPtr rootDirItem_;
 
     struct CachedDirectory
     {

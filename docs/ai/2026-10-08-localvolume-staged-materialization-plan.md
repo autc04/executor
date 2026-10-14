@@ -621,10 +621,9 @@ referenced), and is safe because re-realization rebuilds from the mapper. Charge
 huge directory (e.g. `/nix/store`), not many small ones. Default budget:
 **500,000 items**.
 
-**TODO (Phase 7): drop the root pinning.** Pinning the root (CNID 2) was a
-leftover from the rooted-tree model. In the link-free model an `Item` is retained
-only by the LRU or an external reference, so the root is just another cached
-directory and should be evictable like any other; remove the special case.
+**The root is not pinned.** The root path is a plain member, and the root item
+(CNID 2) is realized on demand from its mapper record like any other: it is warmed
+at construction and thereafter retained only by the LRU or an external reference.
 
 Evicting a `DirectoryItem` drops the LRU's reference only; an item no one else
 holds dies with it, descriptor list and all, while one a consumer still holds

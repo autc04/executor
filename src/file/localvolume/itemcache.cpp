@@ -88,9 +88,14 @@ ItemCache::ItemCache(fs::path root,
                 )
     : cnidMapper_(std::move(cnidMapper))
     , itemFactory_(itemFactory)
+    , rootPath_(std::move(root))
 {
-    items_[2] = rootDirItem_ = std::make_shared<DirectoryItem>(*this, 1, 2, root, mac_string(volumeName));
-    retainDirectory(rootDirItem_);
+    // The volume root (CNID 2) is just another cached directory: nothing pins it,
+    // so it can be evicted and rebuilt like any other. Warm it here so the first
+    // access finds it already realized.
+    DirectoryItemPtr rootItem = std::make_shared<DirectoryItem>(*this, 1, 2, rootPath_, mac_string(volumeName));
+    items_[2] = rootItem;
+    retainDirectory(rootItem);
 }
 
 ItemCache::~ItemCache()
@@ -343,7 +348,7 @@ fs::path ItemCache::pathOf(CNID cnid)
         c = parent;
     }
 
-    fs::path path = rootDirItem_->path();
+    fs::path path = rootPath_;
     for(auto n = names.rbegin(); n != names.rend(); ++n)
         path /= *n;
     return path;
@@ -410,13 +415,16 @@ ItemPtr ItemCache::tryResolve(CNID cnid)
 
 ItemPtr ItemCache::tryResolve(fs::path inPath)
 {
-    const auto& rootPath = rootDirItem_->path();
-    auto [rootIter, pathIter] = std::mismatch(rootPath.begin(), rootPath.end(), inPath.begin(), inPath.end());
+    auto [rootIter, pathIter] = std::mismatch(rootPath_.begin(), rootPath_.end(), inPath.begin(), inPath.end());
 
-    if(rootIter != rootPath.end())
+    if(rootIter != rootPath_.end())
         return{};
 
-    ItemPtr item = rootDirItem_;
+    // The root is realized on demand like any other item; nothing pins it.
+    ItemPtr item = realizeValidated(2);
+    if(!item)
+        return{};
+
     for(; pathIter != inPath.end(); ++pathIter)
     {
         auto dir = std::dynamic_pointer_cast<DirectoryItem>(item);
