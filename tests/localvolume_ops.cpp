@@ -588,6 +588,71 @@ TEST_F(LocalVolumeFixture, HostChangeVisibleWithoutInvalidation)
     EXPECT_EQ((std::set<std::string> { "late" }), namesOf(fmList(a->cnid)));
 }
 
+// A scan that fails must not be committed. Reading the failure as an empty
+// directory would delete every child's record and renumber the directory, and
+// Count would cache a wrong 0 -- so both funnels report ioErr and leave the
+// directory to be retried instead.
+TEST_F(LocalVolumeFixture, UnreadableDirectoryReportsIoErr)
+{
+    hostDir("d");
+    hostFile("d/a", "a");
+    hostFile("d/b", "b");
+
+    long eID = 0;
+    ASSERT_EQ(noErr, fmMakeDir(rootDirID_, "e", &eID));
+    hostFile("e/one", "1");   // 'e' is never listed, only counted
+
+    auto d = fmGet(rootDirID_, "d");
+    ASSERT_TRUE(d.has_value());
+    auto a = fmGet(d->cnid, "a");
+    auto b = fmGet(d->cnid, "b");
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+
+    // Drop read, keep write and execute: reading a directory's contents fails,
+    // while stat'ing the directory itself still works.
+    const auto unreadable = fs::perms::owner_write | fs::perms::owner_exe;
+    fs::permissions(host("d"), unreadable);
+    fs::permissions(host("e"), unreadable);
+
+    bool enforced = false;
+    try
+    {
+        for(auto& entry : fs::directory_iterator(host("d")))
+            (void)entry;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        enforced = true;
+    }
+
+    if(!enforced)   // e.g. running as root, where permissions are not enforced
+    {
+        fs::permissions(host("d"), fs::perms::owner_all);
+        fs::permissions(host("e"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce directory permissions";
+    }
+
+    bumpMtime("d");   // stale listing, so the next access re-scans
+
+    EXPECT_EQ(ioErr, fmDirInfoResult(d->cnid, 1));    // the listing funnel
+    EXPECT_EQ(ioErr, fmDirInfoResult(eID, -1));       // the count funnel
+
+    fs::permissions(host("d"), fs::perms::owner_all);
+    fs::permissions(host("e"), fs::perms::owner_all);
+
+    // Neither failed scan left a trace: the count is not the 0 the failed scan
+    // saw, the children are still listed, and their CNIDs are unchanged.
+    EXPECT_EQ(1, *fmChildCount(eID));
+    EXPECT_EQ((std::set<std::string> { "a", "b" }), namesOf(fmList(d->cnid)));
+    auto aAfter = fmGet(d->cnid, "a");
+    auto bAfter = fmGet(d->cnid, "b");
+    ASSERT_TRUE(aAfter.has_value());
+    ASSERT_TRUE(bAfter.has_value());
+    EXPECT_EQ(a->cnid, aAfter->cnid);
+    EXPECT_EQ(b->cnid, bAfter->cnid);
+}
+
 // Phase 5.2: eviction under the item budget is transparent - re-accessing an
 // evicted directory rebuilds the same names and CNIDs from the mapper.
 TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)

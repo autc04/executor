@@ -362,6 +362,24 @@ protected:
         return ipb.hFileInfo.ioResult;
     }
 
+    // The raw ioResult of a PBGetCatInfo on `dirID`: index -1 counts the
+    // directory's children, index > 0 selects that child. Lets a test assert on
+    // the exact error a directory funnel reports.
+    OSErr fmDirInfoResult(long dirID, short index)
+    {
+        Str255 buffer;
+        buffer[0] = 0;
+        CInfoPBRec ipb;
+        std::memset(&ipb, 42, sizeof(ipb));
+        ipb.dirInfo.ioCompletion = nullptr;
+        ipb.dirInfo.ioVRefNum = vRefNum_;
+        ipb.dirInfo.ioNamePtr = buffer;
+        ipb.dirInfo.ioDrDirID = dirID;
+        ipb.dirInfo.ioFDirIndex = index;
+        PBGetCatInfoSync(&ipb);
+        return ipb.dirInfo.ioResult;
+    }
+
     std::optional<int> fmChildCount(long dirID)
     {
         Str255 buffer;

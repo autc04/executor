@@ -79,9 +79,10 @@ class ItemCache
     // is assigned. No name is decided.
     CNID resolveChild(CNID parID, const fs::path& posixName, const PathStat& st);
 
-    // Ensure `dir` is listed and valid; re-lists if the host changed.
-    // Returns false if a fresh scan failed (the directory could not be read).
-    // Private: obtain children through child(), which owns this precondition.
+    // Ensure `dir` is listed and valid; re-lists if the host changed. A scan that
+    // fails is not committed: the listing is dropped and this returns false, so
+    // the caller reports ioErr and the next access retries. Private: obtain
+    // children through child(), which owns this precondition.
     bool ensureListed(const DirectoryItemPtr& item);
 
     // Construct an identity Item from known host file data, without running the
@@ -125,7 +126,8 @@ public:
     // Called from Item::name().
     void ensureNamed(Item& item);
 
-    // Number of visible children, without enumerating/constructing them.
+    // Number of visible children, without enumerating/constructing them. Throws
+    // ioErr if the directory cannot be read (a failed scan is never cached).
     int countChildren(const DirectoryItemPtr& item);
     void flushDirectoryCache(DirectoryItemPtr item);
     void flushDirectoryCache(CNID dirID);

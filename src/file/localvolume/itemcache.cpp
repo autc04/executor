@@ -148,7 +148,6 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 
     // L1: re-scan. Re-stat after the readdir and only accept a *consistent*
     // (before == after) stamp, so a change racing our own scan is caught.
-    bool ok = true;
     for(int attempt = 0; attempt < 3; attempt++)
     {
         std::vector<CNIDMapper::DirEntry> entries;
@@ -168,11 +167,14 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
         }
         catch(const boost::filesystem::filesystem_error& exc)
         {
+            // A failed scan says nothing about the directory's contents, so it
+            // must not be committed: the diff would read the (empty) result as
+            // every child having gone and renumber the whole directory. Drop the
+            // listing instead -- the caller turns the false into ioErr, and the
+            // next access retries from scratch.
             std::cerr << exc.what() << std::endl;
-            ok = false;
-            // Fill the listing with what we saw (nothing) and report the failure
-            // through the return value; child() turns it into ioErr, since the
-            // directory being listed there is the one being queried.
+            flushDirectoryCache(dir);
+            return false;
         }
 
         FileStamp after = statFile(dir->path());
@@ -207,7 +209,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
             dir->storeDescriptors(std::move(descriptors), after);
             retainDirectory(dir);
             evictCachedDirectories(dir);
-            return ok;
+            return true;
         }
 
         stamp = after;
@@ -240,10 +242,12 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
                 if(!itemFactory_->isHidden(e))
                     ++count;
         }
-        catch(const boost::filesystem::filesystem_error&)
+        catch(const boost::filesystem::filesystem_error& exc)
         {
-            // Same policy as ensureListed: report what we saw rather than
-            // fail the caller.
+            // Same rule as ensureListed: a failed scan is not a tally, so report
+            // it rather than caching a wrong count as valid.
+            std::cerr << exc.what() << std::endl;
+            throw OSErrorException(ioErr);
         }
 
         FileStamp after = statFile(dir->path());
