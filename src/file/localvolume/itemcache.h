@@ -38,7 +38,7 @@ class ItemCache
     };
     std::list<CachedItem> cachedItems_;
     // Item -> its slot in cachedItems_, so a touch does not scan the queue. Kept
-    // in step with cachedItems_ by cacheItem and flushDirectoryCache only.
+    // in step with cachedItems_ by cacheItem only.
     std::unordered_map<Item*, std::list<CachedItem>::iterator> cachedIndex_;
     size_t cachedWeight_ = 0;   // total weight the queue holds
 

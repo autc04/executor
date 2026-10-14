@@ -277,19 +277,13 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
 {
-    // Invalidation: deliberately drop the payload so the next access re-lists,
-    // and stop the queue retaining the item. Unlike eviction, this destroys state
-    // a holder may still see -- that is the point of a flush.
+    // Invalidation: drop the payload so the next access re-lists, then re-cache
+    // the item so the queue's accounting follows the shrunken weight. Unlike
+    // eviction, this destroys state a holder may still see -- that is the point of
+    // a flush. The object itself is kept: identity lives in the mapper, so a
+    // re-list rebuilds the payload in place.
     item->clearCache();
-
-    auto it = cachedIndex_.find(item.get());
-    if(it != cachedIndex_.end())
-    {
-        auto listIt = it->second;
-        cachedWeight_ -= listIt->weight;
-        cachedIndex_.erase(it);
-        cachedItems_.erase(listIt);
-    }
+    cacheItem(item);
 }
 
 void ItemCache::flushDirectoryCache(CNID dirID)
