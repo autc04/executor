@@ -38,23 +38,20 @@ class ItemCache
     };
     std::list<CachedItem> cachedItems_;
     // Item -> its slot in cachedItems_, so a touch does not scan the queue. Kept
-    // in step with cachedItems_ by touchItem, evictCachedItems and
-    // flushDirectoryCache only.
+    // in step with cachedItems_ by cacheItem and flushDirectoryCache only.
     std::unordered_map<Item*, std::list<CachedItem>::iterator> cachedIndex_;
     size_t cachedWeight_ = 0;   // total weight the queue holds
 
-    // Promote `item` to the most-recently-used end of the queue, inserting it if
-    // it is not there yet. The queue holds every realized Item -- files and
-    // directories alike -- so a probed FileRep or a directory listing survives
-    // between accesses. "Weight" is a relative cost (Item::cacheWeight), not
-    // bytes.
-    void touchItem(const ItemPtr& item);
-
-    // Bound the queue's total weight by dropping references, least recently used
-    // first. Eviction never clears a payload: an item no one else holds dies with
-    // its payload, while one a consumer still holds keeps it (the consumer's
-    // memory, not the cache's).
-    void evictCachedItems();
+    // Mark `item` as in use: promote it to the most-recently-used end of the
+    // queue, inserting it if it is not there yet, then bound the queue's weight by
+    // dropping references, least recently used first. The queue holds every
+    // realized Item -- files and directories alike -- so a probed FileRep or a
+    // directory listing survives between accesses; "weight" is a relative cost
+    // (Item::cacheWeight), not bytes. This is the only way into the queue.
+    // Eviction never clears a payload: an item no one else holds dies with its
+    // payload, while one a consumer still holds keeps it (the consumer's memory,
+    // not the cache's).
+    void cacheItem(const ItemPtr& item);
 
     // A live, already-realized Item, if its kind still matches. Otherwise the
     // registry entry is dropped so the Item can be rebuilt. A moved binding

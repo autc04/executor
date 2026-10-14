@@ -95,14 +95,14 @@ ItemCache::ItemCache(fs::path root,
     // access finds it already realized.
     DirectoryItemPtr rootItem = std::make_shared<DirectoryItem>(*this, 1, 2, rootPath_, mac_string(volumeName));
     items_[2] = rootItem;
-    touchItem(rootItem);
+    cacheItem(rootItem);
 }
 
 ItemCache::~ItemCache()
 {
 }
 
-void ItemCache::touchItem(const ItemPtr& item)
+void ItemCache::cacheItem(const ItemPtr& item)
 {
     size_t weight = item->cacheWeight();
 
@@ -123,15 +123,12 @@ void ItemCache::touchItem(const ItemPtr& item)
         cachedWeight_ += weight;
         cachedIndex_.emplace(item.get(), listIt);
     }
-}
 
-void ItemCache::evictCachedItems()
-{
-    // Memory-only policy: bound the weight the queue holds by dropping our
-    // references, least recently used first. Eviction never clears a payload: an
-    // item no one else holds dies and takes its payload with it, while one a
-    // consumer still holds keeps it (that is the consumer's memory, not ours).
-    // Entries enter at the back, so the front is the least recently used.
+    // Bound the queue's weight, least recently used first. The item just went to
+    // the back, so eviction (which takes from the front) cannot select it.
+    // Eviction never clears a payload: an item no one else holds dies and takes
+    // its payload with it, while one a consumer still holds keeps it -- that is
+    // the consumer's memory, not the cache's.
     const size_t maxCachedWeight = localVolumeCacheBudget();
     while(cachedWeight_ > maxCachedWeight && !cachedItems_.empty())
     {
@@ -239,8 +236,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
         });
 
     dir->storeDescriptors(std::move(descriptors), stamp);
-    touchItem(dir);
-    evictCachedItems();
+    cacheItem(dir);
     return true;
 }
 
@@ -253,8 +249,7 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     FileStamp stamp = statFile(dir->path());
     if(dir->count_ && dir->countStamp_ == stamp)
     {
-        touchItem(dir);
-        evictCachedItems();
+        cacheItem(dir);
         return *dir->count_;
     }
 
@@ -276,8 +271,7 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
 
     dir->count_ = count;
     dir->countStamp_ = stamp;   // as for a listing: keyed to the state we started
-    touchItem(dir);
-    evictCachedItems();
+    cacheItem(dir);
     return count;
 }
 
@@ -337,8 +331,7 @@ ItemPtr ItemCache::itemSnapshot(CNID cnid, const fs::path& path, bool isDir)
 
     // Handing an item out -- and re-adopting one that outlived eviction -- counts
     // as use, so the queue is ordered by recency of access, not of creation.
-    touchItem(item);
-    evictCachedItems();
+    cacheItem(item);
     return item;
 }
 
@@ -601,8 +594,7 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
 
     // Every realized item enters the queue, so a file's probed representation
     // (its FileRep) and a directory's listing both survive between accesses.
-    touchItem(item);
-    evictCachedItems();
+    cacheItem(item);
 
     items_[cnid] = item;
     return item;
