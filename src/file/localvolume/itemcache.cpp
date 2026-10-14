@@ -102,11 +102,6 @@ size_t ItemCache::chargeOf(const DirectoryItemPtr& dir) const
     return dir->isListed() ? std::max<size_t>(1, (size_t)dir->countItems()) : 1;
 }
 
-void ItemCache::clearCachedDirectory(const DirectoryItemPtr& dir)
-{
-    dir->clearCache();
-}
-
 void ItemCache::retainDirectory(const DirectoryItemPtr& dir)
 {
     cachedDirectories_.remove_if([&](const CachedDirectory& p) {
@@ -122,21 +117,18 @@ void ItemCache::retainDirectory(const DirectoryItemPtr& dir)
     cachedItemCount_ += charge;
 }
 
-void ItemCache::evictCachedDirectories(const DirectoryItemPtr& protect)
+void ItemCache::evictCachedDirectories()
 {
-    // Memory-only policy: bound the retained charge. The directory in use is
-    // never evicted; if it alone exceeds the budget, we simply keep it.
+    // Memory-only policy: bound the charge the queue retains. Eviction drops our
+    // reference only -- it never clears the listing -- so a DirectoryItem no one
+    // else holds dies and takes its descriptors with it, while one a consumer
+    // still holds keeps its listing. Entries enter at the back, so the front is
+    // the least recently used.
     const size_t maxCachedItems = localVolumeItemBudget();
-    while(cachedItemCount_ > maxCachedItems)
+    while(cachedItemCount_ > maxCachedItems && !cachedDirectories_.empty())
     {
-        auto it = std::find_if(cachedDirectories_.begin(), cachedDirectories_.end(),
-            [&](const auto& p) { return p.directory != protect; });
-        if(it == cachedDirectories_.end())
-            break;
-
-        clearCachedDirectory(it->directory);
-        cachedItemCount_ -= it->charge;
-        cachedDirectories_.erase(it);
+        cachedItemCount_ -= cachedDirectories_.front().charge;
+        cachedDirectories_.pop_front();
     }
 }
 
@@ -238,7 +230,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
 
     dir->storeDescriptors(std::move(descriptors), stamp);
     retainDirectory(dir);
-    evictCachedDirectories(dir);
+    evictCachedDirectories();
     return true;
 }
 
@@ -252,7 +244,7 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     if(dir->count_ && dir->countStamp_ == stamp)
     {
         retainDirectory(dir);
-        evictCachedDirectories(dir);
+        evictCachedDirectories();
         return *dir->count_;
     }
 
@@ -275,13 +267,16 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     dir->count_ = count;
     dir->countStamp_ = stamp;   // as for a listing: keyed to the state we started
     retainDirectory(dir);
-    evictCachedDirectories(dir);
+    evictCachedDirectories();
     return count;
 }
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
 {
-    clearCachedDirectory(item);
+    // Invalidation: deliberately drop the payload so the next access re-lists,
+    // and stop the queue retaining the item. Unlike eviction, this destroys state
+    // a holder may still see -- that is the point of a flush.
+    item->clearCache();
     cachedDirectories_.remove_if([&](const CachedDirectory& p) {
         if(p.directory == item)
         {
@@ -592,7 +587,7 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
     {
         auto dir = std::static_pointer_cast<DirectoryItem>(item);
         retainDirectory(dir);
-        evictCachedDirectories(dir);
+        evictCachedDirectories();
     }
 
     items_[cnid] = item;

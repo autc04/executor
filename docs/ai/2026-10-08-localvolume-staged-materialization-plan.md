@@ -626,8 +626,10 @@ leftover from the rooted-tree model. In the link-free model an `Item` is retaine
 only by the LRU or an external reference, so the root is just another cached
 directory and should be evictable like any other; remove the special case.
 
-Evicting a `DirectoryItem` frees its descriptor list; the mapper record survives,
-so a later List rebuilds it with the same CNIDs. An open FCB **owns** its
+Evicting a `DirectoryItem` drops the LRU's reference only; an item no one else
+holds dies with it, descriptor list and all, while one a consumer still holds
+keeps its listing. The mapper record survives either way, so a later List rebuilds
+it with the same CNIDs. An open FCB **owns** its
 `FileItem` through a strong reference in the FCB table, released when the FCB
 closes; while it is open, an external delete or rename of the host file does not
 affect the open handle (the OS keeps the fd on the inode). This removes the

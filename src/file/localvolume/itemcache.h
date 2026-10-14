@@ -41,12 +41,16 @@ class ItemCache
     size_t cachedItemCount_ = 0; // total charge retained
 
     // A listed directory is charged by its descriptor count, a merely counted
-    // one by 1. DirectoryItems are retained (LRU) so a listing or tally survives
-    // between accesses; files are realized transiently.
+    // one by 1. The queue retains DirectoryItems (LRU) so a listing or tally
+    // survives between accesses; files are realized transiently. Entries enter at
+    // the back, so the front is the least recently used.
     size_t chargeOf(const DirectoryItemPtr& dir) const;
     void retainDirectory(const DirectoryItemPtr& dir);
-    void evictCachedDirectories(const DirectoryItemPtr& protect);
-    void clearCachedDirectory(const DirectoryItemPtr& dir);
+
+    // Bound the charge the queue retains by dropping its references. Eviction
+    // never clears a payload: an item no one else holds dies with its payload,
+    // while one a consumer still holds keeps it (that is the consumer's memory).
+    void evictCachedDirectories();
 
     // A live, already-realized Item, if its kind still matches. Otherwise the
     // registry entry is dropped so the Item can be rebuilt. A moved binding
