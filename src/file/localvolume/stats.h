@@ -38,9 +38,10 @@ inline LocalVolumeStats& localVolumeStats()
     return stats;
 }
 
-// The enumerated-item budget for the directory LRU (Phase 5). Exposed so tests
-// can force eviction without building half a million entries.
-inline size_t& localVolumeItemBudget()
+// The budget for the realization cache's LRU queue, in Item::cacheWeight()
+// units (a realized item is 1; a listed directory is its descriptor count).
+// Exposed so tests can force eviction without building half a million items.
+inline size_t& localVolumeCacheBudget()
 {
     static size_t budget = 500000;
     return budget;

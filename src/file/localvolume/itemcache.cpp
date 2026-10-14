@@ -95,45 +95,40 @@ ItemCache::ItemCache(fs::path root,
     // access finds it already realized.
     DirectoryItemPtr rootItem = std::make_shared<DirectoryItem>(*this, 1, 2, rootPath_, mac_string(volumeName));
     items_[2] = rootItem;
-    retainDirectory(rootItem);
+    touchItem(rootItem);
 }
 
 ItemCache::~ItemCache()
 {
 }
 
-size_t ItemCache::chargeOf(const DirectoryItemPtr& dir) const
+void ItemCache::touchItem(const ItemPtr& item)
 {
-    return dir->isListed() ? std::max<size_t>(1, (size_t)dir->countItems()) : 1;
-}
-
-void ItemCache::retainDirectory(const DirectoryItemPtr& dir)
-{
-    cachedDirectories_.remove_if([&](const CachedDirectory& p) {
-        if(p.directory == dir)
+    cachedItems_.remove_if([&](const CachedItem& p) {
+        if(p.item == item)
         {
-            cachedItemCount_ -= p.charge;
+            cachedWeight_ -= p.weight;
             return true;
         }
         return false;
     });
-    size_t charge = chargeOf(dir);
-    cachedDirectories_.push_back({ dir, charge });
-    cachedItemCount_ += charge;
+    size_t weight = item->cacheWeight();
+    cachedItems_.push_back({ item, weight });
+    cachedWeight_ += weight;
 }
 
-void ItemCache::evictCachedDirectories()
+void ItemCache::evictCachedItems()
 {
-    // Memory-only policy: bound the charge the queue retains. Eviction drops our
-    // reference only -- it never clears the listing -- so a DirectoryItem no one
-    // else holds dies and takes its descriptors with it, while one a consumer
-    // still holds keeps its listing. Entries enter at the back, so the front is
-    // the least recently used.
-    const size_t maxCachedItems = localVolumeItemBudget();
-    while(cachedItemCount_ > maxCachedItems && !cachedDirectories_.empty())
+    // Memory-only policy: bound the weight the queue holds by dropping our
+    // references, least recently used first. Eviction never clears a payload: an
+    // item no one else holds dies and takes its payload with it, while one a
+    // consumer still holds keeps it (that is the consumer's memory, not ours).
+    // Entries enter at the back, so the front is the least recently used.
+    const size_t maxCachedWeight = localVolumeCacheBudget();
+    while(cachedWeight_ > maxCachedWeight && !cachedItems_.empty())
     {
-        cachedItemCount_ -= cachedDirectories_.front().charge;
-        cachedDirectories_.pop_front();
+        cachedWeight_ -= cachedItems_.front().weight;
+        cachedItems_.pop_front();
     }
 }
 
@@ -234,8 +229,8 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
         });
 
     dir->storeDescriptors(std::move(descriptors), stamp);
-    retainDirectory(dir);
-    evictCachedDirectories();
+    touchItem(dir);
+    evictCachedItems();
     return true;
 }
 
@@ -248,8 +243,8 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     FileStamp stamp = statFile(dir->path());
     if(dir->count_ && dir->countStamp_ == stamp)
     {
-        retainDirectory(dir);
-        evictCachedDirectories();
+        touchItem(dir);
+        evictCachedItems();
         return *dir->count_;
     }
 
@@ -271,8 +266,8 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
 
     dir->count_ = count;
     dir->countStamp_ = stamp;   // as for a listing: keyed to the state we started
-    retainDirectory(dir);
-    evictCachedDirectories();
+    touchItem(dir);
+    evictCachedItems();
     return count;
 }
 
@@ -282,10 +277,10 @@ void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
     // and stop the queue retaining the item. Unlike eviction, this destroys state
     // a holder may still see -- that is the point of a flush.
     item->clearCache();
-    cachedDirectories_.remove_if([&](const CachedDirectory& p) {
-        if(p.directory == item)
+    cachedItems_.remove_if([&](const CachedItem& p) {
+        if(p.item == item)
         {
-            cachedItemCount_ -= p.charge;
+            cachedWeight_ -= p.weight;
             return true;
         }
         return false;
@@ -328,6 +323,11 @@ ItemPtr ItemCache::itemSnapshot(CNID cnid, const fs::path& path, bool isDir)
     }
 
     item->relocate(path);   // a recovered rename re-points the live Item
+
+    // Handing an item out -- and re-adopting one that outlived eviction -- counts
+    // as use, so the queue is ordered by recency of access, not of creation.
+    touchItem(item);
+    evictCachedItems();
     return item;
 }
 
@@ -588,15 +588,10 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
 
     localVolumeStats().itemsConstructed++;
 
-    // Retain realized directories so a listing or tally survives between
-    // accesses; files are realized transiently (an all-`Item` LRU is future
-    // work).
-    if(isDir)
-    {
-        auto dir = std::static_pointer_cast<DirectoryItem>(item);
-        retainDirectory(dir);
-        evictCachedDirectories();
-    }
+    // Every realized item enters the queue, so a file's probed representation
+    // (its FileRep) and a directory's listing both survive between accesses.
+    touchItem(item);
+    evictCachedItems();
 
     items_[cnid] = item;
     return item;

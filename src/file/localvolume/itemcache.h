@@ -31,25 +31,26 @@ class ItemCache
 
     std::unordered_map<CNID, std::weak_ptr<Item>> items_; 
 
-    struct CachedDirectory
+    struct CachedItem
     {
-        DirectoryItemPtr directory;
-        size_t charge = 0;
+        ItemPtr item;
+        size_t weight = 0;
     };
-    std::list<CachedDirectory> cachedDirectories_;
-    size_t cachedItemCount_ = 0; // total charge retained
+    std::list<CachedItem> cachedItems_;
+    size_t cachedWeight_ = 0;   // total weight the queue holds
 
-    // A listed directory is charged by its descriptor count, a merely counted
-    // one by 1. The queue retains DirectoryItems (LRU) so a listing or tally
-    // survives between accesses; files are realized transiently. Entries enter at
-    // the back, so the front is the least recently used.
-    size_t chargeOf(const DirectoryItemPtr& dir) const;
-    void retainDirectory(const DirectoryItemPtr& dir);
+    // Promote `item` to the most-recently-used end of the queue, inserting it if
+    // it is not there yet. The queue holds every realized Item -- files and
+    // directories alike -- so a probed FileRep or a directory listing survives
+    // between accesses. "Weight" is a relative cost (Item::cacheWeight), not
+    // bytes.
+    void touchItem(const ItemPtr& item);
 
-    // Bound the charge the queue retains by dropping its references. Eviction
-    // never clears a payload: an item no one else holds dies with its payload,
-    // while one a consumer still holds keeps it (that is the consumer's memory).
-    void evictCachedDirectories();
+    // Bound the queue's total weight by dropping references, least recently used
+    // first. Eviction never clears a payload: an item no one else holds dies with
+    // its payload, while one a consumer still holds keeps it (the consumer's
+    // memory, not the cache's).
+    void evictCachedItems();
 
     // A live, already-realized Item, if its kind still matches. Otherwise the
     // registry entry is dropped so the Item can be rebuilt. A moved binding

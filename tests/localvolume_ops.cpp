@@ -668,8 +668,8 @@ TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)
     auto known = fmGet(a->cnid, "f3");
     ASSERT_TRUE(known.has_value());
 
-    size_t saved = localVolumeItemBudget();
-    localVolumeItemBudget() = 3; // force eviction of 'a' on the next enumeration
+    size_t saved = localVolumeCacheBudget();
+    localVolumeCacheBudget() = 3; // force eviction of 'a' on the next enumeration
 
     hostDir("b");
     for(int i = 0; i < 20; i++)
@@ -678,7 +678,7 @@ TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)
     ASSERT_TRUE(b.has_value());
     (void)fmList(b->cnid); // evicts the least-recently-used directory ('a')
 
-    localVolumeItemBudget() = saved;
+    localVolumeCacheBudget() = saved;
 
     // 'a' is rebuilt on demand, but its names and CNIDs are unchanged.
     EXPECT_EQ(namesOf(first), namesOf(fmList(a->cnid)));

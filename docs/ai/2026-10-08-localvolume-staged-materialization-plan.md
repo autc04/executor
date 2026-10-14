@@ -616,19 +616,21 @@ for the stamp is the (larger) set the factories probed, including absent entries
 
 An LRU over realized `Item`s — files *and* directories — bounds memory; eviction
 drops the LRU's strong reference (the item then dies unless externally
-referenced), and is safe because re-realization rebuilds from the mapper. Charge
-**total items** (Σ live `Item`s) rather than directory count — the risk is one
-huge directory (e.g. `/nix/store`), not many small ones. Default budget:
-**500,000 items**.
+referenced), and is safe because re-realization rebuilds from the mapper. The
+queue is ordered by **use**: an item is re-touched when it is handed out, and a
+directory again when it is re-listed or re-counted. Its budget is a **weight**
+(`Item::cacheWeight()`): one unit per realized item, and a listed directory's
+descriptor count, so one huge directory (e.g. `/nix/store`) outweighs many small
+items. Default: **500,000 units**, exposed as `localVolumeCacheBudget()`.
 
 **The root is not pinned.** The root path is a plain member, and the root item
 (CNID 2) is realized on demand from its mapper record like any other: it is warmed
 at construction and thereafter retained only by the LRU or an external reference.
 
-Evicting a `DirectoryItem` drops the LRU's reference only; an item no one else
-holds dies with it, descriptor list and all, while one a consumer still holds
-keeps its listing. The mapper record survives either way, so a later List rebuilds
-it with the same CNIDs. An open FCB **owns** its
+Evicting an item drops the LRU's reference only; an item no one else holds dies
+with it, payload and all, while one a consumer still holds keeps its payload (its
+listing or its `FileRep`). The mapper record survives either way, so a later List
+rebuilds it with the same CNIDs. An open FCB **owns** its
 `FileItem` through a strong reference in the FCB table, released when the FCB
 closes; while it is open, an external delete or rename of the host file does not
 affect the open handle (the OS keeps the fd on the inode). This removes the
@@ -679,8 +681,8 @@ Operations:
   name for the FSSpec comes from NameResolve of that one entry's group.
 - `resolve(name)`: the parent is Listed (or the name's group NameResolved), then
   the name is looked up via the mapper's `(parID, macName)` index.
-- `ensureListed` (L0 stamp check, L1 re-list); an LRU by total items over all
-  `Item`s.
+- `ensureListed` (L0 stamp check, L1 re-list); an LRU over all `Item`s, by cache
+  weight.
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
@@ -1113,7 +1115,7 @@ without a native path.
 - **Validation**: an external add/remove inside a Listed directory is visible on the
   next access; unchanged entries keep their CNID and `macName`; a repeated listing
   validates but does not re-list (stats); a **binding** failure flushes the parent and
-  retries rather than dropping the CNID; eviction under the item budget, then
+  retries rather than dropping the CNID; eviction under the cache budget, then
   re-access, preserves CNIDs/names; an in-place edit of a MacBinary header is
   reflected by `getInfo`; a file↔directory kind change at a name is a new entry,
   whatever the inode.

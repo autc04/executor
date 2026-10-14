@@ -111,6 +111,12 @@ public:
 
     virtual ItemInfo getInfo();
     virtual void setInfo(ItemInfo info);
+
+    // How much of the realization cache's budget this item weighs. A realized
+    // item is one unit; a directory overrides this to also account for the
+    // descriptors a listing retains, so one huge directory can outweigh many
+    // small items. A relative measure for the LRU, not a byte count.
+    virtual size_t cacheWeight() const { return 1; }
 };
 
 
@@ -164,6 +170,13 @@ public:
     long dirID() const { return cnid(); }
 
     int countItems() const { return (int)descriptors_.size(); }
+
+    size_t cacheWeight() const override
+    {
+        // A listing retains one descriptor per visible child, so it weighs as much
+        // as that many items; an empty or unlisted directory is one unit.
+        return isListed() && !descriptors_.empty() ? descriptors_.size() : 1;
+    }
 
     const std::vector<Descriptor>& descriptors() const { return descriptors_; }
 
