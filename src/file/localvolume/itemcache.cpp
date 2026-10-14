@@ -104,17 +104,25 @@ ItemCache::~ItemCache()
 
 void ItemCache::touchItem(const ItemPtr& item)
 {
-    cachedItems_.remove_if([&](const CachedItem& p) {
-        if(p.item == item)
-        {
-            cachedWeight_ -= p.weight;
-            return true;
-        }
-        return false;
-    });
     size_t weight = item->cacheWeight();
-    cachedItems_.push_back({ item, weight });
-    cachedWeight_ += weight;
+
+    auto it = cachedIndex_.find(item.get());
+    if(it != cachedIndex_.end())
+    {
+        // splice moves the node without invalidating its iterator, so the index
+        // stays correct.
+        auto listIt = it->second;
+        cachedWeight_ -= listIt->weight;
+        cachedWeight_ += weight;
+        listIt->weight = weight;
+        cachedItems_.splice(cachedItems_.end(), cachedItems_, listIt);
+    }
+    else
+    {
+        auto listIt = cachedItems_.insert(cachedItems_.end(), { item, weight });
+        cachedWeight_ += weight;
+        cachedIndex_.emplace(item.get(), listIt);
+    }
 }
 
 void ItemCache::evictCachedItems()
@@ -127,8 +135,10 @@ void ItemCache::evictCachedItems()
     const size_t maxCachedWeight = localVolumeCacheBudget();
     while(cachedWeight_ > maxCachedWeight && !cachedItems_.empty())
     {
-        cachedWeight_ -= cachedItems_.front().weight;
-        cachedItems_.pop_front();
+        auto listIt = cachedItems_.begin();
+        cachedWeight_ -= listIt->weight;
+        cachedIndex_.erase(listIt->item.get());
+        cachedItems_.erase(listIt);
     }
 }
 
@@ -277,14 +287,15 @@ void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
     // and stop the queue retaining the item. Unlike eviction, this destroys state
     // a holder may still see -- that is the point of a flush.
     item->clearCache();
-    cachedItems_.remove_if([&](const CachedItem& p) {
-        if(p.item == item)
-        {
-            cachedWeight_ -= p.weight;
-            return true;
-        }
-        return false;
-    });
+
+    auto it = cachedIndex_.find(item.get());
+    if(it != cachedIndex_.end())
+    {
+        auto listIt = it->second;
+        cachedWeight_ -= listIt->weight;
+        cachedIndex_.erase(it);
+        cachedItems_.erase(listIt);
+    }
 }
 
 void ItemCache::flushDirectoryCache(CNID dirID)
