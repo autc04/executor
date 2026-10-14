@@ -242,7 +242,7 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID di
 
                 setMapping(txn, {
                     newMapping.parID, newMapping.cnid,
-                    newMapping.path,
+                    newMapping.posixName,
                     std::move(*newMapping.macname)
                 });
             }

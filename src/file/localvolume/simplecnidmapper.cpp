@@ -23,34 +23,10 @@ mac_string foldName(mac_string_view name)
 }
 }
 
-SimpleCNIDMapper::SimpleCNIDMapper(fs::path root, mac_string volumeName)
-    : rootPath_(std::move(root))
+SimpleCNIDMapper::SimpleCNIDMapper(mac_string volumeName)
 {
-    // The volume root (CNID 2) carries no name of its own; pathOf() special-cases
-    // it to rootPath_.
-    mappings_.emplace(2, StoredMapping { 1, 2, fs::path(), std::move(volumeName), {}, true });
-}
-
-fs::path SimpleCNIDMapper::pathOf(CNID cnid) const
-{
-    std::vector<fs::path> names;
-
-    for(CNID c = cnid; c != 2;)
-    {
-        auto it = mappings_.find(c);
-        if(it == mappings_.end())
-            return {};
-        names.push_back(it->second.posixName);
-        CNID parent = it->second.parID;
-        if(parent == c)   // broken chain; bail out rather than loop
-            return {};
-        c = parent;
-    }
-
-    fs::path path = rootPath_;
-    for(auto it = names.rbegin(); it != names.rend(); ++it)
-        path /= *it;
-    return path;
+    // The volume root (CNID 2) carries no name of its own.
+    mappings_.emplace(2, Mapping { 1, 2, fs::path(), std::move(volumeName), {}, true });
 }
 
 CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
@@ -58,23 +34,15 @@ CNID SimpleCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
 {
     CNID cnid = nextCNID_++;
 
-    mappings_.emplace(cnid, StoredMapping { parID, cnid, posixName, std::nullopt, identity, isDir });
+    mappings_.emplace(cnid, Mapping { parID, cnid, posixName, std::nullopt, identity, isDir });
     posixNames_[parID][posixName] = cnid;
 
     return cnid;
 }
 
-CNIDMapper::Mapping SimpleCNIDMapper::mappingFor(CNID cnid, const fs::path& dirPath) const
-{
-    const StoredMapping& m = mappings_.at(cnid);
-    return Mapping { m.parID, m.cnid, dirPath / m.posixName, m.macname, m.identity, m.isDir };
-}
-
 std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dirID,
         std::vector<DirEntry> entries)
 {
-    const fs::path dirPath = pathOf(dirID);
-
     std::vector<std::pair<fs::path, CNID>> stored;
     if(auto it = posixNames_.find(dirID); it != posixNames_.end())
         stored.assign(it->second.begin(), it->second.end());
@@ -99,7 +67,7 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             if(mit == mappings_.end())
                 continue;
 
-            StoredMapping& rec = mit->second;
+            Mapping& rec = mit->second;
             if(rec.isDir != e.isDir || !sameIdentity(rec.identity, e.identity))
                 continue;
 
@@ -160,14 +128,15 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
 
     for(auto& [name, cnid] : stored)
         if(surviving.count(cnid))
-            result.push_back(mappingFor(cnid, dirPath));
+            result.push_back(mappings_.at(cnid));
 
     for(size_t i = 0; i < n; i++)
         if(!consumed[i])
-            result.push_back(mappingFor(
-                createRecord(dirID, entries[i].posixName, entries[i].identity,
-                    entries[i].isDir),
-                dirPath));
+        {
+            CNID cnid = createRecord(dirID, entries[i].posixName, entries[i].identity,
+                entries[i].isDir);
+            result.push_back(mappings_.at(cnid));
+        }
 
     return result;
 }
@@ -178,8 +147,7 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
     if(it == mappings_.end())
         return {};
 
-    const StoredMapping& m = it->second;
-    return Mapping { m.parID, m.cnid, pathOf(cnid), m.macname, m.identity, m.isDir };
+    return it->second;
 }
 
 std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupPosixName(CNID parID, const fs::path& posixName)
@@ -192,7 +160,7 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupPosixName(CNID parID,
     if(it == dirIt->second.end())
         return {};
 
-    return mappingFor(it->second, pathOf(parID));
+    return mappings_.at(it->second);
 }
 
 std::optional<CNID> SimpleCNIDMapper::cnidForName(CNID parID, mac_string_view macName)
@@ -240,7 +208,7 @@ void SimpleCNIDMapper::nameGroup(CNID parID, const std::vector<NameRequest>& gro
     }
 }
 
-void SimpleCNIDMapper::forgetRecordName(StoredMapping& rec)
+void SimpleCNIDMapper::forgetRecordName(Mapping& rec)
 {
     if(!rec.macname)
         return;

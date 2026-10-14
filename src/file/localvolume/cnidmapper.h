@@ -23,12 +23,13 @@ public:
     virtual ~CNIDMapper() = default;
 
     // One entry, as seen by ItemCache. The authoritative record lives in the
-    // mapper; this is a copy. `macname` is empty until NameResolve.
+    // mapper; this is a copy. `macname` is empty until NameResolve. No host path
+    // is carried: it is derived from the `parID` chain plus `posixName`.
     struct Mapping
     {
         CNID parID;
         CNID cnid;
-        fs::path path;
+        fs::path posixName;
         std::optional<mac_string> macname;
         FileIdentity identity;
         bool isDir;

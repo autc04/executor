@@ -59,7 +59,7 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     itemCache = std::make_unique<ItemCache>(
             root,
             getVolumeName(),
-            std::make_unique<SimpleCNIDMapper>(root, getVolumeName()),
+            std::make_unique<SimpleCNIDMapper>(getVolumeName()),
             //std::make_unique<LMDBCNIDMapper>(root, getVolumeName()),
             static_cast<ItemFactory*>(this)
         );

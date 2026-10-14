@@ -53,6 +53,13 @@ class ItemCache
     // re-points the live Item in place.
     ItemPtr itemSnapshot(CNID cnid, const fs::path& path, bool isDir);
 
+    // The host path a CNID denotes: its own posix name and each ancestor's,
+    // joined onto the volume root. Empty if the chain is broken. Derived from
+    // records only: a live Item's path can lag its record (a listing of an
+    // ancestor can recover a rename the live Item has not been relocated for),
+    // so it is never a source here.
+    fs::path pathOf(CNID cnid);
+
     // Realize a CNID, validating its binding (see realizeValidated).
     ItemPtr realizeOnce(CNID cnid);
 

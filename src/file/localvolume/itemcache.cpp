@@ -190,7 +190,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
             for(auto& m : mappings)
             {
                 Descriptor d;
-                d.posixName = m.path.filename();
+                d.posixName = m.posixName;
                 d.isDir = m.isDir;
                 d.cnid = m.cnid;
                 d.prefix = hostGroupPrefix(d.posixName);
@@ -311,6 +311,29 @@ ItemPtr ItemCache::itemSnapshot(CNID cnid, const fs::path& path, bool isDir)
     return item;
 }
 
+fs::path ItemCache::pathOf(CNID cnid)
+{
+    std::vector<fs::path> names;
+
+    for(CNID c = cnid; c != 2;)
+    {
+        auto rec = cnidMapper_->lookupCNID(c);
+        if(!rec)
+            return {};
+
+        names.push_back(rec->posixName);
+        CNID parent = rec->parID;
+        if(parent == c)   // broken chain; bail out rather than loop
+            return {};
+        c = parent;
+    }
+
+    fs::path path = rootDirItem_->path();
+    for(auto n = names.rbegin(); n != names.rend(); ++n)
+        path /= *n;
+    return path;
+}
+
 ItemPtr ItemCache::realizeOnce(CNID cnid)
 {
     if(cnid <= 0)
@@ -320,7 +343,11 @@ ItemPtr ItemCache::realizeOnce(CNID cnid)
     if(!mapping)
         return {};
 
-    PathStat st = statPath(mapping->path);
+    fs::path path = pathOf(cnid);
+    if(path.empty())
+        return {};
+
+    PathStat st = statPath(path);
     // The binding is gone, the name now holds a different kind of file, or a
     // different file holds the name (a delete + create). Deleting is the diff's
     // job, not ours: see realizeValidated.
@@ -329,10 +356,10 @@ ItemPtr ItemCache::realizeOnce(CNID cnid)
        || !sameIdentity(mapping->identity, st.identity))
         return {};
 
-    if(ItemPtr item = itemSnapshot(cnid, mapping->path, st.isDirectory))
+    if(ItemPtr item = itemSnapshot(cnid, path, st.isDirectory))
         return item;
 
-    return makeItem(mapping->parID, cnid, mapping->path, mapping->macname, st.isDirectory);
+    return makeItem(mapping->parID, cnid, path, mapping->macname, st.isDirectory);
 }
 
 ItemPtr ItemCache::realizeValidated(CNID cnid)
