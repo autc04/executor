@@ -146,11 +146,17 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
     if(dir->isListed() && dir->stamp_ == stamp)
         return true;   // L0: the stamp is unchanged, so everything is still valid
 
-    // L1: re-scan. Re-stat after the readdir and only accept a *consistent*
-    // (before == after) stamp, so a change racing our own scan is caught.
-    for(int attempt = 0; attempt < 3; attempt++)
+    // L1: re-scan, in two passes. The readdir runs to completion before any
+    // entry is stat'ed, so the directory stream never spans the per-entry stats:
+    // on a directory that needs more than one getdents fill, that is the
+    // difference between a cursor that is live for the whole loop and one whose
+    // fills are back to back. The result is keyed to the stamp read *before* the
+    // scan, so a change arriving while we read shows up as a mismatch on the next
+    // access and re-lists, instead of this listing claiming to describe a state
+    // it never observed. Concurrent modification is otherwise unguarded (see
+    // *Future Ideas*).
+    std::vector<CNIDMapper::DirEntry> entries;
     {
-        std::vector<CNIDMapper::DirEntry> entries;
         try
         {
             for(const auto& e : fs::directory_iterator(dir->path()))
@@ -158,11 +164,8 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
                 if(itemFactory_->isHidden(e))
                     continue;
 
-                PathStat st = statPath(e.path());
-                if(!st.exists || (!st.isDirectory && !st.isRegular))
-                    continue;   // not something the File Manager can address
-
-                entries.push_back({ e.path().filename(), st.identity, st.isDirectory });
+                // Identity and kind are filled in by the second pass.
+                entries.push_back({ e.path().filename(), {}, false });
             }
         }
         catch(const boost::filesystem::filesystem_error& exc)
@@ -177,55 +180,66 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
             return false;
         }
 
-        FileStamp after = statFile(dir->path());
-        if(after == stamp || attempt == 2)
+        for(auto& entry : entries)
         {
-            localVolumeStats().directoryIterations++;
-            localVolumeStats().entriesSeen += entries.size();
-
-            std::vector<CNIDMapper::Mapping> mappings =
-                cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
-
-            std::vector<Descriptor> descriptors;
-            descriptors.reserve(mappings.size());
-
-            for(auto& m : mappings)
+            PathStat st = statPath(dir->path() / entry.posixName);
+            if(!st.exists || (!st.isDirectory && !st.isRegular))
             {
-                // The diff may have recovered a rename (or dropped the entry), so
-                // re-point any live Item at its current path before anything can
-                // use the stale one: a live Item is otherwise only relocated when
-                // it is handed out, which leaves the invariant unenforced between
-                // a listing and the next hand-out. relocate() also clears a cached
-                // Mac name when the name changed, matching the record's reset.
-                if(auto itemIt = items_.find(m.cnid); itemIt != items_.end())
-                    if(ItemPtr item = itemIt->second.lock())
-                        item->relocate(dir->path() / m.posixName);
-
-                Descriptor d;
-                d.posixName = m.posixName;
-                d.isDir = m.isDir;
-                d.cnid = m.cnid;
-                d.prefix = hostGroupPrefix(d.posixName);
-                descriptors.push_back(std::move(d));
+                entry.posixName.clear();   // not addressable; dropped below
+                continue;
             }
 
-            std::sort(descriptors.begin(), descriptors.end(),
-                [](const Descriptor& a, const Descriptor& b) {
-                    if(a.prefix != b.prefix)
-                        return a.prefix < b.prefix;
-                    return a.posixName.native() < b.posixName.native();
-                });
-
-            dir->storeDescriptors(std::move(descriptors), after);
-            retainDirectory(dir);
-            evictCachedDirectories(dir);
-            return true;
+            entry.identity = st.identity;
+            entry.isDir = st.isDirectory;
         }
 
-        stamp = after;
+        // readdir never yields an empty name, so an empty one marks a dropped
+        // entry.
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+            [](const CNIDMapper::DirEntry& e) { return e.posixName.empty(); }),
+            entries.end());
     }
 
-    return false; // unreachable
+    localVolumeStats().directoryIterations++;
+    localVolumeStats().entriesSeen += entries.size();
+
+    std::vector<CNIDMapper::Mapping> mappings =
+        cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
+
+    std::vector<Descriptor> descriptors;
+    descriptors.reserve(mappings.size());
+
+    for(auto& m : mappings)
+    {
+        // The diff may have recovered a rename (or dropped the entry), so re-point
+        // any live Item at its current path before anything can use the stale one:
+        // a live Item is otherwise only relocated when it is handed out, which
+        // leaves the invariant unenforced between a listing and the next hand-out.
+        // relocate() also clears a cached Mac name when the name changed, matching
+        // the record's reset.
+        if(auto itemIt = items_.find(m.cnid); itemIt != items_.end())
+            if(ItemPtr item = itemIt->second.lock())
+                item->relocate(dir->path() / m.posixName);
+
+        Descriptor d;
+        d.posixName = m.posixName;
+        d.isDir = m.isDir;
+        d.cnid = m.cnid;
+        d.prefix = hostGroupPrefix(d.posixName);
+        descriptors.push_back(std::move(d));
+    }
+
+    std::sort(descriptors.begin(), descriptors.end(),
+        [](const Descriptor& a, const Descriptor& b) {
+            if(a.prefix != b.prefix)
+                return a.prefix < b.prefix;
+            return a.posixName.native() < b.posixName.native();
+        });
+
+    dir->storeDescriptors(std::move(descriptors), stamp);
+    retainDirectory(dir);
+    evictCachedDirectories(dir);
+    return true;
 }
 
 int ItemCache::countChildren(const DirectoryItemPtr& dir)
@@ -234,43 +248,35 @@ int ItemCache::countChildren(const DirectoryItemPtr& dir)
     if(dir->isListed())
         return dir->countItems();
 
-    for(int attempt = 0; attempt < 3; attempt++)
+    FileStamp stamp = statFile(dir->path());
+    if(dir->count_ && dir->countStamp_ == stamp)
     {
-        FileStamp before = statFile(dir->path());
-        if(dir->count_ && dir->countStamp_ == before)
-        {
-            retainDirectory(dir);
-            evictCachedDirectories(dir);
-            return *dir->count_;
-        }
-
-        int count = 0;
-        localVolumeStats().countScans++;
-        try
-        {
-            for(const auto& e : fs::directory_iterator(dir->path()))
-                if(!itemFactory_->isHidden(e))
-                    ++count;
-        }
-        catch(const boost::filesystem::filesystem_error& exc)
-        {
-            // Same rule as ensureListed: a failed scan is not a tally, so report
-            // it rather than caching a wrong count as valid.
-            std::cerr << exc.what() << std::endl;
-            throw OSErrorException(ioErr);
-        }
-
-        FileStamp after = statFile(dir->path());
-        if(after == before || attempt == 2)
-        {
-            dir->count_ = count;
-            dir->countStamp_ = after;
-            retainDirectory(dir);
-            evictCachedDirectories(dir);
-            return count;
-        }
+        retainDirectory(dir);
+        evictCachedDirectories(dir);
+        return *dir->count_;
     }
-    return 0; // unreachable
+
+    int count = 0;
+    localVolumeStats().countScans++;
+    try
+    {
+        for(const auto& e : fs::directory_iterator(dir->path()))
+            if(!itemFactory_->isHidden(e))
+                ++count;
+    }
+    catch(const boost::filesystem::filesystem_error& exc)
+    {
+        // Same rule as ensureListed: a failed scan is not a tally, so report it
+        // rather than caching a wrong count as valid.
+        std::cerr << exc.what() << std::endl;
+        throw OSErrorException(ioErr);
+    }
+
+    dir->count_ = count;
+    dir->countStamp_ = stamp;   // as for a listing: keyed to the state we started
+    retainDirectory(dir);
+    evictCachedDirectories(dir);
+    return count;
 }
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)

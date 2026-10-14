@@ -400,7 +400,8 @@ FileStamp stamp_;                           // (mtime, size) at the last scan
 - `count_` alone means Counted but not Listed.
 - Both payloads are valid iff `stat(dir) == stamp_`. When validation fails, *both*
   are dropped before rescanning, so a stale listing is never served merely
-  because a fresh count was taken.
+  because a fresh count was taken. A *count* is the one answer that a Listed
+  directory serves without revalidating — deliberately, see *Listing staleness*.
 
 ### The three staleness scopes
 
@@ -434,19 +435,35 @@ relist(dir)                                  # L1
 
 - **L0 (O(1))**: `stat` the directory itself; if the stamp is unchanged, the
   descriptors and count are all still valid.
-- **L1**: re-readdir and re-run the mapper diff (reusing CNIDs by binding,
-  assigning new ones, `deleteCNID`ing children no longer present).
+- **L1**: scan the host directory and re-run the mapper diff (reusing CNIDs by
+  binding, assigning new ones, `deleteCNID`ing children no longer present). The
+  scan is two passes over one vector of names: the `readdir` runs to completion
+  first, and only then is each name `stat`ed. That keeps the directory stream
+  from spanning the per-entry stats, which matters for a directory needing more
+  than one `getdents` fill — a single fill is one atomic snapshot, so the risk
+  lives entirely in the span between fills.
 
-The stamp is `(mtime, size)` taken from **one raw `stat`**, with a before/after
-re-stat around the `readdir` so a change racing our own scan is caught (retry on
-mismatch). Do **not** use `fs::last_write_time()` for this: this project's `fs`
-is Boost.Filesystem, whose `last_write_time()` returns `std::time_t` — one-second
+The stamp is `(mtime, size)` taken from **one raw `stat`**, read *before* the scan
+and stored with the result: the listing is keyed to the state it started from, so
+a change arriving while we scan makes the next access re-list rather than be
+served as valid. (Do not read it after the scan instead: that would claim
+validity for a state whose entries we may not have observed.) Do **not** use
+`fs::last_write_time()` for the stamp at all: this project's `fs` is
+Boost.Filesystem, whose `last_write_time()` returns `std::time_t` — one-second
 resolution, which would miss same-second changes and make the validation test
 flaky.
 
-Counting caches the same way: `Count(dir)` returns `descriptors_.size()` if Listed
-and valid, else a cached `count_` if its stamp is valid, else rescans. A repeated
-`ioDrNmFls` request is O(1) after the first scan.
+Counting caches the same way, with one deliberate exception: `Count(dir)` returns
+`descriptors_.size()` whenever the directory is Listed, a cached `count_` if its
+stamp is valid, else rescans. The listed fast path does **not** revalidate the
+listing, because a stamp mismatch there would turn a request for a number into a
+full re-List — `readdir`, a per-entry `stat`, the diff, the descriptor rebuild —
+which is precisely the cost Count exists to avoid. (A `stat` per directory is not
+the objection; the unbounded work it can trigger is.) Nor would revalidating buy
+much: `ioDrNmFls` is a snapshot by nature (see above), so the count reported for a
+Listed directory is "as of the last List of that directory", the same bound the
+rest of the caching uses. A merely-Counted directory has no descriptors to fall
+back on, so its tally is validated against `countStamp_` and re-read once stale.
 
 ### Binding staleness
 
@@ -1120,6 +1137,16 @@ against regressing F1/F3.
 
 ## Future Ideas
 
+- **Concurrent modification during a scan is currently unguarded.** A scan is not
+  atomic: `readdir` may skip or repeat entries when the directory is modified
+  while it is being read (POSIX leaves that unspecified), and the two-pass scan
+  narrows the window but does not close it — a directory needing several
+  `getdents` fills can still tear. Because a listing is *diffed*, a torn scan can
+  read as "this entry is gone" and renumber it (delete + create) under a
+  concurrent host writer. We accept that today: a scan is not retried, and a
+  "gone" verdict is not confirmed. Removing the consequence means confirming a
+  missing child over two consecutive scans (or re-checking its binding) before
+  `deleteCNID`.
 - **Smarter invalidation after delete/rename/move.** Those operations update the
   CNID mapping and flush the whole parent directory in the `ItemCache`.
   Invalidating only the affected descriptors/groups would avoid re-enumerating
