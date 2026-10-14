@@ -556,16 +556,24 @@ Consequences:
   other traps are inherently un-transactional (HFS is not transactional either).
 
 CNID and naming changes made cross-instance through LMDB, with no host change, are
-invisible to the stamp. They stay coherent because the design reads mapper state
-**live** and never caches a mapper-derived answer in memory (names are sticky, and
-a name read re-reads inside a transaction, which LMDB serializes); Phase 11 adds
-only that atomicity. Caching such an answer (a `(parID, macName) -> cnid` result,
-or an `Item`'s `macName`) would require a mapper generation checked like the stamp.
-Identity stability across re-enumeration (CNIDs and
-decided names survive for an unchanged entry) is provided by the mapper's inode
-match, pinned by `DisambiguatedNamesStableAcrossDelete`,
-`MoveKeepsDisambiguatedNameAndPosixName` and `CnidStableAcrossRenameThenMove` —
-*not* an open question.
+invisible to the stamp. They stay coherent because the mapper is read through: the
+record table, the `(parID, posixName) -> cnid` lookup and the
+`(parID, macName) -> cnid` lookup answer every query from current state, inside a
+transaction LMDB serializes; Phase 11 adds only that atomicity.
+
+An answer that *is* held in memory is held only under a validity rule, never
+across one: a listed directory's descriptors carry the CNIDs of the listing they
+were scanned for (stamp-validated), and an `Item`'s decided `macName` is cached
+only because naming is **sticky per binding** — `nameGroup` never reassigns a name
+it has handed out, and a rename clears the decided name on both sides (the
+record's `macName` and the `Item`'s copy, via `relocate`). A cache without such a
+rule — a `(parID, macName) -> cnid` result kept across listings, say — would need a
+mapper generation checked like the stamp.
+
+Identity stability across re-enumeration (CNIDs and decided names survive for an
+unchanged entry) is provided by the mapper's inode match, pinned by
+`DisambiguatedNamesStableAcrossDelete`, `MoveKeepsDisambiguatedNameAndPosixName`
+and `CnidStableAcrossRenameThenMove` — *not* an open question.
 
 ### Rep staleness
 
