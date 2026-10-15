@@ -72,6 +72,8 @@ public:
 
     // The filename the displayed Mac name is derived from. Reps that rename on
     // materialization (MacBinary drops a trailing ".bin") override this.
+    // Note that DirectoryItem::nameSourceOf hard codes knowledge about which
+    // reps may do that (as of this writing, MacBinary only).
     virtual fs::path nameSource(const fs::path& filename) const;
 
     // Host-file mutation. The default handles a single host file; formats that
