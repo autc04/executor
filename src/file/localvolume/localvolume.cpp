@@ -294,8 +294,7 @@ void LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
     // storage beside the existing data fork, so the host file keeps its inode —
     // and the item keeps its CNID. Swapping the rep is all that is left.
     betterFactory->createFile(item->path());
-    item->setRep(nullptr);
-    item->ensureMaterialized();
+    item->rematerialize();
 
     for(int i = 0; i < NFCB; i++)
     {

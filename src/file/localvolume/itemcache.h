@@ -12,7 +12,6 @@
 namespace Executor
 {
 class Item;
-class FileItem;
 class ItemFactory;
 class DirectoryItem;
 struct Descriptor;
@@ -74,10 +73,6 @@ class ItemCache
     void flushDirectoryCache(CNID dirID);
 
 public:
-    // Build and install the FileRep for a FileItem (the format gauntlet).
-    // Idempotent; called lazily from FileItem on first access.
-    void materialize(FileItem& item);
-
     ItemCache(fs::path root, mac_string_view volumeName,
                 std::unique_ptr<CNIDMapper> cnidMapper,
                 ItemFactory *itemFactory
@@ -102,9 +97,6 @@ public:
     CNIDMapper& cnidMapper() { return *cnidMapper_; }
     ItemFactory& itemFactory() { return *itemFactory_; }
 
-    // For use by DirectoryItem, which owns the Count/List/NameResolve machinery
-    // and drives these cache- and registry-side pieces; no other client calls them.
-
     // Mark `item` as in use: promote it to the most-recently-used end of the
     // queue, inserting it if it is not there yet, then bound the queue's weight by
     // dropping references, least recently used first. The queue holds every
@@ -120,6 +112,7 @@ public:
     ItemPtr findRealizedItem(CNID cnid) const;
 
     // Realize the Item a descriptor denotes (from the registry, else freshly built).
+    // For use by DirectoryItem.
     ItemPtr realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group

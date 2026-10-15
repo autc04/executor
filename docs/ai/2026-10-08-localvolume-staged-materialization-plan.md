@@ -700,7 +700,8 @@ Operations:
 - Split "kind" (cheap: regular file vs directory, no probing) from "which fork
   layout" (the gauntlet: magic reads / sidecar stats / xattrs). *(done — Phase 3:
   `ItemCache::makeItem` makes the kind decision; `ItemFactory::createRepForFile`
-  runs the gauntlet from `ItemCache::materialize`. `DirectoryItemFactory` is gone.)*
+  runs the gauntlet from `FileItem::ensureMaterialized`. `DirectoryItemFactory` is
+  gone.)*
 - Give reps the naming rule (MacBinary `.bin` stripping) instead of hard-coding
   the host filename. *(done — Phase 4: `FileRep::nameSource`.)*
 
@@ -894,7 +895,7 @@ no longer probes every file's format. **Risk:** wide but mechanical; touched
   host-file mutation to the rep, so the format decision can be deferred.
 - **DONE (sub-step 3, the payoff):** Enumerate makes only the cheap kind
   decision (`ItemCache::makeItem`) and instantiates identity `Item`s; the factory
-  gauntlet moved behind `ItemCache::materialize` / `FileItem::ensureMaterialized`.
+  gauntlet moved behind `FileItem::ensureMaterialized`.
   `DirectoryItemFactory` was removed and `ItemFactory` now exposes
   `createRepForFile`. Verified with the benchmark: 100 entries →
   `directoryIterations=1, itemsConstructed=100, factoryProbes=500` (probes happen

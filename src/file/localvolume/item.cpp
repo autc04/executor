@@ -178,9 +178,21 @@ void FileItem::ensureMaterialized()
             return;
         rep_.reset();
     }
-    itemcache_.materialize(*this);
+    rep_ = itemcache_.itemFactory().createRepForFile(itemcache_, *this, fs::directory_entry(path_));
     repStamp_ = statFile(path_);
     assert(rep_);
+}
+
+void FileItem::rematerialize()
+{
+    rep_.reset();
+    ensureMaterialized();
+}
+
+fs::path FileItem::nameSource(const fs::path& filename)
+{
+    ensureMaterialized();
+    return rep_->nameSource(filename);
 }
 
 std::unique_ptr<OpenFile> FileItem::open(int8_t permission)
@@ -417,8 +429,7 @@ fs::path DirectoryItem::nameSourceOf(const Descriptor& d)
     localVolumeStats().nameProbes++;
 
     auto file = std::static_pointer_cast<FileItem>(itemcache_.realizeDescriptor(self(), d));
-    file->ensureMaterialized();
-    return file->rep()->nameSource(d.posixName);
+    return file->nameSource(d.posixName);
 }
 
 std::optional<mac_string> DirectoryItem::resolveName(const Item& item)

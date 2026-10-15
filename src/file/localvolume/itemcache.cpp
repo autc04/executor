@@ -288,14 +288,6 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
     return item;
 }
 
-void ItemCache::materialize(FileItem& item)
-{
-    if(item.rep())
-        return;
-
-    item.setRep(itemFactory_->createRepForFile(*this, item, fs::directory_entry(item.path())));
-}
-
 void ItemCache::deleteItem(ItemPtr item)
 {
     item->deleteItem();

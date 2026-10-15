@@ -254,11 +254,16 @@ class FileItem : public Item
 public:
     using Item::Item;
 
-    void setRep(FileRepPtr rep) { rep_ = std::move(rep); }
-    const FileRepPtr& rep() const { return rep_; }
-
     // Build the rep on first use (the format gauntlet). Idempotent.
     void ensureMaterialized();
+
+    // Drop the rep and build it again. An encoding upgrade changes what the
+    // gauntlet should pick without touching the file's own stamp.
+    void rematerialize();
+
+    // The filename this item's Mac name is derived from (MacBinary drops a
+    // trailing ".bin"); materializes to ask the rep.
+    fs::path nameSource(const fs::path& filename);
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission);
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission);
