@@ -604,28 +604,35 @@ file becomes AppleDouble once its `._foo` appears — so validation must span
 **every candidate the factories probed**, not just the primary path.
 
 There is no `(exists, mtime, size)` stamp. Instead the gauntlet leaves a **probe
-trace**: the list of facts the winning classification consulted, each an
-observation `{ what, expected, retest }` — the predicate *actually used*
-(`is_regular_file`, not bare existence), the value it produced, and, when
-re-checking is cheap, a closure that re-evaluates it. **Absent candidates are
-recorded** (as a failed regular-file test), or a sidecar appearing later would go
-unnoticed. When any `retest` disagrees with its recorded value the trace no longer
-holds and the **whole gauntlet re-runs from the top** — an earlier factory may now
-win.
+trace**: a list of the **facts** it relied on, written in a small fixed vocabulary
+— `IsRegularFile(Path)`, `NoRegularFile(Path)`, `IsUnchanged(Path)`,
+`AttributeExists(Path, AttrName)`, `AttributeDoesntExist(Path, AttrName)`. The
+observations are pure data: **how** each fact is re-obtained is *policy*, a handler
+kept apart from the vocabulary (`FileItem::probeHolds`), never a behaviour hung on
+the observation. **Absent candidates are recorded** (`NoRegularFile`), or a sidecar
+appearing later would go unnoticed. When any fact no longer holds the trace fails
+and the **whole gauntlet re-runs from the top** — an earlier factory may now win.
 
-Revalidation is **by predicate**, not by timestamp:
+Revalidation is **by fact**, not by timestamp:
 
-- The candidate *existence* checks — regular-file tests, and Mac's
-  `getxattr`-present tests — carry a `retest` and are re-consulted. This is what
-  catches the realistic external changes: another process (a second Executor, or
-  Basilisk) *adding* or *removing* a sidecar — an upgrade, or a deleted sidecar.
-- The **content** checks (MacBinary header, AppleSingle magic) are recorded for the
-  decision they explain but carry **no** `retest`, so they are trusted. A file
-  rewritten *in place* to a different container format while Executor runs leaves a
-  stale rep. That is a deliberate, bounded error: the operations an external
-  program realistically performs on a mounted directory are sidecar add/delete
-  (covered), and a root is single-writer (LMDB). It is cleaner to *deliberately not
-  act* on an mtime change than to record a dependency we would not check.
+- `IsRegularFile`/`NoRegularFile` re-`stat` the path, and the `Attribute*` facts
+  re-check the xattr. These catch the realistic external changes: another process
+  (a second Executor, or Basilisk) *adding* or *removing* a sidecar — an upgrade, or
+  a deleted sidecar.
+- `IsUnchanged` is **ignored as a whole**: it records that a *content* check (a
+  magic number) decided the format; its handler is only a change-check on the
+  file's (mtime, size), and the policy discards that verdict rather than re-reading
+  the content. So a file rewritten *in place* to a different container format while
+  Executor runs leaves a stale rep. That is a deliberate, bounded error: the
+  operations an external program realistically performs on a mounted directory are
+  sidecar add/delete (covered), and a root is single-writer (LMDB). It is cleaner to
+  *deliberately not act* on the change than to record a dependency we would not
+  check.
+
+The regular-file fact is asserted **once**, by the gauntlet itself before it runs
+any factory: a factory may assume its subject is a regular file, so no factory
+repeats the check, and the TOCTOU window between the check and a factory's read
+only turns into a reportable read error.
 
 The factories build the trace themselves as they probe (`createRepForFile` takes a
 `ProbeTrace&`), so there is no separate `FileRep::dependencies()` accessor: the
