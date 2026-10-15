@@ -249,6 +249,14 @@ class FileItem : public Item
     FileRepPtr rep_;
     FileStamp repStamp_;   // (mtime, size) the rep was built from
 
+    // Forks currently handed out (see ForkGuard). While any is open the rep is
+    // neither revalidated nor dropped: the guest holds the fork, so a change
+    // surfaces on reopen.
+    int openForks_ = 0;
+
+    // Wraps the fork open()/openRF() hand out, so this count follows its lifetime.
+    class ForkGuard;
+
     virtual void moveHost(const fs::path& newPath) override;
 
 public:

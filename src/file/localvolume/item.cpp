@@ -169,12 +169,37 @@ void FileRep::move(const fs::path& newPath)
     fs::rename(item_.path(), newPath);
 }
 
+// Wraps the fork a FileItem hands out so the item's open-fork count follows the
+// fork's lifetime (see ensureMaterialized).
+class FileItem::ForkGuard : public OpenFile
+{
+    std::unique_ptr<OpenFile> inner_;
+    FileItem& item_;
+
+public:
+    ForkGuard(std::unique_ptr<OpenFile> inner, FileItem& item)
+        : inner_(std::move(inner)), item_(item)
+    {
+        ++item_.openForks_;
+    }
+    ~ForkGuard() override { --item_.openForks_; }
+
+    size_t getEOF() override { return inner_->getEOF(); }
+    void setEOF(size_t sz) override { inner_->setEOF(sz); }
+    size_t read(size_t offset, void* p, size_t n) override { return inner_->read(offset, p, n); }
+    size_t write(size_t offset, void* p, size_t n) override { return inner_->write(offset, p, n); }
+    bool canWrite() const override { return inner_->canWrite(); }
+};
+
 void FileItem::ensureMaterialized()
 {
     if(rep_)
     {
-        // The rep is a function of the host file; rebuild it if that changed.
-        if(statFile(path_) == repStamp_)
+        // The rep is a function of the host file; rebuild it if that changed -- but
+        // never while a fork we handed out is open: the guest holds it, so a change
+        // surfaces on reopen, and rebuilding now would strand the parsed file object
+        // that fork is using and let a second one appear beside it.
+        if(openForks_ > 0 || statFile(path_) == repStamp_)
             return;
         rep_.reset();
     }
@@ -198,13 +223,13 @@ fs::path FileItem::nameSource(const fs::path& filename)
 std::unique_ptr<OpenFile> FileItem::open(int8_t permission)
 {
     ensureMaterialized();
-    return rep_->open(permission);
+    return std::make_unique<ForkGuard>(rep_->open(permission), *this);
 }
 
 std::unique_ptr<OpenFile> FileItem::openRF(int8_t permission)
 {
     ensureMaterialized();
-    return rep_->openRF(permission);
+    return std::make_unique<ForkGuard>(rep_->openRF(permission), *this);
 }
 
 ItemInfo FileItem::getInfo()
