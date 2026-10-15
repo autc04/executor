@@ -72,12 +72,6 @@ class ItemCache
     // The recovering entry is realizeByCNID.
     ItemPtr tryRealize(CNID cnid);
 
-    // Realize the Item a CNID denotes, validating its binding against the host.
-    // If the binding is stale, flush the parent's listing (so the diff can recover
-    // a same-directory rename or drop a gone entry) and retry, recursing up while
-    // an ancestor's own binding is stale. `depth` bounds that recursion.
-    ItemPtr realizeByCNID(CNID cnid, int depth);
-
     // CNIDResolve: the CNID for the child of `parID` named `posixName`, creating a
     // record when there is none. The same identity and kind reuse the CNID; any
     // other file at that name is a different item, so the old record is dropped and
@@ -114,13 +108,15 @@ public:
 
     void noteItemFreed(CNID cnid);
 
-    // Realize the Item a CNID denotes, validating its binding (see the private
-    // depth-bounded form): the entry point for an access by CNID.
+    // Realize the Item a CNID denotes, validating its binding against the host.
+    // If the binding is stale, re-list the parent (so the diff can recover a
+    // same-directory rename or drop a gone entry) and retry, recursing up while an
+    // ancestor's own binding is stale. The entry point for an access by CNID.
     ItemPtr realizeByCNID(CNID cnid);
 
     // Realize the Item at a host path, walking it from the volume root. Each
-    // component is CNIDResolved stat-first and no ancestor is listed; the target's
-    // name is decided by listing its immediate parent once.
+    // component is CNIDResolved stat-first; no ancestor is listed, and the walk
+    // does not name (the target's Mac name is decided lazily, on read).
     ItemPtr realizeByHostPath(fs::path path);
 
     // The per-volume collaborators the Count/List/NameResolve machinery drives

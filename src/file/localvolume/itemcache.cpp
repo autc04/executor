@@ -168,21 +168,20 @@ ItemPtr ItemCache::tryRealize(CNID cnid)
 
 ItemPtr ItemCache::realizeByCNID(CNID cnid)
 {
-    return realizeByCNID(cnid, 32);
-}
-
-ItemPtr ItemCache::realizeByCNID(CNID cnid, int depth)
-{
     if(ItemPtr item = tryRealize(cnid))
         return item;
 
     auto mapping = cnidMapper_->lookupCNID(cnid);
-    if(!mapping || depth <= 0)
+    if(!mapping)
         return {};
 
     // The binding is stale and the file may have moved: re-list the parent so the
     // diff can recover a same-directory rename (or drop a gone entry), then retry.
-    auto parent = std::dynamic_pointer_cast<DirectoryItem>(realizeByCNID(mapping->parID, depth - 1));
+    // The parent's own binding may be stale too, so realize it first; the walk stops
+    // as soon as an ancestor's binding holds, or its parID has no record. It
+    // terminates because a parent is always CNIDResolved before its children, so
+    // parID is nearer the root than cnid.
+    auto parent = std::dynamic_pointer_cast<DirectoryItem>(realizeByCNID(mapping->parID));
     if(!parent)
         return {};
 
