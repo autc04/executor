@@ -49,9 +49,9 @@ contents**.
 `Executor::nativePathToFSSpec` (`src/file/fileMisc.cpp:245-251`), which calls
 `LocalVolume::nativePathToFSSpec` (`src/file/localvolume/localvolume.cpp:867`).
 That canonicalises the path (following the `result` symlink into `/nix/store/…`)
-and calls `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`).
+and calls `ItemCache::realizeByHostPath(fs::path)` (`itemcache.cpp:169`).
 
-`tryResolve(path)` walks the path component by component from the volume root and
+`realizeByHostPath(path)` walks the path component by component from the volume root and
 calls `cacheDirectory(dir)` on **every ancestor**. Each `cacheDirectory`
 (`itemcache.cpp:42`) does:
 
@@ -142,7 +142,7 @@ entry a CNID needs only its parent id and its host path. But **batching by share
 the whole group, and assignment must query the mapper for the disambiguators it
 has already handed out. The mapper stores each mapping's host path and reuses it
 across enumerations, so identity is *today* path-keyed; the enumeration
-dependency lives in `ItemCache::tryResolve(fs::path)` (`itemcache.cpp:169`),
+dependency lives in `ItemCache::realizeByHostPath(fs::path)` (`itemcache.cpp:169`),
 which has no path → CNID index and must enumerate each ancestor to find the child.
 
 ## Decisions
@@ -668,7 +668,7 @@ Operations:
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
-- `ItemCache::tryResolve(fs::path)`: **stat-first** — stat each component and
+- `ItemCache::realizeByHostPath(fs::path)`: **stat-first** — stat each component and
   resolve `(dev, ino)` via the mapper; **no ancestor is ever listed**. Naming the
   last component lists its immediate parent once (via `resolveName`). *(Phase 1
   used a `(parID, posixName)` lookup; superseded.)*
@@ -708,7 +708,7 @@ Operations:
 *(The funnel location, the responsibility split, and realization-only validation
 are deliberately provisional: good enough for the next stages, to be revisited.)*
 
-Every reference resolves through **`realizeValidated(cnid)`**, which fuses the
+Every reference resolves through **`realizeByCNID(cnid)`**, which fuses the
 binding check of *Caching* with `ItemCache`'s realization:
 
 ```
@@ -729,10 +729,10 @@ item is open, the diff **updates it in place** rather than replacing it.
 Parts: the mapper answers `record` / `lookupPosixName` / `cnidForName` /
 `mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`
 primitives; `ItemCache` owns `items_`, realization, and the identity/kind policy
-of `resolveChild`; and `resolveName(dir, hint)` is the single directory-side
+of `resolveChildCNID`; and `resolveName(dir, hint)` is the single directory-side
 funnel (below), on `DirectoryItem`.
 
-**By CNID** (`resolveDir(dirID)`, `tryResolve(CNID)`, FCB revalidation): the steps
+**By CNID** (`resolveDir(dirID)`, `realizeByCNID(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
 same-directory rename is recovered even for an access by CNID, while a genuine
 delete still fails.
@@ -745,31 +745,31 @@ written for now; benchmark when the backend matters.
 
 ```
 1. cnid = mapper.cnidForName(parID, macName)
-2. if cnid: item = realizeValidated(cnid); ok -> return        # fast path
-3. parent = realizeValidated(parID) as DirectoryItem; else dirNFErr
+2. if cnid: item = realizeByCNID(cnid); ok -> return        # fast path
+3. parent = realizeByCNID(parID) as DirectoryItem; else dirNFErr
 4. cnid = resolveName(parent, macName):                        # the funnel
      ensureListed(parent)
      prefix = prefixOf(macName)        # truncate27(stripDisambiguator(...))
      mapper.nameGroup(parent.cnid, group(prefix))
      mapper.cnidForName(parID, macName)
 5. if !cnid -> fnfErr
-6. return realizeValidated(cnid)
+6. return realizeByCNID(cnid)
 ```
 
-**By full posix path** (`tryResolve(path)`, `nativePathToFSSpec`):
+**By full posix path** (`realizeByHostPath(path)`, `nativePathToFSSpec`):
 
 ```
 1. canonicalise
 2. dir = root (cnid 2)
 3. for each component c but the last:
      st   = statPath(dir.path / c); if missing -> fail
-     cnid = cache.resolveChild(dir.cnid, c, st)       # identity-or-create policy
-     dir  = realizeValidated(cnid); must be a DirectoryItem else ENOTDIR
+     cnid = cache.resolveChildCNID(dir.cnid, c, st)       # identity-or-create policy
+     dir  = realizeByCNID(cnid); must be a DirectoryItem else ENOTDIR
 4. last component c:
      st   = statPath(dir.path / c); if missing -> fail
-     cnid = cache.resolveChild(dir.cnid, c, st)
+     cnid = cache.resolveChildCNID(dir.cnid, c, st)
      resolveName(dir, /*hint*/ posixName = c)                   # lists only this dir
-     return realizeValidated(cnid)
+     return realizeByCNID(cnid)
 ```
 
 Steps 1–3 never list; only step 4 lists the immediate parent, to name the target.
@@ -777,9 +777,9 @@ Steps 1–3 never list; only step 4 lists the immediate parent, to name the targ
 **By parID + index** (a listing):
 
 ```
-1. dir = realizeValidated(parID) as DirectoryItem
+1. dir = realizeByCNID(parID) as DirectoryItem
 2. ensureListed(dir)
-3. realizeValidated(descriptors_[index].cnid)   # files-only: filter by kind first;
+3. realizeByCNID(descriptors_[index].cnid)   # files-only: filter by kind first;
                                                 # its name is decided lazily on read
 ```
 
@@ -859,7 +859,7 @@ listing did not finish within 5 minutes — F4 in practice.
 
 `SimpleCNIDMapper` stores per-directory children as `(host filename → cnid)`
 (the `(parID, posixName)` lookup + diff index); added `lookupChild` /
-`getOrCreateChild`; `ItemCache::tryResolve(path)` walks components through them
+`getOrCreateChild`; `ItemCache::realizeByHostPath(path)` walks components through them
 instead of `cacheDirectory` on each ancestor. Guard:
 `ResolvePathDoesNotEnumerate` (zero directory scans).
 
@@ -947,9 +947,9 @@ every listing/metadata call site and the `dynamic_cast` sites.
 
 - The mapper record gains an explicit `(dev, ino)` and `mtime`; children are the
   CNID set `parID -> {cnid}` (the name key goes away).
-- Identity is looked up by inode — `(dev, ino) -> cnid` — and `tryResolve(path)`
+- Identity is looked up by inode — `(dev, ino) -> cnid` — and `realizeByHostPath(path)`
   stats each component instead of `lookupChild` / `getOrCreateChild` (which go
-  away). The identity-or-create step is one mapper call (`resolveChild`), so it can
+  away). The identity-or-create step is one mapper call (`resolveChildCNID`), so it can
   become a single transaction later. *(Phase 10 replaces the inode index with the
   posix-name map; see *Binding staleness*.)*
 - **Validation, not recovery:** on access, if the record's path no longer exists or
@@ -1172,7 +1172,7 @@ against regressing F1/F3.
 
 ## References
 
-- `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, realization, LRU.
+- `src/file/localvolume/itemcache.cpp` — `realizeByHostPath(path)`, realization, LRU.
 - `src/file/localvolume/localvolume.cpp` — `nativePathToFSSpec`, `getInfoCommon`,
   `createRepForFile`, `resolve`, `MountLocalVolumes`.
 - `src/file/localvolume/item.cpp` / `item.h` — the `DirectoryItem` stages

@@ -138,7 +138,7 @@ fs::path ItemCache::pathOf(CNID cnid)
     return path;
 }
 
-ItemPtr ItemCache::realizeOnce(CNID cnid)
+ItemPtr ItemCache::tryRealize(CNID cnid)
 {
     if(cnid <= 0)
         return {};
@@ -154,7 +154,7 @@ ItemPtr ItemCache::realizeOnce(CNID cnid)
     PathStat st = statPath(path);
     // The binding is gone, the name now holds a different kind of file, or a
     // different file holds the name (a delete + create). Deleting is the diff's
-    // job, not ours: see realizeValidated.
+    // job, not ours: see realizeByCNID.
     if(!st.exists || (!st.isDirectory && !st.isRegular)
        || st.isDirectory != mapping->isDir
        || !sameIdentity(mapping->identity, st.identity))
@@ -166,14 +166,14 @@ ItemPtr ItemCache::realizeOnce(CNID cnid)
     return makeItem(mapping->parID, cnid, path, mapping->macname, st.isDirectory);
 }
 
-ItemPtr ItemCache::realizeValidated(CNID cnid)
+ItemPtr ItemCache::realizeByCNID(CNID cnid)
 {
-    return realizeValidated(cnid, 32);
+    return realizeByCNID(cnid, 32);
 }
 
-ItemPtr ItemCache::realizeValidated(CNID cnid, int depth)
+ItemPtr ItemCache::realizeByCNID(CNID cnid, int depth)
 {
-    if(ItemPtr item = realizeOnce(cnid))
+    if(ItemPtr item = tryRealize(cnid))
         return item;
 
     auto mapping = cnidMapper_->lookupCNID(cnid);
@@ -182,22 +182,17 @@ ItemPtr ItemCache::realizeValidated(CNID cnid, int depth)
 
     // The binding is stale and the file may have moved: re-list the parent so the
     // diff can recover a same-directory rename (or drop a gone entry), then retry.
-    auto parent = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(mapping->parID, depth - 1));
+    auto parent = std::dynamic_pointer_cast<DirectoryItem>(realizeByCNID(mapping->parID, depth - 1));
     if(!parent)
         return {};
 
     parent->clearCache();
     parent->ensureListed();
 
-    return realizeOnce(cnid);
+    return tryRealize(cnid);
 }
 
-ItemPtr ItemCache::tryResolve(CNID cnid)
-{
-    return realizeValidated(cnid);
-}
-
-ItemPtr ItemCache::tryResolve(fs::path inPath)
+ItemPtr ItemCache::realizeByHostPath(fs::path inPath)
 {
     auto [rootIter, pathIter] = std::mismatch(rootPath_.begin(), rootPath_.end(), inPath.begin(), inPath.end());
 
@@ -205,7 +200,7 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         return{};
 
     // The root is realized on demand like any other item; nothing pins it.
-    ItemPtr item = realizeValidated(2);
+    ItemPtr item = realizeByCNID(2);
     if(!item)
         return{};
 
@@ -223,15 +218,15 @@ ItemPtr ItemCache::tryResolve(fs::path inPath)
         if(!st.exists || (!st.isDirectory && !st.isRegular))
             return {};
 
-        CNID cnid = resolveChild(dir->cnid(), elem, st);
-        item = realizeValidated(cnid);
+        CNID cnid = resolveChildCNID(dir->cnid(), elem, st);
+        item = realizeByCNID(cnid);
         if(!item)
             return {};
     }
     return item;
 }
 
-ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d)
+ItemPtr ItemCache::realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& d)
 {
     fs::path path = dir->path() / d.posixName;
     if(ItemPtr item = itemSnapshot(d.cnid, path, d.isDir))
@@ -240,7 +235,7 @@ ItemPtr ItemCache::realizeChild(const DirectoryItemPtr& dir, const Descriptor& d
     return makeItem(dir->cnid(), d.cnid, path, std::nullopt, d.isDir);
 }
 
-CNID ItemCache::resolveChild(CNID parID, const fs::path& posixName, const PathStat& st)
+CNID ItemCache::resolveChildCNID(CNID parID, const fs::path& posixName, const PathStat& st)
 {
     if(auto mapping = cnidMapper_->lookupPosixName(parID, posixName))
     {
@@ -266,7 +261,7 @@ void ItemCache::ensureNamed(Item& item)
         return;
     }
 
-    auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(item.parID()));
+    auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeByCNID(item.parID()));
     if(!dir)
         return;
 

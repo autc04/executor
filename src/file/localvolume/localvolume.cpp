@@ -107,7 +107,7 @@ FileRepPtr LocalVolume::createRepForFile(ItemCache& itemcache, FileItem& item,
 
 std::shared_ptr<DirectoryItem> LocalVolume::resolveDir(long dirID)
 {
-    if(auto dirItem = std::dynamic_pointer_cast<DirectoryItem>(itemCache->tryResolve(dirID)))
+    if(auto dirItem = std::dynamic_pointer_cast<DirectoryItem>(itemCache->realizeByCNID(dirID)))
         return dirItem;
     else
         throw OSErrorException(dirNFErr); // not a directory
@@ -836,7 +836,7 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
     auto path = fs::canonical(inPath, ec);
     if(ec)
         return {};
-    ItemPtr item = itemCache->tryResolve(path);
+    ItemPtr item = itemCache->realizeByHostPath(path);
 
     if(item)
     {

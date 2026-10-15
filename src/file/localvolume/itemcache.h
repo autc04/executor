@@ -64,21 +64,21 @@ class ItemCache
     // so it is never a source here.
     fs::path pathOf(CNID cnid);
 
-    // Realize a CNID, validating its binding (see realizeValidated).
-    ItemPtr realizeOnce(CNID cnid);
+    // Realize a CNID once, validating its binding: null if the binding is stale.
+    // The recovering entry is realizeByCNID.
+    ItemPtr tryRealize(CNID cnid);
 
-    // Validate a CNID's binding against the host and realize the Item. If the
-    // binding is stale, flush the parent's listing (so the diff can recover a
-    // same-directory rename or drop a gone entry) and retry, recursing up while
+    // Realize the Item a CNID denotes, validating its binding against the host.
+    // If the binding is stale, flush the parent's listing (so the diff can recover
+    // a same-directory rename or drop a gone entry) and retry, recursing up while
     // an ancestor's own binding is stale. `depth` bounds that recursion.
-    ItemPtr realizeValidated(CNID cnid);
-    ItemPtr realizeValidated(CNID cnid, int depth);
+    ItemPtr realizeByCNID(CNID cnid, int depth);
 
-    // The CNID for the child of `parID` named `posixName`, creating a record when
-    // there is none. The same identity and kind reuse the CNID; any other file at
-    // that name is a different item, so the old record is dropped and a fresh CNID
-    // is assigned. No name is decided.
-    CNID resolveChild(CNID parID, const fs::path& posixName, const PathStat& st);
+    // CNIDResolve: the CNID for the child of `parID` named `posixName`, creating a
+    // record when there is none. The same identity and kind reuse the CNID; any
+    // other file at that name is a different item, so the old record is dropped and
+    // a fresh CNID is assigned. No name is decided.
+    CNID resolveChildCNID(CNID parID, const fs::path& posixName, const PathStat& st);
 
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
@@ -90,8 +90,8 @@ class ItemCache
     // these are the cache- and registry-side pieces it still drives.
     friend class DirectoryItem;
 
-    // Realize a descriptor's Item (from the registry, else freshly built).
-    ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
+    // Realize the Item a descriptor denotes (from the registry, else freshly built).
+    ItemPtr realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
     // Invalidation by CNID: resolve the live directory and clear its cached
     // payload. Callers that already hold the DirectoryItem clear it directly.
@@ -110,8 +110,14 @@ public:
 
     void noteItemFreed(CNID cnid);
 
-    ItemPtr tryResolve(CNID cnid);
-    ItemPtr tryResolve(fs::path path);
+    // Realize the Item a CNID denotes, validating its binding (see the private
+    // depth-bounded form): the entry point for an access by CNID.
+    ItemPtr realizeByCNID(CNID cnid);
+
+    // Realize the Item at a host path, walking it from the volume root. Each
+    // component is CNIDResolved stat-first and no ancestor is listed; the target's
+    // name is decided by listing its immediate parent once.
+    ItemPtr realizeByHostPath(fs::path path);
 
     // The per-volume collaborators the Count/List/NameResolve machinery drives
     // directly: the identity/name store and the format/hidden-file policy.
@@ -119,7 +125,7 @@ public:
     ItemFactory& itemFactory() { return *itemFactory_; }
 
     // The live Item for `cnid` if one is realized -- no binding check, no
-    // realization, just the registry (tryResolve's little brother).
+    // realization, just the registry.
     ItemPtr cachedItem(CNID cnid) const;
 
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group

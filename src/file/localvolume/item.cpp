@@ -416,7 +416,7 @@ fs::path DirectoryItem::nameSourceOf(const Descriptor& d)
 
     localVolumeStats().nameProbes++;
 
-    auto file = std::static_pointer_cast<FileItem>(itemcache_.realizeChild(self(), d));
+    auto file = std::static_pointer_cast<FileItem>(itemcache_.realizeDescriptor(self(), d));
     file->ensureMaterialized();
     return file->rep()->nameSource(d.posixName);
 }
@@ -439,7 +439,7 @@ ItemPtr DirectoryItem::child(mac_string_view name)
 
     // Fast path: the name is already decided for this directory.
     if(auto foundCnid = mapper.cnidForName(cnid(), name))
-        if(ItemPtr item = itemcache_.realizeValidated(*foundCnid))
+        if(ItemPtr item = itemcache_.realizeByCNID(*foundCnid))
         {
             // Realizing may have recovered a rename, invalidating this name.
             if(mapper.cnidForName(cnid(), name) == foundCnid)
@@ -453,7 +453,7 @@ ItemPtr DirectoryItem::child(mac_string_view name)
     resolveGroup(macNamePrefix(name));
 
     if(auto foundCnid = mapper.cnidForName(cnid(), name))
-        if(ItemPtr item = itemcache_.realizeValidated(*foundCnid))
+        if(ItemPtr item = itemcache_.realizeByCNID(*foundCnid))
             return item;
 
     return {};
@@ -467,7 +467,7 @@ ItemPtr DirectoryItem::child(int index, bool includeDirectories)
     if(!d)
         throw OSErrorException(fnfErr);
     // The name is decided lazily, when the caller reads item->name().
-    return itemcache_.realizeChild(self(), *d);
+    return itemcache_.realizeDescriptor(self(), *d);
 }
 
 void DirectoryItem::clearCache()
