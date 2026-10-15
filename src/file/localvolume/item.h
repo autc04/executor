@@ -28,6 +28,15 @@ using ItemPtr = std::shared_ptr<Item>;
 using DirectoryItemPtr = std::shared_ptr<DirectoryItem>;
 using FileItemPtr = std::shared_ptr<FileItem>;
 
+// The grouping key for a Mac name: its first 31 bytes, with a trailing ".bin"
+// and/or "#<digits>" disambiguator stripped, truncated to leave room for a
+// generated disambiguator, and case-folded. Two entries can collide iff their
+// keys are equal, so over-grouping only costs laziness. See *Names* in the plan.
+mac_string macNamePrefix(mac_string_view macName);
+
+// The grouping key of a host filename.
+mac_string hostGroupPrefix(const fs::path& posixName);
+
 struct ItemInfo
 {
     union {
@@ -75,7 +84,7 @@ public:
 
 using FileRepPtr = std::shared_ptr<FileRep>;
 
-class Item
+class Item : public std::enable_shared_from_this<Item>
 {
 protected:
     ItemCache& itemcache_;
@@ -84,8 +93,6 @@ protected:
     fs::path path_;
     mac_string name_;             // decided at NameResolve; empty until then
     bool nameDecided_ = false;
-
-    friend class ItemCache;
 
 public:
     Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, std::optional<mac_string> name = {});
@@ -100,6 +107,11 @@ public:
     // parent directory's `macNamePrefix` group on first use; every name read goes
     // through here, so a caller never observes an undecided name.
     const mac_string& name();
+
+    // The Mac name, set once NameResolve has decided it. `name()` is the reading
+    // funnel; the naming machinery writes through decideName().
+    void decideName(mac_string name) { name_ = std::move(name); nameDecided_ = true; }
+    bool nameIsDecided() const { return nameDecided_; }
 
     virtual void deleteItem();
     virtual void moveItem(const fs::path& newPath, mac_string_view newName);
@@ -155,15 +167,15 @@ class DirectoryItem : public Item
     std::optional<int> count_;   // Counted: a tally, without the descriptors
     FileStamp countStamp_;       // the stamp that tally is valid for
 
-    friend class ItemCache;
-    void clearCache();
     void storeDescriptors(std::vector<Descriptor> descriptors, FileStamp stamp);
     bool isListed() const { return listed_; }
 
-    // Select a descriptor from the (valid) listing. Only ItemCache::child() may
-    // call these, so the "listed and valid" precondition cannot be violated
-    // elsewhere.
+    // Select a descriptor from the (valid) listing, which this class owns the
+    // "listed and valid" precondition of.
     const Descriptor* childByIndex(int index, bool includeDirectories) const;
+
+    DirectoryItemPtr self();
+
 public:
     using Item::Item;
 
@@ -182,6 +194,33 @@ public:
 
     // The [begin, end) range of descriptors whose (folded) prefix equals `prefix`.
     std::pair<size_t, size_t> groupRange(mac_string_view prefix) const;
+
+    // --- Count / List / NameResolve: the directory-stage machinery ---
+
+    // Count: the visible-child tally, without a descriptor list. List implies
+    // Count. Throws ioErr if the directory cannot be read.
+    int countVisible();
+
+    // List: ensure the listing is present and valid, re-scanning the host if it
+    // changed. False if the scan failed (the listing is dropped, so the next
+    // access retries from scratch).
+    bool ensureListed();
+
+    // NameResolve: decide the Mac names of the `prefix` group of the (valid)
+    // listing; and of the group holding `item`, returning its decided name.
+    void resolveGroup(mac_string_view prefix);
+    std::optional<mac_string> resolveName(const Item& item);
+
+    // The lookup funnel (see the plan): the only way to query a directory's
+    // contents. Ensures the listing, resolves the name's group, then returns the
+    // child. Returns null if there is no such child; both throw ioErr if the
+    // directory itself cannot be read.
+    ItemPtr child(mac_string_view name);
+    ItemPtr child(int index, bool includeDirectories);
+
+    // Invalidation: drop the listing/tally so the next access re-lists. Called by
+    // ItemCache::flushDirectoryCache.
+    void clearCache();
 
     virtual void deleteItem();
 };

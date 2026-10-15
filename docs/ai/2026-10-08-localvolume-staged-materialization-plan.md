@@ -325,9 +325,8 @@ names the group it falls in, never a single entry.
 point that owns both the lookup and the state change — it ensures the directory
 is `Listed`, CNIDResolves the group, and decides the names — so no caller drives
 those steps itself. Any read of an `Item`'s `macName` goes through it, so a
-caller never observes an undecided name. (Whether that entry point lives on
-`DirectoryItem` or on a `DirectoryCache` holding the directory's mutable state is
-an open choice.)
+caller never observes an undecided name. That entry point lives on
+`DirectoryItem`, which owns the Count/List/NameResolve machinery.
 
 ### Materialize (FileItem)
 
@@ -566,7 +565,7 @@ Consequences:
 - **Read errors**: a scan that fails must **not** be cached as a valid (empty)
   listing — the directory is left invalid so the next access retries. A requested
   directory that cannot be read reports `ioErr` — the listing funnel
-  (`ItemCache::child`) and `Count` alike. In a path walk, a component that does not
+  (`DirectoryItem::child`) and `Count` alike. In a path walk, a component that does not
   exist is `fnfErr`, and one that exists but cannot be `stat`ed is `ioErr`;
   `nativePathToFSSpec` maps both to `nullopt`.
 - The staleness bound is "as of the last access". Changes racing the guest's
@@ -673,16 +672,14 @@ Operations:
   resolve `(dev, ino)` via the mapper; **no ancestor is ever listed**. Naming the
   last component lists its immediate parent once (via `resolveName`). *(Phase 1
   used a `(parID, posixName)` lookup; superseded.)*
-- `ItemCache::child(...)`: the lookup funnel — ensure the directory is Listed and
-  valid, then select (see *Stage model*).
-- `getInfoCommon`'s directory branch: use **Count** (`countChildren`), which keeps
-  only a tally.
+- `getInfoCommon`'s directory branch: use **Count**
+  (`DirectoryItem::countVisible`), which keeps only a tally.
 - `LocalVolume::nativePathToFSSpec` / `resolve(...)`: no ancestor enumeration; the
   name for the FSSpec comes from NameResolve of that one entry's group.
 - `resolve(name)`: the parent is Listed (or the name's group NameResolved), then
   the name is looked up via the mapper's `(parID, macName)` index.
-- `ensureListed` (L0 stamp check, L1 re-list); an LRU over all `Item`s, by cache
-  weight.
+- an LRU over all `Item`s, by cache weight; realization and the mapper/factory
+  seams the Count/List/NameResolve stages drive.
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
 
@@ -690,8 +687,9 @@ Operations:
   without a format; owns no other `Item`.
 - `DirectoryItem`: the two stages — `count_`/`stamp_` (Counted) and the
   `(macNamePrefix, posixName)`-sorted descriptor list with a per-descriptor `CNID`
-  (Listed) — plus `resolve(index, includeDirectories)`; keep the HFS-compatible
-  count semantics (files + dirs).
+  (Listed) — plus the Count/List/NameResolve machinery that owns them
+  (`countVisible`, `ensureListed`, `resolveGroup`/`resolveName`) and the lookup
+  funnel (`child`); keep the HFS-compatible count semantics (files + dirs).
 - `FileItem`: holds the optional `FileRep` and builds it lazily via
   `ensureMaterialized()` (called from `open`/`openRF`/`getInfo`/`setInfo`/
   `deleteItem`/`moveItem`). *(done — Phase 3)*
@@ -730,9 +728,9 @@ item is open, the diff **updates it in place** rather than replacing it.
 
 Parts: the mapper answers `record` / `lookupPosixName` / `cnidForName` /
 `mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`
-primitives; `ItemCache` owns `items_`, realization, `ensureListed`, and the
-identity/kind policy of `resolveChild`; and `resolveName(dir, hint)` is the single
-directory-side funnel (below).
+primitives; `ItemCache` owns `items_`, realization, and the identity/kind policy
+of `resolveChild`; and `resolveName(dir, hint)` is the single directory-side
+funnel (below), on `DirectoryItem`.
 
 **By CNID** (`resolveDir(dirID)`, `tryResolve(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
@@ -743,7 +741,7 @@ delete still fails.
 database-backed mapper (LMDB) may be slower than the in-memory object. Left as
 written for now; benchmark when the backend matters.
 
-**By parID + macName** (`resolve(name)`, `child(dir, name)`):
+**By parID + macName** (`resolve(name)`, `DirectoryItem::child(name)`):
 
 ```
 1. cnid = mapper.cnidForName(parID, macName)
@@ -794,10 +792,8 @@ the entry's `CNID`. It is the only directory-side entry point — no caller driv
 name) or a `posixName` (a path walk reached this directory); both select the same
 group.
 
-For now it lives on `ItemCache` (as `child(dir, name)` / `child(dir, index)`),
-which has the mapper, the LRU, and the realizer, and takes the `DirectoryItemPtr`.
-Moving it onto `DirectoryItem` (via `shared_from_this`) or onto a separate
-`DirectoryCache` is deferred; the flows do not depend on the choice.
+It lives on `DirectoryItem` (as `child(name)` / `child(index, …)`), which reaches
+the mapper, the LRU, and the realizer through `ItemCache` (a friend).
 
 ### Invalidation
 
@@ -869,10 +865,10 @@ instead of `cacheDirectory` on each ancestor. Guard:
 
 ### Phase 2 — Count without enumerating (F3) — DONE (based on older design)
 
-`ItemCache::countChildren` (readdir + hidden filter; no CNID/item/factory work),
-used for `ioDrNmFls` as the **Count** stage, distinct from Enumerate. Guard:
-`ListingDoesNotMaterializeSubdirectories`. Count's validation-stamp caching is
-Phase 5.
+`DirectoryItem::countVisible` (readdir + hidden filter; no CNID/item/factory
+work), used for `ioDrNmFls` as the **Count** stage, distinct from Enumerate.
+Guard: `ListingDoesNotMaterializeSubdirectories`. Count's validation-stamp
+caching is Phase 5.
 
 ### Phase 3 — Object model + deferred materialization — DONE (based on older design)
 
@@ -1176,12 +1172,11 @@ against regressing F1/F3.
 
 ## References
 
-- `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, `cacheDirectory`,
-  `countChildren`, LRU.
+- `src/file/localvolume/itemcache.cpp` — `tryResolve(path)`, realization, LRU.
 - `src/file/localvolume/localvolume.cpp` — `nativePathToFSSpec`, `getInfoCommon`,
   `createRepForFile`, `resolve`, `MountLocalVolumes`.
-- `src/file/localvolume/item.cpp` / `item.h` — `DirectoryItem::populateCache`,
-  `resolve`, `countItems`.
+- `src/file/localvolume/item.cpp` / `item.h` — the `DirectoryItem` stages
+  (`ensureListed`, `countVisible`), `child`, `countItems`.
 - `src/file/localvolume/simplecnidmapper.cpp` /
   `lmdbcnidmapper.cpp` — mapping, `toMacRomanFilename`.
 - `src/file/localvolume/macbinary.cpp` — `isMacBinaryFile` (the `.bin` check).

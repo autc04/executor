@@ -169,7 +169,7 @@ ItemPtr LocalVolume::resolve(mac_string_view name, short vRef, long dirID)
     else
     {
         std::shared_ptr<DirectoryItem> dir = resolveDir(vRef, dirID);
-        if(auto file = itemCache->child(dir, name))
+        if(auto file = dir->child(name))
             return file;
         else
             throw OSErrorException(fnfErr);
@@ -198,7 +198,7 @@ ItemPtr LocalVolume::resolveRelative(const std::shared_ptr<DirectoryItem>& base,
     }
     else
     {
-        item = itemCache->child(base, mac_string_view(p, colon));
+        item = base->child(mac_string_view(p, colon));
         if(!item)
         {
             if(colon == name.end())
@@ -223,7 +223,7 @@ ItemPtr LocalVolume::resolveForInfo(mac_string_view name, short vRef, long dirID
     if(index > 0)
     {
         auto dir = resolveDir(vRef, dirID);
-        return itemCache->child(dir, index, includeDirectories);
+        return dir->child(index, includeDirectories);
     }
     else if(index == 0 && !name.empty())
         return resolve(name, vRef, dirID);
@@ -403,7 +403,7 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
 
         pb->dirInfo.ioFlAttrib = ATTRIB_ISADIR;
         
-        pb->dirInfo.ioDrNmFls = itemCache->countChildren(dirItem);
+        pb->dirInfo.ioDrNmFls = dirItem->countVisible();
 
         // Directories have dates just as files do, and Item::getInfo
         // already reads them off the underlying filesystem.  Reporting
@@ -523,7 +523,7 @@ LocalVolume::NonexistentFile LocalVolume::resolveForCreate(mac_string_view name,
         name = mac_string_view(name.begin() + colon+1, name.end());
     }
 
-    if(itemCache->child(parent, name))
+    if(parent->child(name))
         throw OSErrorException(dupFNErr);
     
     return NonexistentFile { parent, name };
@@ -552,7 +552,7 @@ void LocalVolume::PBDirCreate(HParmBlkPtr pb)
 
     itemCache->flushDirectoryCache(parent);
 
-    auto item = itemCache->child(parent, name);
+    auto item = parent->child(name);
     if(!item)
         throw OSErrorException(ioErr);
     pb->fileParam.ioDirID = item->cnid();
@@ -579,7 +579,7 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(bdNamErr);
 
     auto parent = resolveDir(item->parID());
-    if(itemCache->child(parent, newName))
+    if(parent->child(newName))
         throw OSErrorException(dupFNErr);
     
     itemCache->renameItem(item, newName);
@@ -755,7 +755,7 @@ void LocalVolume::PBCatMove(CMovePBPtr pb)
 
     mac_string_view finalName = newName.empty() ? mac_string_view(item->name()) : newName;
 
-    if(ItemPtr existing = itemCache->child(newParent, finalName))
+    if(ItemPtr existing = newParent->child(finalName))
         if(existing != item)
             throw OSErrorException(dupFNErr);
 

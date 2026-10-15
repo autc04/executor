@@ -6,7 +6,9 @@
 #include <memory>
 #include <chrono>
 #include <list>
+#include <optional>
 #include <unordered_map>
+#include <vector>
 #include <stdint.h>
 
 namespace Executor
@@ -75,33 +77,45 @@ class ItemCache
     ItemPtr realizeValidated(CNID cnid);
     ItemPtr realizeValidated(CNID cnid, int depth);
 
-    // Realize a descriptor's Item (from the registry, else freshly built).
-    ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
-
     // The CNID for the child of `parID` named `posixName`, creating a record when
     // there is none. The same identity and kind reuse the CNID; any other file at
     // that name is a different item, so the old record is dropped and a fresh CNID
     // is assigned. No name is decided.
     CNID resolveChild(CNID parID, const fs::path& posixName, const PathStat& st);
 
-    // Ensure `dir` is listed and valid; re-lists if the host changed. A scan that
-    // fails is not committed: the listing is dropped and this returns false, so
-    // the caller reports ioErr and the next access retries. Private: obtain
-    // children through child(), which owns this precondition.
-    bool ensureListed(const DirectoryItemPtr& item);
-
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
     ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path,
         std::optional<mac_string> name, bool isDir);
 
+    // The Count/List/NameResolve machinery lives on DirectoryItem (see the plan);
+    // these are the cache- and mapper-side pieces it drives.
+    friend class DirectoryItem;
+
+    // Count: a host-readdir tally of the visible entries, with no descriptor or
+    // CNID work. Throws ioErr if the directory cannot be read.
+    int countVisible(const fs::path& dir) const;
+
+    // List: scan `dir` and reconcile it against the mapper (the diff), re-pointing
+    // any live `items_` entry at its current path; the result is sorted by
+    // (prefix, posixName). Nothing is committed here: nullopt means the scan
+    // failed, and the caller drops its listing so the next access retries.
+    std::optional<std::vector<Descriptor>> listDirectory(CNID dirID, const fs::path& dir);
+
+    // NameResolve: the decided Mac name of a CNID, if any; and the batch that
+    // decides a group's names (the mapper's `nameGroup`).
+    std::optional<mac_string> decidedName(CNID cnid) const;
+    void decideNameGroup(CNID dirID, const std::vector<CNIDMapper::NameRequest>& group);
+
+    // The child of `dirID` whose decided Mac name is `macName`, or nothing.
+    std::optional<CNID> childNamed(CNID dirID, mac_string_view macName) const;
+
+    // Realize a descriptor's Item (from the registry, else freshly built).
+    ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
+
     // The filename a child's Mac name is derived from (differs from the host
     // filename only for MacBinary, whose ".bin" is dropped). Probes the file.
     fs::path nameSourceFor(const fs::path& path);
-
-    // Decide the Mac names of the `macNamePrefix` group whose folded prefix is
-    // `prefix` (the NameResolve batch). Probes the group's ".bin" entries only.
-    void resolveNameGroup(const DirectoryItemPtr& dir, mac_string_view prefix);
 
 public:
     // Build and install the FileRep for a FileItem (the format gauntlet).
@@ -119,21 +133,11 @@ public:
     ItemPtr tryResolve(CNID cnid);
     ItemPtr tryResolve(fs::path path);
 
-    // Obtain a child of a directory. This is the only way to query a
-    // directory's contents: it first ensures `dir` is enumerated and valid, so
-    // that precondition is an invariant of the lookup rather than a caller
-    // obligation. Returns null if there is no such child; throws ioErr if `dir`
-    // itself cannot be read.
-    ItemPtr child(const DirectoryItemPtr& dir, mac_string_view name);
-    ItemPtr child(const DirectoryItemPtr& dir, int index, bool includeDirectories);
-
-    // Ensure `item`'s Mac name is decided, deciding its directory group if not.
-    // Called from Item::name().
+    // Ensure `item`'s Mac name is decided, deciding its parent directory's group
+    // if not. Called from Item::name().
     void ensureNamed(Item& item);
 
-    // Number of visible children, without enumerating/constructing them. Throws
-    // ioErr if the directory cannot be read (a failed scan is never cached).
-    int countChildren(const DirectoryItemPtr& item);
+    // Drop `item`'s listing/tally and re-cache it, so the next access re-lists.
     void flushDirectoryCache(DirectoryItemPtr item);
     void flushDirectoryCache(CNID dirID);
 

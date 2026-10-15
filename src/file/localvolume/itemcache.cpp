@@ -10,77 +10,6 @@
 
 using namespace Executor;
 
-namespace
-{
-// A generated disambiguator ("#123") is at most this many digits; a group's
-// truncated prefix leaves room for one.
-constexpr size_t maxDisambiguatorDigits = 3;
-
-bool endsWithBin(const mac_string& s)
-{
-    if(s.size() < 4)
-        return false;
-    return s[s.size()-4] == (unsigned char)'.'
-        && std::tolower(s[s.size()-3]) == 'b'
-        && std::tolower(s[s.size()-2]) == 'i'
-        && std::tolower(s[s.size()-1]) == 'n';
-}
-
-bool endsWithDisambiguator(const mac_string& s, size_t& hashPos)
-{
-    size_t hash = s.rfind((unsigned char)'#');
-    if(hash == mac_string::npos || hash + 1 >= s.size())
-        return false;
-
-    for(size_t i = hash + 1; i < s.size(); i++)
-        if(s[i] < (unsigned char)'0' || s[i] > (unsigned char)'9')
-            return false;
-
-    hashPos = hash;
-    return true;
-}
-
-// The grouping key for a Mac name: its first 31 bytes, with a trailing ".bin"
-// and/or "#<digits>" disambiguator stripped, truncated to leave room for a
-// generated disambiguator, and case-folded. Two entries can collide iff their
-// keys are equal, so over-grouping only costs laziness. See *Names* in the plan.
-mac_string macNamePrefix(mac_string_view macName)
-{
-    mac_string s { macName };
-    if(s.size() > 31)
-        s.resize(31);
-
-    for(;;)
-    {
-        if(endsWithBin(s))
-        {
-            s.resize(s.size() - 4);
-            continue;
-        }
-        size_t hash;
-        if(endsWithDisambiguator(s, hash))
-        {
-            s.resize(hash);
-            continue;
-        }
-        break;
-    }
-
-    const size_t maxPrefix = 30 - maxDisambiguatorDigits;
-    if(s.size() > maxPrefix)
-        s.resize(maxPrefix);
-
-    ROMlib_UprString(s.data(), false, s.size());
-    return s;
-}
-
-// The grouping key of a host filename.
-mac_string hostGroupPrefix(const fs::path& posixName)
-{
-    return macNamePrefix(toMacRomanFilename(posixName, 0));
-}
-}
-
 ItemCache::ItemCache(fs::path root,
                 mac_string_view volumeName,
                 std::unique_ptr<CNIDMapper> cnidMapper,
@@ -139,71 +68,82 @@ void ItemCache::cacheItem(const ItemPtr& item)
     }
 }
 
-bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
+int ItemCache::countVisible(const fs::path& dir) const
 {
-    FileStamp stamp = statFile(dir->path());
-    if(dir->isListed() && dir->stamp_ == stamp)
-        return true;   // L0: the stamp is unchanged, so everything is still valid
-
-    // L1: re-scan, in two passes. The readdir runs to completion before any
-    // entry is stat'ed, so the directory stream never spans the per-entry stats:
-    // on a directory that needs more than one getdents fill, that is the
-    // difference between a cursor that is live for the whole loop and one whose
-    // fills are back to back. The result is keyed to the stamp read *before* the
-    // scan, so a change arriving while we read shows up as a mismatch on the next
-    // access and re-lists, instead of this listing claiming to describe a state
-    // it never observed. Concurrent modification is otherwise unguarded (see
-    // *Future Ideas*).
-    std::vector<CNIDMapper::DirEntry> entries;
+    int count = 0;
+    localVolumeStats().countScans++;
+    try
     {
-        try
-        {
-            for(const auto& e : fs::directory_iterator(dir->path()))
-            {
-                if(itemFactory_->isHidden(e))
-                    continue;
-
-                // Identity and kind are filled in by the second pass.
-                entries.push_back({ e.path().filename(), {}, false });
-            }
-        }
-        catch(const boost::filesystem::filesystem_error& exc)
-        {
-            // A failed scan says nothing about the directory's contents, so it
-            // must not be committed: the diff would read the (empty) result as
-            // every child having gone and renumber the whole directory. Drop the
-            // listing instead -- the caller turns the false into ioErr, and the
-            // next access retries from scratch.
-            std::cerr << exc.what() << std::endl;
-            flushDirectoryCache(dir);
-            return false;
-        }
-
-        for(auto& entry : entries)
-        {
-            PathStat st = statPath(dir->path() / entry.posixName);
-            if(!st.exists || (!st.isDirectory && !st.isRegular))
-            {
-                entry.posixName.clear();   // not addressable; dropped below
-                continue;
-            }
-
-            entry.identity = st.identity;
-            entry.isDir = st.isDirectory;
-        }
-
-        // readdir never yields an empty name, so an empty one marks a dropped
-        // entry.
-        entries.erase(std::remove_if(entries.begin(), entries.end(),
-            [](const CNIDMapper::DirEntry& e) { return e.posixName.empty(); }),
-            entries.end());
+        for(const auto& e : fs::directory_iterator(dir))
+            if(!itemFactory_->isHidden(e))
+                ++count;
     }
+    catch(const boost::filesystem::filesystem_error& exc)
+    {
+        // A failed scan is not a tally, so report it rather than caching a wrong
+        // count as valid.
+        std::cerr << exc.what() << std::endl;
+        throw OSErrorException(ioErr);
+    }
+    return count;
+}
+
+std::optional<std::vector<Descriptor>> ItemCache::listDirectory(CNID dirID, const fs::path& dir)
+{
+    // Re-scan in two passes. The readdir runs to completion before any entry is
+    // stat'ed, so the directory stream never spans the per-entry stats: on a
+    // directory that needs more than one getdents fill, that is the difference
+    // between a cursor that is live for the whole loop and one whose fills are
+    // back to back. The caller keys the result to the stamp it read *before*
+    // calling us, so a change arriving while we scan shows up as a mismatch on the
+    // next access and re-lists, instead of this listing claiming to describe a
+    // state it never observed. Concurrent modification is otherwise unguarded
+    // (see *Future Ideas*).
+    std::vector<CNIDMapper::DirEntry> entries;
+    try
+    {
+        for(const auto& e : fs::directory_iterator(dir))
+        {
+            if(itemFactory_->isHidden(e))
+                continue;
+
+            // Identity and kind are filled in by the second pass.
+            entries.push_back({ e.path().filename(), {}, false });
+        }
+    }
+    catch(const boost::filesystem::filesystem_error& exc)
+    {
+        // A failed scan says nothing about the directory's contents, so it must
+        // not be committed: the diff would read the (empty) result as every child
+        // having gone and renumber the whole directory. Report it instead -- the
+        // caller drops its listing and the next access retries from scratch.
+        std::cerr << exc.what() << std::endl;
+        return std::nullopt;
+    }
+
+    for(auto& entry : entries)
+    {
+        PathStat st = statPath(dir / entry.posixName);
+        if(!st.exists || (!st.isDirectory && !st.isRegular))
+        {
+            entry.posixName.clear();   // not addressable; dropped below
+            continue;
+        }
+
+        entry.identity = st.identity;
+        entry.isDir = st.isDirectory;
+    }
+
+    // readdir never yields an empty name, so an empty one marks a dropped entry.
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+        [](const CNIDMapper::DirEntry& e) { return e.posixName.empty(); }),
+        entries.end());
 
     localVolumeStats().directoryIterations++;
     localVolumeStats().entriesSeen += entries.size();
 
     std::vector<CNIDMapper::Mapping> mappings =
-        cnidMapper_->mapDirectoryContents(dir->cnid(), std::move(entries));
+        cnidMapper_->mapDirectoryContents(dirID, std::move(entries));
 
     std::vector<Descriptor> descriptors;
     descriptors.reserve(mappings.size());
@@ -218,7 +158,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
         // the record's reset.
         if(auto itemIt = items_.find(m.cnid); itemIt != items_.end())
             if(ItemPtr item = itemIt->second.lock())
-                item->relocate(dir->path() / m.posixName);
+                item->relocate(dir / m.posixName);
 
         Descriptor d;
         d.posixName = m.posixName;
@@ -235,44 +175,7 @@ bool ItemCache::ensureListed(const DirectoryItemPtr& dir)
             return a.posixName.native() < b.posixName.native();
         });
 
-    dir->storeDescriptors(std::move(descriptors), stamp);
-    cacheItem(dir);
-    return true;
-}
-
-int ItemCache::countChildren(const DirectoryItemPtr& dir)
-{
-    // List implies Count.
-    if(dir->isListed())
-        return dir->countItems();
-
-    FileStamp stamp = statFile(dir->path());
-    if(dir->count_ && dir->countStamp_ == stamp)
-    {
-        cacheItem(dir);
-        return *dir->count_;
-    }
-
-    int count = 0;
-    localVolumeStats().countScans++;
-    try
-    {
-        for(const auto& e : fs::directory_iterator(dir->path()))
-            if(!itemFactory_->isHidden(e))
-                ++count;
-    }
-    catch(const boost::filesystem::filesystem_error& exc)
-    {
-        // Same rule as ensureListed: a failed scan is not a tally, so report it
-        // rather than caching a wrong count as valid.
-        std::cerr << exc.what() << std::endl;
-        throw OSErrorException(ioErr);
-    }
-
-    dir->count_ = count;
-    dir->countStamp_ = stamp;   // as for a listing: keyed to the state we started
-    cacheItem(dir);
-    return count;
+    return descriptors;
 }
 
 void ItemCache::flushDirectoryCache(DirectoryItemPtr item)
@@ -401,7 +304,7 @@ ItemPtr ItemCache::realizeValidated(CNID cnid, int depth)
         return {};
 
     flushDirectoryCache(parent);
-    ensureListed(parent);
+    parent->ensureListed();
 
     return realizeOnce(cnid);
 }
@@ -469,39 +372,21 @@ CNID ItemCache::resolveChild(CNID parID, const fs::path& posixName, const PathSt
     return cnidMapper_->createRecord(parID, posixName, st.identity, st.isDirectory);
 }
 
-ItemPtr ItemCache::child(const DirectoryItemPtr& dir, mac_string_view name)
+std::optional<mac_string> ItemCache::decidedName(CNID cnid) const
 {
-    // Fast path: the name is already decided for this directory.
-    if(auto cnid = cnidMapper_->cnidForName(dir->cnid(), name))
-        if(ItemPtr item = realizeValidated(*cnid))
-        {
-            // Realizing may have recovered a rename, invalidating this name.
-            if(cnidMapper_->cnidForName(dir->cnid(), name) == cnid)
-                return item;
-        }
-
-    if(!ensureListed(dir))
-        throw OSErrorException(ioErr);
-
-    // Decide the group the name falls in, then look it up.
-    resolveNameGroup(dir, macNamePrefix(name));
-
-    if(auto cnid = cnidMapper_->cnidForName(dir->cnid(), name))
-        if(ItemPtr item = realizeValidated(*cnid))
-            return item;
-
-    return {};
+    if(auto rec = cnidMapper_->lookupCNID(cnid); rec && rec->macname)
+        return *rec->macname;
+    return std::nullopt;
 }
 
-ItemPtr ItemCache::child(const DirectoryItemPtr& dir, int index, bool includeDirectories)
+void ItemCache::decideNameGroup(CNID dirID, const std::vector<CNIDMapper::NameRequest>& group)
 {
-    if(!ensureListed(dir))
-        throw OSErrorException(ioErr);
-    const Descriptor* d = dir->childByIndex(index, includeDirectories);
-    if(!d)
-        throw OSErrorException(fnfErr);
-    // The name is decided lazily, when the caller reads item->name().
-    return realizeChild(dir, *d);
+    cnidMapper_->nameGroup(dirID, group);
+}
+
+std::optional<CNID> ItemCache::childNamed(CNID dirID, mac_string_view macName) const
+{
+    return cnidMapper_->cnidForName(dirID, macName);
 }
 
 fs::path ItemCache::nameSourceFor(const fs::path& path)
@@ -522,56 +407,23 @@ fs::path ItemCache::nameSourceFor(const fs::path& path)
     return rep ? rep->nameSource(filename) : filename;
 }
 
-void ItemCache::resolveNameGroup(const DirectoryItemPtr& dir, mac_string_view prefix)
-{
-    if(!ensureListed(dir))
-        return;   // unreadable: leave the names undecided
-
-    auto [begin, end] = dir->groupRange(prefix);
-    if(begin == end)
-        return;
-
-    const auto& descriptors = dir->descriptors();
-
-    std::vector<CNIDMapper::NameRequest> group;
-    group.reserve(end - begin);
-    for(size_t i = begin; i < end; i++)
-    {
-        const Descriptor& d = descriptors[i];
-        // The whole group is offered, so already-decided names seed the collision
-        // set; only the undecided entries need a (probed) name source.
-        if(auto rec = cnidMapper_->lookupCNID(d.cnid); rec && rec->macname)
-            group.push_back({ d.cnid, {} });
-        else
-            group.push_back({ d.cnid, nameSourceFor(dir->path() / d.posixName) });
-    }
-
-    cnidMapper_->nameGroup(dir->cnid(), group);
-}
-
 void ItemCache::ensureNamed(Item& item)
 {
-    if(item.nameDecided_)
+    if(item.nameIsDecided())
         return;
 
-    if(auto rec = cnidMapper_->lookupCNID(item.cnid()); rec && rec->macname)
+    if(auto name = decidedName(item.cnid()))
     {
-        item.name_ = *rec->macname;
-        item.nameDecided_ = true;
+        item.decideName(*name);
         return;
     }
 
-    auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(item.parID_));
+    auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeValidated(item.parID()));
     if(!dir)
         return;
 
-    resolveNameGroup(dir, hostGroupPrefix(item.path().filename()));
-
-    if(auto rec = cnidMapper_->lookupCNID(item.cnid()); rec && rec->macname)
-    {
-        item.name_ = *rec->macname;
-        item.nameDecided_ = true;
-    }
+    if(auto name = dir->resolveName(item))
+        item.decideName(*name);
 }
 
 ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
