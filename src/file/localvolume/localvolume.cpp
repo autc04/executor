@@ -41,9 +41,11 @@ static void setFCBName(filecontrolblock *fcb, const mac_string& name)
 }
 
 FileRepPtr ExtensionItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
-    const fs::directory_entry& e)
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
+    bool regular = fs::is_regular_file(e.path());
+    trace.push_back(regularFileObservation(e.path(), regular));
+    if(regular)
         return std::make_shared<PlainRep>(item);
     return {};
 }
@@ -92,12 +94,12 @@ bool LocalVolume::isHidden(const fs::directory_entry& e)
 }
 
 FileRepPtr LocalVolume::createRepForFile(ItemCache& itemcache, FileItem& item,
-    const fs::directory_entry& e)
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
     for(auto& itemFactory : itemFactories)
     {
         localVolumeStats().factoryProbes++;
-        if(FileRepPtr rep = itemFactory->createRepForFile(itemcache, item, e))
+        if(FileRepPtr rep = itemFactory->createRepForFile(itemcache, item, e, trace))
             return rep;
     }
     // ExtensionItemFactory is the plain fallback and claims every regular file,

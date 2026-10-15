@@ -77,7 +77,7 @@ class LocalVolume : public Volume, private ItemFactory
 
     virtual bool isHidden(const fs::directory_entry& e) override;
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) override;
+        const fs::directory_entry& e, ProbeTrace& trace) override;
 
     void upgradeItem(FileItemPtr item, ItemFactory* betterFactory);
 
@@ -144,7 +144,7 @@ class ExtensionItemFactory : public ItemFactory
 {
 public:
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) override;
+        const fs::directory_entry& e, ProbeTrace& trace) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 

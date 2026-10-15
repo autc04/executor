@@ -138,6 +138,7 @@ void Item::relocate(const fs::path& newPath)
     }
 
     path_ = newPath;
+    pathChanged();
 }
 
 ItemInfo Item::getInfo()
@@ -191,20 +192,40 @@ public:
     bool canWrite() const override { return inner_->canWrite(); }
 };
 
+bool FileItem::probeHolds() const
+{
+    for(const ProbeObservation& o : probe_)
+        if(o.retest && o.retest() != o.expected)
+            return false;
+    return true;
+}
+
+void FileItem::pathChanged()
+{
+    probeStale_ = true;   // the candidate set is derived from the path
+}
+
 void FileItem::ensureMaterialized()
 {
     if(rep_)
     {
-        // The rep is a function of the host file; rebuild it if that changed -- but
-        // never while a fork we handed out is open: the guest holds it, so a change
-        // surfaces on reopen, and rebuilding now would strand the parsed file object
-        // that fork is using and let a second one appear beside it.
-        if(openForks_ > 0 || statFile(path_) == repStamp_)
+        // Never rebuild while a fork we handed out is open: the guest holds it, so
+        // a change surfaces on reopen, and rebuilding now would strand the parsed
+        // file object that fork is using and let a second one appear beside it.
+        if(openForks_ > 0)
             return;
+
+        // The rep is a function of what the gauntlet probed. Re-test the facts we
+        // can (the candidates' existence); the content checks are trusted. A path
+        // change invalidates the whole trace, since the candidates are path-derived.
+        if(!probeStale_ && probeHolds())
+            return;
+
         rep_.reset();
     }
-    rep_ = itemcache_.itemFactory().createRepForFile(itemcache_, *this, fs::directory_entry(path_));
-    repStamp_ = statFile(path_);
+    probe_.clear();
+    probeStale_ = false;
+    rep_ = itemcache_.itemFactory().createRepForFile(itemcache_, *this, fs::directory_entry(path_), probe_);
     assert(rep_);
 }
 

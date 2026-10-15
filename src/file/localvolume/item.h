@@ -5,7 +5,9 @@
 #include <FileMgr.h>
 #include "filestamp.h"
 
+#include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #include <optional>
@@ -98,6 +100,10 @@ protected:
     // through its rep, whose format decides which host files to touch.
     virtual void moveHost(const fs::path& newPath);
 
+    // Called by relocate() after `path_` changed, so a subclass can drop state
+    // derived from the old path (relocate() itself re-derives the Mac name).
+    virtual void pathChanged() {}
+
 public:
     Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, std::optional<mac_string> name = {});
     virtual ~Item();
@@ -138,6 +144,33 @@ public:
 };
 
 
+// One fact a format probe relied on, and -- when it is cheap to re-check -- how to
+// re-check it. An empty `retest` means the fact is trusted and never re-tested:
+// the content checks (magic numbers, MacBinary headers) are the expensive part of
+// a probe, and a file being reformatted in place by another process while we run
+// is vanishingly rare. See *Rep staleness* in
+// docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
+struct ProbeObservation
+{
+    std::string what;               // for diagnostics
+    bool expected = false;
+    std::function<bool()> retest;   // empty => trusted, never re-tested
+};
+
+using ProbeTrace = std::vector<ProbeObservation>;
+
+// The usual observation: whether `path` is (expected to be) a regular file.
+inline ProbeObservation regularFileObservation(const fs::path& path, bool expected)
+{
+    return { path.string(), expected, [path] { return fs::is_regular_file(path); } };
+}
+
+// A content check: recorded for the decision it explains, but never re-tested.
+inline ProbeObservation contentObservation(std::string what, bool expected)
+{
+    return { std::move(what), expected, {} };
+}
+
 // The format gauntlet. A factory inspects a host file and, if it claims it,
 // returns a FileRep for the (already-instantiated) FileItem. Directories are not
 // handled here; ItemCache constructs them directly from the cheap "kind"
@@ -148,8 +181,11 @@ public:
     virtual ~ItemFactory() = default;
 
     virtual bool isHidden(const fs::directory_entry& e) { return false; }
+
+    // `trace` collects what the probes consulted, so the choice can be rechecked
+    // cheaply later (see ProbeObservation).
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) { return {}; }
+        const fs::directory_entry& e, ProbeTrace& trace) { return {}; }
     virtual void createFile(const fs::path& newPath)
         { throw std::logic_error("createFile unimplemented"); }
 };
@@ -247,7 +283,12 @@ class FileItem : public Item
     short dataWriteAccessRefNum = -1;
     short resWriteAccessRefNum = -1;
     FileRepPtr rep_;
-    FileStamp repStamp_;   // (mtime, size) the rep was built from
+    // What the gauntlet consulted when it chose rep_, so the choice can be
+    // rechecked cheaply (see ProbeObservation). probeStale_ is set when the item's
+    // path changes, since the candidate set is path-derived.
+    ProbeTrace probe_;
+    bool probeStale_ = false;
+    bool probeHolds() const;
 
     // Forks currently handed out (see ForkGuard). While any is open the rep is
     // neither revalidated nor dropped: the guest holds the fork, so a change
@@ -258,6 +299,7 @@ class FileItem : public Item
     class ForkGuard;
 
     virtual void moveHost(const fs::path& newPath) override;
+    virtual void pathChanged() override;
 
 public:
     using Item::Item;

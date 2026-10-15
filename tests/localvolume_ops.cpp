@@ -703,9 +703,10 @@ TEST_F(LocalVolumeFixture, CountScansOnceWhileValid)
     EXPECT_EQ(first, localVolumeStats().countScans.load());
 }
 
-// Phase 5.4: a stale rep is rebuilt - a plain ".bin" that later becomes a valid
-// MacBinary takes on the MacBinary FInfo.
-TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
+// *Rep staleness*: revalidation follows the candidates the gauntlet probed. An
+// in-place content change is not re-probed -- the content checks are trusted -- so
+// a plain ".bin" rewritten as MacBinary keeps the plain rep.
+TEST_F(LocalVolumeFixture, RepStalenessTrustsContent)
 {
     hostFile("foo.bin", "not a macbinary header at all");
 
@@ -716,9 +717,30 @@ TEST_F(LocalVolumeFixture, RepStalenessRebuilds)
     hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
     bumpMtime("foo.bin");
 
+    resetLocalVolumeStats();
     auto after = fmGetType(rootDirID_, "foo.bin");
     ASSERT_TRUE(after.has_value());
-    EXPECT_EQ(0u, *after); // from the (zeroed) MacBinary header
+    EXPECT_EQ(0x54455854u, *after);                         // still plain
+    EXPECT_EQ(0u, localVolumeStats().factoryProbes.load()); // not re-probed
+}
+
+// *Rep staleness*: a candidate appearing or disappearing does re-run the gauntlet.
+// An AppleDouble upgrade creates its sidecar; taking it away falls back to plain.
+TEST_F(LocalVolumeFixture, RepStalenessFollowsCandidates)
+{
+    ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));
+    ASSERT_EQ(noErr, fmSetType(rootDirID_, "doc", 0x41424344u)); // upgrades to AppleDouble
+    ASSERT_TRUE(fmGetType(rootDirID_, "doc").has_value());
+    ASSERT_EQ(0x41424344u, *fmGetType(rootDirID_, "doc"));
+
+    fs::remove(host("%doc")); // the AppleDouble sidecar
+    bumpMtime("");
+
+    resetLocalVolumeStats();
+    auto after = fmGetType(rootDirID_, "doc");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_GT(localVolumeStats().factoryProbes.load(), 0u);
+    EXPECT_EQ(0x54455854u, *after); // plain again
 }
 
 // Phase 8: a kind change at a name is a different item. A file replaced by a

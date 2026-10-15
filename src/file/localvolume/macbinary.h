@@ -92,7 +92,7 @@ public:
 class MacBinaryItemFactory : public ItemFactory
 {
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) override;
+        const fs::directory_entry& e, ProbeTrace& trace) override;
 };
 
 } // namespace Executor

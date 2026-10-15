@@ -14,14 +14,21 @@ bool BasiliskItemFactory::isHidden(const fs::directory_entry& e)
 
 
 FileRepPtr BasiliskItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
-    const fs::directory_entry& e)
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
+    bool regular = fs::is_regular_file(e.path());
+    trace.push_back(regularFileObservation(e.path(), regular));
+    if(regular)
     {
         fs::path rsrc = e.path().parent_path() / ".rsrc" / e.path().filename();
         fs::path finf = e.path().parent_path() / ".finf" / e.path().filename();
-        
-        if(fs::is_regular_file(rsrc) || fs::is_regular_file(finf))
+
+        bool hasRsrc = fs::is_regular_file(rsrc);
+        bool hasFinf = fs::is_regular_file(finf);
+        trace.push_back(regularFileObservation(rsrc, hasRsrc));
+        trace.push_back(regularFileObservation(finf, hasFinf));
+
+        if(hasRsrc || hasFinf)
             return std::make_shared<BasiliskRep>(item);
     }
     return {};

@@ -17,7 +17,7 @@ class AppleDoubleItemFactory : public ItemFactory
 public:
     virtual bool isHidden(const fs::directory_entry &e) override;
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) override;
+        const fs::directory_entry& e, ProbeTrace& trace) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 
@@ -45,7 +45,7 @@ class AppleSingleItemFactory : public ItemFactory
 {
 public:
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
-        const fs::directory_entry& e) override;
+        const fs::directory_entry& e, ProbeTrace& trace) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 

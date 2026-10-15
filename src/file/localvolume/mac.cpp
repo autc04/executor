@@ -125,16 +125,23 @@ size_t MacResourceFork::write(size_t offset, void *p, size_t n)
 }
 
 FileRepPtr MacItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
-    const fs::directory_entry& e)
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
+    bool regular = fs::is_regular_file(e.path());
+    trace.push_back(regularFileObservation(e.path(), regular));
+    if(regular)
     {
-        const char *fn = e.path().string().c_str();
-        if(getxattr(fn, XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0
-            || getxattr(fn, XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0)
-        {
+        std::string fn = e.path().string();
+        bool finderInfo = getxattr(fn.c_str(), XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0;
+        bool rsrcFork = getxattr(fn.c_str(), XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0;
+
+        trace.push_back({ fn + ": " + XATTR_FINDERINFO_NAME, finderInfo,
+            [fn] { return getxattr(fn.c_str(), XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0; } });
+        trace.push_back({ fn + ": " + XATTR_RESOURCEFORK_NAME, rsrcFork,
+            [fn] { return getxattr(fn.c_str(), XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0; } });
+
+        if(finderInfo || rsrcFork)
             return std::make_shared<MacRep>(item);
-        }
     }
     return {};
 }
