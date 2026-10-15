@@ -425,7 +425,7 @@ All three checks are validation-at-access; none is timer-based.
 
 ### Listing staleness
 
-`cacheDirectory` becomes `ensureListed(dir)`:
+`cacheDirectory` becomes `DirectoryItem::ensureListed():
 
 ```
 if listed_ and stat(dir) == stamp_: return   # L0, O(1)
@@ -668,9 +668,10 @@ Operations:
 
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
-- `ItemCache::realizeByHostPath(fs::path)`: **stat-first** — stat each component and
-  resolve `(dev, ino)` via the mapper; **no ancestor is ever listed**. Naming the
-  last component lists its immediate parent once (via `resolveName`). *(Phase 1
+- `ItemCache::realizeByHostPath(fs::path)`: **stat-first** — stat each component,
+  CNIDResolve it (`resolveChildCNID`) and realize it; **no ancestor is ever
+  listed**, and the walk does not name. The target's Mac name is decided lazily,
+  on read (`Item::name()` → `ensureNamed` → `DirectoryItem::resolveName`). *(Phase 1
   used a `(parID, posixName)` lookup; superseded.)*
 - `getInfoCommon`'s directory branch: use **Count**
   (`DirectoryItem::countVisible`), which keeps only a tally.
@@ -705,8 +706,8 @@ Operations:
 
 ## Access and invalidation flows
 
-*(The funnel location, the responsibility split, and realization-only validation
-are deliberately provisional: good enough for the next stages, to be revisited.)*
+*(Realization-only validation is deliberately provisional: good enough for the
+next stages, to be revisited.)*
 
 Every reference resolves through **`realizeByCNID(cnid)`**, which fuses the
 binding check of *Caching* with `ItemCache`'s realization:
@@ -729,8 +730,8 @@ item is open, the diff **updates it in place** rather than replacing it.
 Parts: the mapper answers `record` / `lookupPosixName` / `cnidForName` /
 `mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`
 primitives; `ItemCache` owns `items_`, realization, and the identity/kind policy
-of `resolveChildCNID`; and `resolveName(dir, hint)` is the single directory-side
-funnel (below), on `DirectoryItem`.
+of `resolveChildCNID`; and `DirectoryItem::child(name)` is the single
+directory-side lookup funnel (below).
 
 **By CNID** (`resolveDir(dirID)`, `realizeByCNID(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
@@ -747,10 +748,10 @@ written for now; benchmark when the backend matters.
 1. cnid = mapper.cnidForName(parID, macName)
 2. if cnid: item = realizeByCNID(cnid); ok -> return        # fast path
 3. parent = realizeByCNID(parID) as DirectoryItem; else dirNFErr
-4. cnid = resolveName(parent, macName):                        # the funnel
-     ensureListed(parent)
+4. cnid = parent.child(macName):                               # the funnel
+     ensureListed()
      prefix = prefixOf(macName)        # truncate27(stripDisambiguator(...))
-     mapper.nameGroup(parent.cnid, group(prefix))
+     resolveGroup(prefix)              # NameResolve the group
      mapper.cnidForName(parID, macName)
 5. if !cnid -> fnfErr
 6. return realizeByCNID(cnid)
@@ -768,11 +769,11 @@ written for now; benchmark when the backend matters.
 4. last component c:
      st   = statPath(dir.path / c); if missing -> fail
      cnid = cache.resolveChildCNID(dir.cnid, c, st)
-     resolveName(dir, /*hint*/ posixName = c)                   # lists only this dir
-     return realizeByCNID(cnid)
+     return realizeByCNID(cnid)                                 # not listed or named
 ```
 
-Steps 1–3 never list; only step 4 lists the immediate parent, to name the target.
+The walk never lists or names; the target's Mac name is decided lazily, when a
+caller reads `Item::name()`.
 
 **By parID + index** (a listing):
 
@@ -783,23 +784,29 @@ Steps 1–3 never list; only step 4 lists the immediate parent, to name the targ
                                                 # its name is decided lazily on read
 ```
 
-### The `resolveName` funnel
+### The directory-side funnels
 
-`resolveName(dir, hint)` owns both the lookup and the state change: it ensures the
-directory is `Listed`, resolves the target's `macNamePrefix` group, and returns
-the entry's `CNID`. It is the only directory-side entry point — no caller drives
-`ensureListed` or naming itself. `hint` is either a `macName` (guest asked by
-name) or a `posixName` (a path walk reached this directory); both select the same
-group.
+Two directory-side entry points each own their stage's state change, so no caller
+drives the stages itself:
 
-It lives on `DirectoryItem` (as `child(name)` / `child(index, …)`), which reaches
-the mapper, the LRU, and the realizer through `ItemCache` (a friend).
+- **Lookup** — `DirectoryItem::child(name)` / `child(index, …)`: ensure the
+  directory is `Listed`, NameResolve the target's `macNamePrefix` group, then
+  select and realize the entry. This is how `resolve`, `resolveRelative` and
+  `resolveForInfo` reach a child.
+- **Naming** — `Item::name()` → `ItemCache::ensureNamed` → `DirectoryItem::resolveName(item)`
+  (NameResolve the group holding `item`) and `DirectoryItem::resolveGroup(prefix)`
+  (the batch itself): every read of an `Item`'s `macName` goes through here, so a
+  caller never observes an undecided name.
+
+Both live on `DirectoryItem`, which reaches the mapper and the factory through
+`ItemCache::cnidMapper()` / `itemFactory()` and the realizer through `ItemCache`'s
+realize seams (it is a friend).
 
 ### Invalidation
 
 | Event | Action |
 |---|---|
-| create / dir-create | host op, then `flush(dir)` (clear `listed_`/`count_`); the next access re-lists → diff → new record |
+| create / dir-create | host op, then `DirectoryItem::clearCache()` (clear `listed_`/`count_`, re-cache); the next access re-lists → diff → new record |
 | delete | `mapper.deleteCNID(cnid)`, drop `items_[cnid]`, flush the parent |
 | rename / move (FileManager) | `mapper.moveCNID(cnid, newParID, newName)`, flush the old and new parent listings |
 | external change | next `ensureListed` (stamp) → re-list → the binding diff (rename/delete/create) + decide the affected name groups; or a binding check fails → flush the parent → re-list → recover |
@@ -807,9 +814,11 @@ the mapper, the LRU, and the realizer through `ItemCache` (a friend).
 ### Responsibility summary
 
 - **Identity** (CNID/inode lookup, realize, validate, flush): `ItemCache` + mapper.
-- **Listing staleness & naming** (`ensureListed`, `diff`, group NameResolve): the
-  `resolveName` funnel, mutating the `DirectoryItem`.
-- **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing.
+- **Listing staleness & naming** (`ensureListed`, `listDirectory`/the diff,
+  `resolveGroup`/`resolveName`): `DirectoryItem`, reaching the mapper and factory
+  through `ItemCache`.
+- **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing
+  (`realizeDescriptor`).
 - The mapper stays a dumb value store throughout.
 
 ### Filesystem contracts
