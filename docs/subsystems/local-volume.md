@@ -52,8 +52,9 @@ file's storage format is only decided later, on first access, by
 **Materialization**: `FileItem` holds an optional `FileRep`; `open()`, `openRF()`,
 `getInfo()`, `setInfo()`, `deleteItem()` and `moveItem()` call
 `ensureMaterialized()` first, which runs the `ItemFactory` gauntlet
-(`createRepForFile`) exactly once. Scanning a directory therefore does not probe
-every entry; only entries actually touched are classified.
+(`createRepForFile`) on first access, and again only if the gauntlet's probe trace
+has gone stale. Scanning a directory therefore does not probe every entry; only
+entries actually touched are classified.
 
 **`FCBExtension`**: a host-side extension to the guest FCB (File Control Block). It
 stores the `OpenFile` pointer and the fork selector for an open file descriptor. The

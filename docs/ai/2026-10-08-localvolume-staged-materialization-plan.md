@@ -198,9 +198,10 @@ model; those marked **[revisit]** may need a further decision before their phase
     Listings (`ioDrNmFls` is requested for every directory a listing shows), and
     List costs memory, so the two must not be conflated.
 14. **[revised] Staleness is validation-based, in three scopes** (see *Caching*):
-    directory contents and file representation use `(mtime, size)` from one raw
-    `stat`; identity uses `(dev, ino)`. External changes are reconciled at access,
-    not on a timer.
+    directory contents use `(mtime, size)` from one raw `stat`; identity uses
+    `(dev, ino)`; a file representation re-tests the probe trace its factory left
+    (re-checking candidate existence, trusting the content probes). External
+    changes are reconciled at access, not on a timer.
 15. **Items are link-free.** No `Item` owns another; a `DirectoryItem` stores a
     descriptor list, not child `Item`s. Identity lives in the `CNIDMapper`, and
     realized `Item`s are retained only by an LRU (see *Object model*).
@@ -410,7 +411,7 @@ All three checks are validation-at-access; none is timer-based.
 |---|---|---|---|---|
 | **Listing** | Are `descriptors_`/`count_` current? | `(mtime, size)` of the directory | one directory | drop both payloads, rescan, run the diff |
 | **Binding** | Does CNID *c* still denote the same file at `path(parID, posixName)`? | `(dev, ino)` + kind of that path | one CNID binding | flush the parent's listing, re-list, update the live `Item`, retry once |
-| **Rep** | Is the materialized representation current? | `(exists, mtime, size)` of every candidate path the factories probe | one `FileItem`'s rep | drop the rep, re-materialize |
+| **Rep** | Is the materialized representation current? | the facts the gauntlet probed (candidate existence re-tested, content probes trusted) | one `FileItem`'s rep | drop the rep, re-run the gauntlet |
 
 - A **binding** failure *escalates* to a listing revalidation of the parent: "gone"
   and "moved" are distinguishable only by re-listing, so the escalation is the
@@ -599,17 +600,51 @@ A rep is a function of **all** the host files classification consults — not ju
 the primary one and not just the ones the winning rep reads: AppleDouble and
 Basilisk read `._*`/`%*` and `.rsrc`/`.finf`, and xattr-backed metadata likewise.
 The **presence or absence of a candidate is itself part of the result** — a Plain
-file becomes AppleDouble once its `._foo` appears — so the stamp must span the
-**candidate paths the factories probe**, each recorded as `(exists, mtime, size)`;
-an absent candidate is a stamp value, not an omission. Creating, deleting, or
-modifying any candidate changes the stamp, the gauntlet re-runs, and the winning
-rep may change. At the start of
-`open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`, drop the rep if the stamp
-changed. Do not revalidate a rep whose fork is currently open — the guest holds
-it, so the change surfaces on reopen.
+file becomes AppleDouble once its `._foo` appears — so validation must span
+**every candidate the factories probed**, not just the primary path.
 
-`FileRep::dependencies()` reports the paths the rep itself reads; the candidate set
-for the stamp is the (larger) set the factories probed, including absent entries.
+There is no `(exists, mtime, size)` stamp. Instead the gauntlet leaves a **probe
+trace**: the list of facts the winning classification consulted, each an
+observation `{ what, expected, retest }` — the predicate *actually used*
+(`is_regular_file`, not bare existence), the value it produced, and, when
+re-checking is cheap, a closure that re-evaluates it. **Absent candidates are
+recorded** (as a failed regular-file test), or a sidecar appearing later would go
+unnoticed. When any `retest` disagrees with its recorded value the trace no longer
+holds and the **whole gauntlet re-runs from the top** — an earlier factory may now
+win.
+
+Revalidation is **by predicate**, not by timestamp:
+
+- The candidate *existence* checks — regular-file tests, and Mac's
+  `getxattr`-present tests — carry a `retest` and are re-consulted. This is what
+  catches the realistic external changes: another process (a second Executor, or
+  Basilisk) *adding* or *removing* a sidecar — an upgrade, or a deleted sidecar.
+- The **content** checks (MacBinary header, AppleSingle magic) are recorded for the
+  decision they explain but carry **no** `retest`, so they are trusted. A file
+  rewritten *in place* to a different container format while Executor runs leaves a
+  stale rep. That is a deliberate, bounded error: the operations an external
+  program realistically performs on a mounted directory are sidecar add/delete
+  (covered), and a root is single-writer (LMDB). It is cleaner to *deliberately not
+  act* on an mtime change than to record a dependency we would not check.
+
+The factories build the trace themselves as they probe (`createRepForFile` takes a
+`ProbeTrace&`), so there is no separate `FileRep::dependencies()` accessor: the
+operative set is the trace, not the paths a rep later reads.
+
+At the start of `open`/`openRF`/`getInfo`/`deleteItem`/`moveItem`,
+`ensureMaterialized` re-tests the trace. Do not revalidate a rep whose fork is
+currently open — the guest holds it, so the change surfaces on reopen.
+
+A **path change** (`relocate`, i.e. a rename or move) marks the trace stale
+outright: the candidate set is derived from the path, and a rename preserves
+`(mtime, size)`, so a timestamp stamp would be structurally blind to it. The
+staleness is acted on the next time the item is materialized with no fork open, so
+no live parsed object is orphaned.
+
+Trace completeness is checked **per format by a test**, not by an architecture: a
+probe object that factories must route their reads through was considered and
+rejected — a factory can always call `fs::is_regular_file` directly, so routing
+cannot be enforced.
 
 ### Memory bound
 
@@ -921,8 +956,9 @@ LRU (see *Caching*). Sub-steps:
 2. **DONE — memory-bound LRU** by total items (default 500 K, root pinned);
    `EvictionPreservesIdentity`.
 3. **DONE — Count caching** (`count_` + stamp); `CountScansOnceWhileValid`.
-4. **DONE — per-item rep revalidation** on `(mtime, size)` change;
-   `RepStalenessRebuilds`.
+4. **DONE — per-item rep revalidation** by re-testing the gauntlet's probe trace
+   (candidate existence); `RepStalenessTrustsContent`,
+   `RepStalenessFollowsCandidates`.
 5. **DONE — reconciliation correctness:** kind changes (`KindChangeRebuildsItem`),
    the read-error policy, external rename = delete + create
    (`ExternalRenameIsDeleteCreate`).
@@ -1122,13 +1158,14 @@ without a native path.
   next access; unchanged entries keep their CNID and `macName`; a repeated listing
   validates but does not re-list (stats); a **binding** failure flushes the parent and
   retries rather than dropping the CNID; eviction under the cache budget, then
-  re-access, preserves CNIDs/names; an in-place edit of a MacBinary header is
-  reflected by `getInfo`; a file↔directory kind change at a name is a new entry,
-  whatever the inode.
-- **Rep dependencies**: with the primary file untouched, creating, deleting, or
-  modifying a sidecar (`._*`, `%*`, `.rsrc`, `.finf`) is reflected by `getInfo` on
-  the next access — including a Plain file *becoming* AppleDouble when its `._*`
-  appears, and becoming Plain again when it is removed.
+  re-access, preserves CNIDs/names; a file↔directory kind change at a name is a
+  new entry, whatever the inode.
+- **Rep probe trace**: an in-place content change is *not* re-probed (the content
+  checks are trusted), so a plain `.bin` rewritten as MacBinary keeps the plain
+  rep; with the primary file untouched, creating or deleting a sidecar
+  (`._*`, `%*`, `.rsrc`, `.finf`) is reflected by `getInfo` on the next access —
+  including a Plain file *becoming* AppleDouble when its `._*` appears, and
+  becoming Plain again when it is removed.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
   `--gtest_also_run_disabled_tests`). The validation, naming and Phase 10
   rename/hard-link tests above are enabled.
