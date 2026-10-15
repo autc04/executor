@@ -41,20 +41,6 @@ class ItemCache
     std::unordered_map<Item*, std::list<CachedItem>::iterator> cachedIndex_;
     size_t cachedWeight_ = 0;   // total weight the queue holds
 
-    // Mark `item` as in use: promote it to the most-recently-used end of the
-    // queue, inserting it if it is not there yet, then bound the queue's weight by
-    // dropping references, least recently used first. The queue holds every
-    // realized Item -- files and directories alike -- so a probed FileRep or a
-    // directory listing survives between accesses; "weight" is a relative cost
-    // (Item::cacheWeight), not bytes. This is the only way into the queue.
-    // Eviction never clears a payload: an item no one else holds dies with its
-    // payload, while one a consumer still holds keeps it (the consumer's memory,
-    // not the cache's).
-    void cacheItem(const ItemPtr& item);
-
-    // The realized Item for `cnid`, if any -- a plain registry read, nothing more.
-    ItemPtr findRealizedItem(CNID cnid) const;
-
     // The realized Item for `cnid` if its kind still matches the description, else
     // nothing (and the stale registry entry is dropped so the Item can be rebuilt).
     // Re-points the item at `path` and marks it used, so a recovered rename is
@@ -82,14 +68,6 @@ class ItemCache
     // format gauntlet, and register it.
     ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path,
         std::optional<mac_string> name, bool isDir);
-
-    // The Count/List/NameResolve machinery lives on DirectoryItem (see the plan);
-    // it reaches the mapper and factory through cnidMapper()/itemFactory(), and
-    // these are the cache- and registry-side pieces it still drives.
-    friend class DirectoryItem;
-
-    // Realize the Item a descriptor denotes (from the registry, else freshly built).
-    ItemPtr realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
     // Invalidation by CNID: resolve the live directory and clear its cached
     // payload. Callers that already hold the DirectoryItem clear it directly.
@@ -123,6 +101,26 @@ public:
     // directly: the identity/name store and the format/hidden-file policy.
     CNIDMapper& cnidMapper() { return *cnidMapper_; }
     ItemFactory& itemFactory() { return *itemFactory_; }
+
+    // For use by DirectoryItem, which owns the Count/List/NameResolve machinery
+    // and drives these cache- and registry-side pieces; no other client calls them.
+
+    // Mark `item` as in use: promote it to the most-recently-used end of the
+    // queue, inserting it if it is not there yet, then bound the queue's weight by
+    // dropping references, least recently used first. The queue holds every
+    // realized Item -- files and directories alike -- so a probed FileRep or a
+    // directory listing survives between accesses; "weight" is a relative cost
+    // (Item::cacheWeight), not bytes. This is the only way into the queue.
+    // Eviction never clears a payload: an item no one else holds dies with its
+    // payload, while one a consumer still holds keeps it (the consumer's memory,
+    // not the cache's).
+    void cacheItem(const ItemPtr& item);
+
+    // The realized Item for `cnid`, if any -- a plain registry read, nothing more.
+    ItemPtr findRealizedItem(CNID cnid) const;
+
+    // Realize the Item a descriptor denotes (from the registry, else freshly built).
+    ItemPtr realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group
     // if not. Called from Item::name().

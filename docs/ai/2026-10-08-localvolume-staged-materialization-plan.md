@@ -800,7 +800,7 @@ drives the stages itself:
 
 Both live on `DirectoryItem`, which reaches the mapper and the factory through
 `ItemCache::cnidMapper()` / `itemFactory()` and the realizer through `ItemCache`'s
-realize seams (it is a friend).
+realize seams (`cacheItem`, `findRealizedItem`, `realizeDescriptor`).
 
 ### Invalidation
 
