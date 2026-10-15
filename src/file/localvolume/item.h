@@ -6,8 +6,6 @@
 #include "filestamp.h"
 
 #include <memory>
-#include <map>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <optional>
@@ -94,6 +92,10 @@ protected:
     mac_string name_;             // decided at NameResolve; empty until then
     bool nameDecided_ = false;
 
+    // The host-file half of moveItem: a plain rename by default; a file does it
+    // through its rep, whose format decides which host files to touch.
+    virtual void moveHost(const fs::path& newPath);
+
 public:
     Item(ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, std::optional<mac_string> name = {});
     virtual ~Item();
@@ -114,7 +116,9 @@ public:
     bool nameIsDecided() const { return nameDecided_; }
 
     virtual void deleteItem();
-    virtual void moveItem(const fs::path& newPath, mac_string_view newName);
+
+    // Rename/move on the host (moveHost), then re-point at the new name.
+    void moveItem(const fs::path& newPath, mac_string_view newName);
 
     // Re-point a realized Item at a moved binding, keeping the object itself (so
     // an open FCB survives a host rename). The Mac name is re-derived only when
@@ -243,6 +247,8 @@ class FileItem : public Item
     FileRepPtr rep_;
     FileStamp repStamp_;   // (mtime, size) the rep was built from
 
+    virtual void moveHost(const fs::path& newPath) override;
+
 public:
     using Item::Item;
 
@@ -258,7 +264,6 @@ public:
     virtual void setInfo(ItemInfo info) override;
 
     virtual void deleteItem() override;
-    virtual void moveItem(const fs::path& newPath, mac_string_view newName) override;
 };
 
 }

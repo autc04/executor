@@ -4,11 +4,9 @@
 #include <rsys/filesystem.h>
 #include <util/macstrings.h>
 #include <memory>
-#include <chrono>
 #include <list>
 #include <optional>
 #include <unordered_map>
-#include <vector>
 #include <stdint.h>
 
 namespace Executor
@@ -16,7 +14,6 @@ namespace Executor
 class Item;
 class FileItem;
 class ItemFactory;
-class CNIDMapper;
 class DirectoryItem;
 struct Descriptor;
 

@@ -41,6 +41,15 @@ bool endsWithDisambiguator(const mac_string& s, size_t& hashPos)
     hashPos = hash;
     return true;
 }
+
+// Seconds between the Mac epoch (1904) and the Unix epoch (1970); a Finder
+// modification time is the host mtime shifted by this.
+constexpr int64_t macToUnixEpoch = 86400 * (365 * (1970 - 1904) + (1970 - 1904) / 4);
+
+int64_t macModTime(const fs::path& path)
+{
+    return fs::last_write_time(path) + macToUnixEpoch;
+}
 }
 
 mac_string Executor::macNamePrefix(mac_string_view macName)
@@ -106,13 +115,15 @@ void Item::deleteItem()
 
 void Item::moveItem(const fs::path& newPath, mac_string_view newName)
 {
-    fs::rename(path(), newPath);
+    moveHost(newPath);
     path_ = newPath;
     if(!newName.empty())
-    {
-        name_ = newName;
-        nameDecided_ = true;
-    }
+        decideName(mac_string(newName));
+}
+
+void Item::moveHost(const fs::path& newPath)
+{
+    fs::rename(path(), newPath);
 }
 
 void Item::relocate(const fs::path& newPath)
@@ -129,20 +140,17 @@ void Item::relocate(const fs::path& newPath)
     path_ = newPath;
 }
 
-const int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904)/4);
-
 ItemInfo Item::getInfo()
 {
     ItemInfo info{};
-    info.modTime = fs::last_write_time(path()) + macToUnixEpoch;
+    info.modTime = macModTime(path());
 
     return info;
 }
 
 void Item::setInfo(ItemInfo info)
 {
-    auto oldModTime = fs::last_write_time(path()) + macToUnixEpoch;
-    if(oldModTime != (int64_t)info.modTime)
+    if(macModTime(path()) != (int64_t)info.modTime)
         fs::last_write_time(path(), info.modTime - macToUnixEpoch);
 }
 
@@ -208,16 +216,10 @@ void FileItem::deleteItem()
     rep_->remove();
 }
 
-void FileItem::moveItem(const fs::path& newPath, mac_string_view newName)
+void FileItem::moveHost(const fs::path& newPath)
 {
     ensureMaterialized();
     rep_->move(newPath);
-    path_ = newPath;
-    if(!newName.empty())
-    {
-        name_ = newName;
-        nameDecided_ = true;
-    }
 }
 
 DirectoryItemPtr DirectoryItem::self()

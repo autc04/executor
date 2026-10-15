@@ -2,11 +2,7 @@
 #include "item.h"
 #include "cnidmapper.h"
 #include "stats.h"
-#include <OSUtil.h>
-#include <set>
-#include <iostream>
 #include <algorithm>
-#include <cctype>
 
 using namespace Executor;
 
@@ -27,9 +23,7 @@ ItemCache::ItemCache(fs::path root,
     cacheItem(rootItem);
 }
 
-ItemCache::~ItemCache()
-{
-}
+ItemCache::~ItemCache() = default;
 
 void ItemCache::cacheItem(const ItemPtr& item)
 {
