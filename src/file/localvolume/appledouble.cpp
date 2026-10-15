@@ -30,18 +30,15 @@ bool AppleDoubleItemFactory::isHidden(const fs::directory_entry& e)
 FileRepPtr AppleDoubleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {
-    bool regular = fs::is_regular_file(e.path());
-    trace.push_back(regularFileObservation(e.path(), regular));
-    if(regular)
+    for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
     {
-        for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
+        fs::path ad = makeADPath(scheme, e.path());
+        if(fs::is_regular_file(ad))
         {
-            fs::path ad = makeADPath(scheme, e.path());
-            bool present = fs::is_regular_file(ad);
-            trace.push_back(regularFileObservation(ad, present));
-            if(present)
-                return std::make_shared<AppleDoubleRep>(scheme, item);
+            trace.push_back(RegularFileObservation { ad });
+            return std::make_shared<AppleDoubleRep>(scheme, item);
         }
+        trace.push_back(NoRegularFileObservation { ad });
     }
     return {};
 }
@@ -108,18 +105,16 @@ void AppleDoubleRep::move(const fs::path& newPath)
 FileRepPtr AppleSingleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {
-    bool regular = fs::is_regular_file(e.path());
-    trace.push_back(regularFileObservation(e.path(), regular));
-    if(!regular)
-        return {};
-
     GUEST<uint64_t> magic = 0;
     fs::ifstream(e.path(), std::ios::binary).read((char*)&magic, 8);
 
-    bool appleSingle = magic == 0x0005160000020000;
-    trace.push_back(contentObservation("AppleSingle magic " + e.path().string(), appleSingle));
-    if(appleSingle)
+    if(magic == 0x0005160000020000)
+    {
+        // The choice rests on the file's content; assert it unchanged, but never
+        // re-read the magic to check.
+        trace.push_back(UnchangedFileObservation { e.path(), statFile(e.path()) });
         return std::make_shared<AppleSingleRep>(item);
+    }
     return {};
 }
 

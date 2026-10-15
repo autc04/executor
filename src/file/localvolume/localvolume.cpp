@@ -43,11 +43,8 @@ static void setFCBName(filecontrolblock *fcb, const mac_string& name)
 FileRepPtr ExtensionItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {
-    bool regular = fs::is_regular_file(e.path());
-    trace.push_back(regularFileObservation(e.path(), regular));
-    if(regular)
-        return std::make_shared<PlainRep>(item);
-    return {};
+    // Last in the gauntlet: it claims every regular file, so it has nothing to probe.
+    return std::make_shared<PlainRep>(item);
 }
 
 void ExtensionItemFactory::createFile(const fs::path& newPath)
@@ -96,6 +93,17 @@ bool LocalVolume::isHidden(const fs::directory_entry& e)
 FileRepPtr LocalVolume::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {
+    // The gauntlet classifies regular files only. Check that once, here at the top,
+    // and record the fact once, so no factory repeats it and all of them may assume
+    // it. A TOCTOU change since the caller's own check just surfaces as a read
+    // error later, which is reportable.
+    if(!fs::is_regular_file(e.path()))
+    {
+        trace.push_back(NoRegularFileObservation { e.path() });
+        return std::make_shared<PlainRep>(item);
+    }
+    trace.push_back(RegularFileObservation { e.path() });
+
     for(auto& itemFactory : itemFactories)
     {
         localVolumeStats().factoryProbes++;

@@ -5,10 +5,10 @@
 #include <FileMgr.h>
 #include "filestamp.h"
 
-#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 #include <optional>
 
@@ -144,32 +144,34 @@ public:
 };
 
 
-// One fact a format probe relied on, and -- when it is cheap to re-check -- how to
-// re-check it. An empty `retest` means the fact is trusted and never re-tested:
-// the content checks (magic numbers, MacBinary headers) are the expensive part of
-// a probe, and a file being reformatted in place by another process while we run
-// is vanishingly rare. See *Rep staleness* in
+// The vocabulary a format probe records: the facts it relied on. These are pure
+// data -- *how* each is re-obtained (or deliberately not) is policy, kept in
+// FileItem::probeHolds, never in the observation itself. See *Rep staleness* in
 // docs/ai/2026-10-08-localvolume-staged-materialization-plan.md.
-struct ProbeObservation
-{
-    std::string what;               // for diagnostics
-    bool expected = false;
-    std::function<bool()> retest;   // empty => trusted, never re-tested
-};
+
+// IsRegularFile(Path): the path is a regular file.
+struct RegularFileObservation { fs::path path; };
+
+// NoRegularFile(Path): the path is absent, or not a regular file. Recorded so a
+// candidate that appears later (e.g. a sidecar) is noticed.
+struct NoRegularFileObservation { fs::path path; };
+
+// IsUnchanged(Path): the file still holds the content the probe read -- its
+// (mtime, size) is the stamp taken when a content check decided the format. The
+// policy ignores it as a whole (see FileItem::probeHolds): we trust the magic
+// rather than re-read it, so a content change never invalidates a rep on its own.
+struct UnchangedFileObservation { fs::path path; FileStamp stamp; };
+
+// AttributeExists(Path, AttrName): the path carries the named attribute.
+struct AttributeExistsObservation { fs::path path; const char* attrName; };
+
+// AttributeDoesntExist(Path, AttrName): the path does not carry it.
+struct AttributeDoesntExistObservation { fs::path path; const char* attrName; };
+
+using ProbeObservation = std::variant<RegularFileObservation, NoRegularFileObservation,
+    UnchangedFileObservation, AttributeExistsObservation, AttributeDoesntExistObservation>;
 
 using ProbeTrace = std::vector<ProbeObservation>;
-
-// The usual observation: whether `path` is (expected to be) a regular file.
-inline ProbeObservation regularFileObservation(const fs::path& path, bool expected)
-{
-    return { path.string(), expected, [path] { return fs::is_regular_file(path); } };
-}
-
-// A content check: recorded for the decision it explains, but never re-tested.
-inline ProbeObservation contentObservation(std::string what, bool expected)
-{
-    return { std::move(what), expected, {} };
-}
 
 // The format gauntlet. A factory inspects a host file and, if it claims it,
 // returns a FileRep for the (already-instantiated) FileItem. Directories are not
@@ -182,8 +184,10 @@ public:
 
     virtual bool isHidden(const fs::directory_entry& e) { return false; }
 
-    // `trace` collects what the probes consulted, so the choice can be rechecked
-    // cheaply later (see ProbeObservation).
+    // `trace` collects the facts the probe relied on, so the choice can be
+    // revalidated later (see the ProbeObservation vocabulary). The gauntlet
+    // checks for a regular file once, up front, so a factory may assume it and
+    // never records that fact itself.
     virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
         const fs::directory_entry& e, ProbeTrace& trace) { return {}; }
     virtual void createFile(const fs::path& newPath)
@@ -283,9 +287,9 @@ class FileItem : public Item
     short dataWriteAccessRefNum = -1;
     short resWriteAccessRefNum = -1;
     FileRepPtr rep_;
-    // What the gauntlet consulted when it chose rep_, so the choice can be
-    // rechecked cheaply (see ProbeObservation). probeStale_ is set when the item's
-    // path changes, since the candidate set is path-derived.
+    // The facts the gauntlet relied on when it chose rep_, so the choice can be
+    // revalidated cheaply (see ProbeObservation). probeStale_ is set when the
+    // item's path changes, since the candidate set is path-derived.
     ProbeTrace probe_;
     bool probeStale_ = false;
     bool probeHolds() const;

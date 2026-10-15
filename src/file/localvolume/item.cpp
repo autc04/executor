@@ -9,6 +9,11 @@
 #include <cassert>
 #include <cctype>
 #include <iostream>
+#include <variant>
+
+#ifdef __APPLE__
+#include <sys/xattr.h>
+#endif
 
 using namespace Executor;
 
@@ -192,11 +197,43 @@ public:
     bool canWrite() const override { return inner_->canWrite(); }
 };
 
+namespace
+{
+// The revalidation policy: how each recorded fact is re-obtained. Note
+// UnchangedFileObservation -- the content the probe read is deliberately not read
+// again, so a rep built from a since-modified file survives until an existence or
+// attribute fact flips (see *Rep staleness* in the plan). The attribute facts are
+// macOS xattrs; no factory records them elsewhere.
+bool attributeExists(const fs::path& path, const char* attrName)
+{
+#ifdef __APPLE__
+    return getxattr(path.string().c_str(), attrName, nullptr, 0, 0, 0) > 0;
+#else
+    (void)path;
+    (void)attrName;
+    return false;
+#endif
+}
+
+bool holds(const RegularFileObservation& o) { return fs::is_regular_file(o.path); }
+bool holds(const NoRegularFileObservation& o) { return !fs::is_regular_file(o.path); }
+bool holds(const UnchangedFileObservation& o) { return statFile(o.path) == o.stamp; }
+bool holds(const AttributeExistsObservation& o) { return attributeExists(o.path, o.attrName); }
+bool holds(const AttributeDoesntExistObservation& o) { return !attributeExists(o.path, o.attrName); }
+}
+
 bool FileItem::probeHolds() const
 {
     for(const ProbeObservation& o : probe_)
-        if(o.retest && o.retest() != o.expected)
+    {
+        bool factHolds = std::visit([](const auto& fact) { return holds(fact); }, o);
+
+        // An IsUnchanged fact is ignored as a whole: we trust the content the probe
+        // read, so a change to it does not invalidate the rep. Every other fact must
+        // still hold. See *Rep staleness* in the plan.
+        if(!factHolds && !std::holds_alternative<UnchangedFileObservation>(o))
             return false;
+    }
     return true;
 }
 

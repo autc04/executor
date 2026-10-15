@@ -433,15 +433,11 @@ fs::path MacBinaryRep::nameSource(const fs::path& filename) const
 FileRepPtr MacBinaryItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {
-    bool regular = fs::is_regular_file(e.path());
-    trace.push_back(regularFileObservation(e.path(), regular));
-    if(!regular)
+    if(!isMacBinaryFile(e.path()))
         return {};
 
-    bool macBinary = isMacBinaryFile(e.path());
-    trace.push_back(contentObservation("MacBinary header " + e.path().string(), macBinary));
-    if(!macBinary)
-        return {};
-
+    // The choice rests on the file's content; assert it unchanged, but never re-read
+    // the header to check.
+    trace.push_back(UnchangedFileObservation { e.path(), statFile(e.path()) });
     return std::make_shared<MacBinaryRep>(item);
 }
