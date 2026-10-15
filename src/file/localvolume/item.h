@@ -179,6 +179,11 @@ class DirectoryItem : public Item
     // Nothing is committed here: nullopt means the scan failed.
     std::optional<std::vector<Descriptor>> listDirectory();
 
+    // The filename this entry's Mac name is derived from: the host name, unless
+    // the entry is a ".bin" file whose rep renames it (MacBinary drops the
+    // extension). The latter materializes the entry, keeping its rep for reuse.
+    fs::path nameSourceOf(const Descriptor& d);
+
     DirectoryItemPtr self();
 
 public:

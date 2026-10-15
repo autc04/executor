@@ -390,14 +390,33 @@ void DirectoryItem::resolveGroup(mac_string_view prefix)
     {
         const Descriptor& d = descriptors_[i];
         // The whole group is offered, so already-decided names seed the collision
-        // set; only the undecided entries need a (probed) name source.
+        // set; only the undecided entries need a name source.
         if(auto rec = mapper.lookupCNID(d.cnid); rec && rec->macname)
             group.push_back({ d.cnid, {} });
         else
-            group.push_back({ d.cnid, itemcache_.nameSourceFor(path() / d.posixName) });
+            group.push_back({ d.cnid, nameSourceOf(d) });
     }
 
     mapper.nameGroup(cnid(), group);
+}
+
+fs::path DirectoryItem::nameSourceOf(const Descriptor& d)
+{
+    // Only a ".bin" file's rep can change its name (MacBinary drops the
+    // extension), so that is the one place naming needs the format: materialize
+    // the entry itself rather than probing a throwaway (plan: *Names / The final
+    // name*). The rep it builds is kept and reused if the entry is accessed.
+    std::string ext = d.posixName.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+        [](unsigned char c) { return (char)std::tolower(c); });
+    if(d.isDir || ext != ".bin")
+        return d.posixName;
+
+    localVolumeStats().nameProbes++;
+
+    auto file = std::static_pointer_cast<FileItem>(itemcache_.realizeChild(self(), d));
+    file->ensureMaterialized();
+    return file->rep()->nameSource(d.posixName);
 }
 
 std::optional<mac_string> DirectoryItem::resolveName(const Item& item)

@@ -96,10 +96,6 @@ class ItemCache
     // Realize a descriptor's Item (from the registry, else freshly built).
     ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
 
-    // The filename a child's Mac name is derived from (differs from the host
-    // filename only for MacBinary, whose ".bin" is dropped). Probes the file.
-    fs::path nameSourceFor(const fs::path& path);
-
     // Invalidation by CNID: resolve the live directory and clear its cached
     // payload. Callers that already hold the DirectoryItem clear it directly.
     void flushDirectoryCache(CNID dirID);

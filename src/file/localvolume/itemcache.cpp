@@ -261,24 +261,6 @@ CNID ItemCache::resolveChild(CNID parID, const fs::path& posixName, const PathSt
     return cnidMapper_->createRecord(parID, posixName, st.identity, st.isDirectory);
 }
 
-fs::path ItemCache::nameSourceFor(const fs::path& path)
-{
-    fs::path filename = path.filename();
-
-    std::string ext = filename.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-        [](unsigned char c) { return (char)std::tolower(c); });
-    if(ext != ".bin")
-        return filename;
-
-    // Only ".bin" files can be MacBinary (and so rename); probe just those, so
-    // naming does not run the format gauntlet for every file.
-    localVolumeStats().nameProbes++;
-    FileItem probe(*this, 0, 0, path);
-    FileRepPtr rep = itemFactory_->createRepForFile(*this, probe, fs::directory_entry(path));
-    return rep ? rep->nameSource(filename) : filename;
-}
-
 void ItemCache::ensureNamed(Item& item)
 {
     if(item.nameIsDecided())
