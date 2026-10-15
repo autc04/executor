@@ -62,14 +62,6 @@ void ItemCache::cacheItem(const ItemPtr& item)
     }
 }
 
-ItemPtr ItemCache::findRealizedItem(CNID cnid) const
-{
-    auto it = items_.find(cnid);
-    if(it == items_.end())
-        return {};
-    return it->second.lock();
-}
-
 void ItemCache::flushDirectoryCache(CNID dirID)
 {
     // Invalidation by CNID: resolve the live directory and clear its cached
@@ -88,6 +80,14 @@ void ItemCache::flushDirectoryCache(CNID dirID)
 void ItemCache::noteItemFreed(CNID cnid)
 {
     items_.erase(cnid);
+}
+
+ItemPtr ItemCache::findRealizedItem(CNID cnid) const
+{
+    auto it = items_.find(cnid);
+    if(it == items_.end())
+        return {};
+    return it->second.lock();
 }
 
 ItemPtr ItemCache::findAndRefreshRealizedItem(CNID cnid, const fs::path& path, bool isDir)
