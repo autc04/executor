@@ -333,7 +333,7 @@ std::optional<std::vector<Descriptor>> DirectoryItem::listDirectory()
         // leaves the invariant unenforced between a listing and the next hand-out.
         // relocate() also clears a cached Mac name when the name changed, matching
         // the record's reset.
-        if(ItemPtr item = itemcache_.cachedItem(m.cnid))
+        if(ItemPtr item = itemcache_.findRealizedItem(m.cnid))
             item->relocate(path() / m.posixName);
 
         Descriptor d;

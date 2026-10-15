@@ -52,10 +52,14 @@ class ItemCache
     // not the cache's).
     void cacheItem(const ItemPtr& item);
 
-    // A live, already-realized Item, if its kind still matches. Otherwise the
-    // registry entry is dropped so the Item can be rebuilt. A moved binding
-    // re-points the live Item in place.
-    ItemPtr itemSnapshot(CNID cnid, const fs::path& path, bool isDir);
+    // The realized Item for `cnid`, if any -- a plain registry read, nothing more.
+    ItemPtr findRealizedItem(CNID cnid) const;
+
+    // The realized Item for `cnid` if its kind still matches the description, else
+    // nothing (and the stale registry entry is dropped so the Item can be rebuilt).
+    // Re-points the item at `path` and marks it used, so a recovered rename is
+    // picked up and the LRU's recency reflects this access.
+    ItemPtr findAndRefreshRealizedItem(CNID cnid, const fs::path& path, bool isDir);
 
     // The host path a CNID denotes: its own posix name and each ancestor's,
     // joined onto the volume root. Empty if the chain is broken. Derived from
@@ -123,10 +127,6 @@ public:
     // directly: the identity/name store and the format/hidden-file policy.
     CNIDMapper& cnidMapper() { return *cnidMapper_; }
     ItemFactory& itemFactory() { return *itemFactory_; }
-
-    // The live Item for `cnid` if one is realized -- no binding check, no
-    // realization, just the registry.
-    ItemPtr cachedItem(CNID cnid) const;
 
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group
     // if not. Called from Item::name().

@@ -62,7 +62,7 @@ void ItemCache::cacheItem(const ItemPtr& item)
     }
 }
 
-ItemPtr ItemCache::cachedItem(CNID cnid) const
+ItemPtr ItemCache::findRealizedItem(CNID cnid) const
 {
     auto it = items_.find(cnid);
     if(it == items_.end())
@@ -90,7 +90,7 @@ void ItemCache::noteItemFreed(CNID cnid)
     items_.erase(cnid);
 }
 
-ItemPtr ItemCache::itemSnapshot(CNID cnid, const fs::path& path, bool isDir)
+ItemPtr ItemCache::findAndRefreshRealizedItem(CNID cnid, const fs::path& path, bool isDir)
 {
     auto it = items_.find(cnid);
     if(it == items_.end())
@@ -160,7 +160,7 @@ ItemPtr ItemCache::tryRealize(CNID cnid)
        || !sameIdentity(mapping->identity, st.identity))
         return {};
 
-    if(ItemPtr item = itemSnapshot(cnid, path, st.isDirectory))
+    if(ItemPtr item = findAndRefreshRealizedItem(cnid, path, st.isDirectory))
         return item;
 
     return makeItem(mapping->parID, cnid, path, mapping->macname, st.isDirectory);
@@ -229,7 +229,7 @@ ItemPtr ItemCache::realizeByHostPath(fs::path inPath)
 ItemPtr ItemCache::realizeDescriptor(const DirectoryItemPtr& dir, const Descriptor& d)
 {
     fs::path path = dir->path() / d.posixName;
-    if(ItemPtr item = itemSnapshot(d.cnid, path, d.isDir))
+    if(ItemPtr item = findAndRefreshRealizedItem(d.cnid, path, d.isDir))
         return item;
 
     return makeItem(dir->cnid(), d.cnid, path, std::nullopt, d.isDir);
