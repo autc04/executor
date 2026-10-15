@@ -533,7 +533,7 @@ void LocalVolume::createCommon(NonexistentFile file)
 {
     fs::path parentPath = file.parent->path();
     defaultItemFactory->createFile(parentPath / toUnicodeFilename(file.name));
-    itemCache->flushDirectoryCache(file.parent);
+    file.parent->clearCache();
 }
 void LocalVolume::PBCreate(ParmBlkPtr pb)
 {
@@ -550,7 +550,7 @@ void LocalVolume::PBDirCreate(HParmBlkPtr pb)
     fs::path fn = toUnicodeFilename(name);
     fs::create_directory(parent->path() / fn);
 
-    itemCache->flushDirectoryCache(parent);
+    parent->clearCache();
 
     auto item = parent->child(name);
     if(!item)

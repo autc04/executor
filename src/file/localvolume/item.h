@@ -218,8 +218,8 @@ public:
     ItemPtr child(mac_string_view name);
     ItemPtr child(int index, bool includeDirectories);
 
-    // Invalidation: drop the listing/tally so the next access re-lists. Called by
-    // ItemCache::flushDirectoryCache.
+    // Invalidation: drop the listing/tally (and re-cache, so the LRU's accounting
+    // follows the shrunken weight) so the next access re-lists.
     void clearCache();
 
     virtual void deleteItem();

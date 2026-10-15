@@ -255,7 +255,7 @@ bool DirectoryItem::ensureListed()
         // A failed scan says nothing about the directory's contents, so it must
         // not be committed. Drop the listing instead -- the caller turns the
         // false into ioErr, and the next access retries from scratch.
-        itemcache_.flushDirectoryCache(self());
+        clearCache();
         return false;
     }
 
@@ -340,6 +340,11 @@ void DirectoryItem::clearCache()
     count_.reset();
     countStamp_ = {};
     descriptors_.clear();
+
+    // The payload just shrank, so re-cache to bring the LRU's accounting in step.
+    // The object itself is kept: identity lives in the mapper, so a re-list
+    // rebuilds the payload in place.
+    itemcache_.cacheItem(self());
 }
 
 void DirectoryItem::storeDescriptors(std::vector<Descriptor> descriptors, FileStamp stamp)

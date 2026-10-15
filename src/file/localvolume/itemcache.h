@@ -117,6 +117,10 @@ class ItemCache
     // filename only for MacBinary, whose ".bin" is dropped). Probes the file.
     fs::path nameSourceFor(const fs::path& path);
 
+    // Invalidation by CNID: resolve the live directory and clear its cached
+    // payload. Callers that already hold the DirectoryItem clear it directly.
+    void flushDirectoryCache(CNID dirID);
+
 public:
     // Build and install the FileRep for a FileItem (the format gauntlet).
     // Idempotent; called lazily from FileItem on first access.
@@ -136,10 +140,6 @@ public:
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group
     // if not. Called from Item::name().
     void ensureNamed(Item& item);
-
-    // Drop `item`'s listing/tally and re-cache it, so the next access re-lists.
-    void flushDirectoryCache(DirectoryItemPtr item);
-    void flushDirectoryCache(CNID dirID);
 
     void deleteItem(ItemPtr item);
     void renameItem(ItemPtr item, mac_string_view newName);
