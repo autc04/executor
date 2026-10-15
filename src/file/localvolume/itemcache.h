@@ -89,26 +89,9 @@ class ItemCache
         std::optional<mac_string> name, bool isDir);
 
     // The Count/List/NameResolve machinery lives on DirectoryItem (see the plan);
-    // these are the cache- and mapper-side pieces it drives.
+    // it reaches the mapper and factory through cnidMapper()/itemFactory(), and
+    // these are the cache- and registry-side pieces it still drives.
     friend class DirectoryItem;
-
-    // Count: a host-readdir tally of the visible entries, with no descriptor or
-    // CNID work. Throws ioErr if the directory cannot be read.
-    int countVisible(const fs::path& dir) const;
-
-    // List: scan `dir` and reconcile it against the mapper (the diff), re-pointing
-    // any live `items_` entry at its current path; the result is sorted by
-    // (prefix, posixName). Nothing is committed here: nullopt means the scan
-    // failed, and the caller drops its listing so the next access retries.
-    std::optional<std::vector<Descriptor>> listDirectory(CNID dirID, const fs::path& dir);
-
-    // NameResolve: the decided Mac name of a CNID, if any; and the batch that
-    // decides a group's names (the mapper's `nameGroup`).
-    std::optional<mac_string> decidedName(CNID cnid) const;
-    void decideNameGroup(CNID dirID, const std::vector<CNIDMapper::NameRequest>& group);
-
-    // The child of `dirID` whose decided Mac name is `macName`, or nothing.
-    std::optional<CNID> childNamed(CNID dirID, mac_string_view macName) const;
 
     // Realize a descriptor's Item (from the registry, else freshly built).
     ItemPtr realizeChild(const DirectoryItemPtr& dir, const Descriptor& descriptor);
@@ -136,6 +119,15 @@ public:
 
     ItemPtr tryResolve(CNID cnid);
     ItemPtr tryResolve(fs::path path);
+
+    // The per-volume collaborators the Count/List/NameResolve machinery drives
+    // directly: the identity/name store and the format/hidden-file policy.
+    CNIDMapper& cnidMapper() { return *cnidMapper_; }
+    ItemFactory& itemFactory() { return *itemFactory_; }
+
+    // The live Item for `cnid` if one is realized -- no binding check, no
+    // realization, just the registry (tryResolve's little brother).
+    ItemPtr cachedItem(CNID cnid) const;
 
     // Ensure `item`'s Mac name is decided, deciding its parent directory's group
     // if not. Called from Item::name().

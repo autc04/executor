@@ -174,6 +174,11 @@ class DirectoryItem : public Item
     // "listed and valid" precondition of.
     const Descriptor* childByIndex(int index, bool includeDirectories) const;
 
+    // Scan the host directory and reconcile it against the mapper (the diff),
+    // re-pointing any live Item at its current path; sorted by (prefix, posixName).
+    // Nothing is committed here: nullopt means the scan failed.
+    std::optional<std::vector<Descriptor>> listDirectory();
+
     DirectoryItemPtr self();
 
 public:
