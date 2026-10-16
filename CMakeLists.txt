@@ -80,6 +80,7 @@ add_subdirectory(syn68k)
 add_subdirectory(PowerCore)
 add_subdirectory(cxmon)
 add_subdirectory(src)
+add_subdirectory(tools)
 add_subdirectory(tests)
 
 macro(install_qt5_plugin _qt_plugin_name _qt_plugins_var _prefix)
