@@ -677,6 +677,13 @@ void Executor::C_GetIntlResourceTable(ScriptCode script, INTEGER tablecode,
                                GUEST<Handle> *itlhandlep, GUEST<LONGINT> *offsetp,
                                GUEST<LONGINT> *lengthp)
 {
+    if (itlhandlep)
+        *itlhandlep = nullptr;
+    if (offsetp)
+        *offsetp = 0;
+    if (lengthp)
+        *lengthp = 0;
+    
     warning_unimplemented("");
     ROMlib_hook(iu_unimplementednumber);
 }
