@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–12 reach it.
+- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–10 reach it and are DONE. Phases 11–13 are not yet implemented.
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -174,6 +174,7 @@ model; those marked **[revisit]** may need a further decision before their phase
    Over-grouping costs only laziness; under-grouping would be a bug. The group is
    the contiguous run of equal prefixes in a prefix-sorted descriptor list, found
    by binary search (no separate group index).
+6. *(removed.)*
 7. **Caching is validation-based**, not timer-based (see *Caching*).
 8. **[revised] Re-enumeration must not renumber existing entries.** The reconciliation
    match key is the host inode (with the kind), not the path, so a delete-and-recreate
@@ -385,21 +386,24 @@ realizing items, bounding memory, and staying fresh. Split them.
 
 ### What a DirectoryItem caches
 
-`DirectoryItem` carries two optional pieces of state, one shared validation
-stamp, and a lazily populated per-descriptor CNID:
+`DirectoryItem` carries two optional pieces of state, a separate validation
+stamp for each, and a per-descriptor CNID:
 
 ```cpp
 std::optional<int> count_;                  // Counted: a tally only
+FileStamp countStamp_;                      // the stamp count_ is valid for
 std::vector<Descriptor> descriptors_;       // Listed: sorted by (macNamePrefix, posixName)
                                             //   posixName, kind, macNamePrefix, optional cnid
 bool listed_ = false;
 FileStamp stamp_;                           // (mtime, size) at the last scan
 ```
 
-- `listed_` implies the count (`descriptors_.size()`); `count_` is then dropped.
+- `listed_` implies the count (`descriptors_.size()`), which is then the answer
+  Count gives; `count_` is ignored while listed.
 - `count_` alone means Counted but not Listed.
-- Both payloads are valid iff `stat(dir) == stamp_`. When validation fails, *both*
-  are dropped before rescanning, so a stale listing is never served merely
+- `descriptors_` is valid iff `stat(dir) == stamp_`; a bare `count_` is valid iff
+  `stat(dir) == countStamp_`. A listing validation failure rebuilds the listing
+  (and its per-descriptor CNIDs), so a stale listing is never served merely
   because a fresh count was taken. A *count* is the one answer that a Listed
   directory serves without revalidating — deliberately, see *Listing staleness*.
 
@@ -648,10 +652,9 @@ outright: the candidate set is derived from the path, and a rename preserves
 staleness is acted on the next time the item is materialized with no fork open, so
 no live parsed object is orphaned.
 
-Trace completeness is checked **per format by a test**, not by an architecture: a
-probe object that factories must route their reads through was considered and
-rejected — a factory can always call `fs::is_regular_file` directly, so routing
-cannot be enforced.
+Trace completeness is not enforced by an architecture: a probe object that
+factories must route their reads through was considered and rejected — a factory
+can always call `fs::is_regular_file` directly, so routing cannot be enforced.
 
 ### Memory bound
 
@@ -708,6 +711,15 @@ Operations:
   mapper as a `std::function` so the transaction shape is backend-neutral
   (Decision 9).
 
+### `FileStamp` (`filestamp.h`, `filestamp.cpp`)
+
+The raw-stat primitive the three staleness scopes share. `FileStamp` is
+`(mtime, size)`; `FileIdentity` is `(device, inode)`, with a `valid` flag that is
+false when the host exposes no usable inode; `PathStat` is all of that plus the
+kind, from a single `statPath` call. Deliberately not built from
+`fs::last_write_time()`, whose one-second resolution would miss same-second
+changes (see *Listing staleness*).
+
 ### `ItemCache` / `LocalVolume` (`itemcache.*`, `localvolume.cpp`)
 
 - `ItemCache::realizeByHostPath(fs::path)`: **stat-first** — stat each component,
@@ -756,7 +768,7 @@ Every reference resolves through **`realizeByCNID(cnid)`**, which fuses the
 binding check of *Caching* with `ItemCache`'s realization:
 
 ```
-rec  = mapper.record(cnid)
+rec  = mapper.lookupCNID(cnid)
 path = derivePath(rec)                      # parID chain + posixName
 st   = statPath(path)
 if st missing, identity or kind mismatch:                 # binding staleness
@@ -770,11 +782,11 @@ The binding check deletes nothing: it flushes the parent so the diff can reconci
 an already-realized `items_` entry is trusted (the "as of last access" bound). If the
 item is open, the diff **updates it in place** rather than replacing it.
 
-Parts: the mapper answers `record` / `lookupPosixName` / `cnidForName` /
-`mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`
-primitives; `ItemCache` owns `items_`, realization, and the identity/kind policy
-of `resolveChildCNID`; and `DirectoryItem::child(name)` is the single
-directory-side lookup funnel (below).
+Parts: the mapper answers `lookupCNID` / `lookupPosixName` / `cnidForName` /
+`mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`/
+`moveCNID` primitives; `ItemCache` owns `items_`, realization, and the
+identity/kind policy of `resolveChildCNID`; and `DirectoryItem::child(name)` is
+the single directory-side lookup funnel (below).
 
 **By CNID** (`resolveDir(dirID)`, `realizeByCNID(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
@@ -869,8 +881,8 @@ realize seams (`cacheItem`, `findRealizedItem`, `realizeDescriptor`).
 - **Symlinks are followed transparently and are not items**: a symlink to a file is
   that file (whichever rep its target wins), a symlink to a directory is that
   directory, and identity is the target's inode. A link whose target escapes the
-  volume root is hidden — possible only when the root is not `/` (e.g. a Windows
-  drive).
+  volume root is **not** hidden: it is listed and followed like any other entry
+  (relevant only when the root is not `/`, e.g. a Windows drive).
 
 ## Phased plan
 
@@ -885,9 +897,10 @@ Built the native harness:
 
 - `tests/localvolume_ops.cpp` + `tests/localvolume_test_util.h`, added to
   `NATIVE_TEST_SOURCES`.
-- `src/file/localvolume/stats.h` counters, wired into `itemcache.cpp` /
-  `localvolume.cpp` (`directoryIterations`, `entriesSeen`, `itemsConstructed`,
-  `factoryProbes`); `resetLocalVolumeStats()` for tests.
+- `src/file/localvolume/stats.h` counters, wired into `item.cpp` /
+  `itemcache.cpp` / `localvolume.cpp` (`directoryIterations`, `entriesSeen`,
+  `itemsConstructed`, `factoryProbes`, and later `countScans`, `nameProbes`);
+  `resetLocalVolumeStats()` for tests.
 - A `DISABLED_` large-directory benchmark.
 
 Baseline (empty-file directory, `EXECUTOR_LV_BENCH_N=N`): listing N files costs
@@ -913,7 +926,8 @@ listing did not finish within 5 minutes — F4 in practice.
 (the `(parID, posixName)` lookup + diff index); added `lookupChild` /
 `getOrCreateChild`; `ItemCache::realizeByHostPath(path)` walks components through them
 instead of `cacheDirectory` on each ancestor. Guard:
-`ResolvePathDoesNotEnumerate` (zero directory scans).
+`ResolvePathListsAtMostTheTargetParent` (no ancestor scan; at most the target's
+immediate parent, to name it).
 
 ### Phase 2 — Count without enumerating (F3) — DONE (based on older design)
 
@@ -967,8 +981,8 @@ LRU (see *Caching*). Sub-steps:
    (candidate existence); `RepStalenessTrustsContent`,
    `RepStalenessFollowsCandidates`.
 5. **DONE — reconciliation correctness:** kind changes (`KindChangeRebuildsItem`),
-   the read-error policy, external rename = delete + create
-   (`ExternalRenameIsDeleteCreate`).
+   the read-error policy, a cross-directory host move = delete + create
+   (`CrossDirectoryHostMoveIsDeleteCreate`).
 
 ### Phase 6 — Tests for the target behaviour (written first) — DONE
 
@@ -1109,7 +1123,8 @@ without a native path.
 ### New native test module
 
 `tests/localvolume_ops.cpp` drives the FileManager against the mounted-`/`
-`LocalVolume` and interleaves host (`std::filesystem`) operations. Helpers in
+`LocalVolume` and interleaves host (`Boost.Filesystem`, via the `fs` alias)
+operations. Helpers in
 `tests/localvolume_test_util.h`:
 
 - `LocalVolumeFixture` — per test, asks the FileManager to create a unique
@@ -1159,8 +1174,8 @@ without a native path.
 - **Count (F3)**: `ListingDoesNotMaterializeSubdirectories` — counting a
   subdirectory constructs no `Item`s for its children and keeps no descriptors.
 - **Instrumentation**: a directory is Listed once and reused while valid
-  (`ListingEnumeratesOnceWhileCached`), and the `countScans` counter backs
-  `CountScansOnceWhileValid`.
+  (`ListingEnumeratesOnceWhileCached`); the `countScans` counter backs
+  `CountScansOnceWhileValid` and `nameProbes` backs `NameResolveIsGroupScoped`.
 - **Validation**: an external add/remove inside a Listed directory is visible on the
   next access; unchanged entries keep their CNID and `macName`; a repeated listing
   validates but does not re-list (stats); a **binding** failure flushes the parent and
@@ -1227,6 +1242,8 @@ against regressing F1/F3.
 ## References
 
 - `src/file/localvolume/itemcache.cpp` — `realizeByHostPath(path)`, realization, LRU.
+- `src/file/localvolume/filestamp.{h,cpp}` — `statPath`, `FileStamp`, `FileIdentity`
+  (the raw stat the three staleness scopes share).
 - `src/file/localvolume/localvolume.cpp` — `nativePathToFSSpec`, `getInfoCommon`,
   `createRepForFile`, `resolve`, `MountLocalVolumes`.
 - `src/file/localvolume/item.cpp` / `item.h` — the `DirectoryItem` stages
