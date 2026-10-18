@@ -67,7 +67,7 @@ static void C_mpwQuit()
     exit(0);
 }
 
-static int C_mpwAccess(char *name, int op, MPWFile *file)
+static int32_t C_mpwAccess(char *name, int32_t op, MPWFile *file)
 {
     printf("mpwAccess(%s, %x)\n", name, op);
     fflush(stdout);
@@ -124,7 +124,7 @@ static int C_mpwAccess(char *name, int op, MPWFile *file)
     return kEINVAL;
 }
 
-static int C_mpwClose(MPWFile* file)
+static int32_t C_mpwClose(MPWFile* file)
 {
     printf("close(cookie=%d)\n", (int)file->cookie);
     fflush(stdout);
@@ -138,7 +138,7 @@ static int C_mpwClose(MPWFile* file)
     return kEINVAL;
 }
 
-static int C_mpwRead(MPWFile* file)
+static int32_t C_mpwRead(MPWFile* file)
 {
     printf("mpwRead(cookie=%d, %d)\n", (int) file->cookie, (int) file->count);
     fflush(stdout);
@@ -178,7 +178,7 @@ static int C_mpwRead(MPWFile* file)
     return 0;
 }
 
-static int C_mpwWrite(MPWFile* file)
+static int32_t C_mpwWrite(MPWFile* file)
 {
     //printf("writing something\n");
     //fflush(stdout);
@@ -231,7 +231,7 @@ static int C_mpwWrite(MPWFile* file)
     return 0;
 }
 
-static int C_mpwIOCtl(MPWFile *file, int cmd, void* param)
+static int32_t C_mpwIOCtl(MPWFile *file, int32_t cmd, void* param)
 {
     printf("mpwIOCtl(cookie = %d, %x)\n", (int)file->cookie, (int)cmd);
     fflush(stdout);

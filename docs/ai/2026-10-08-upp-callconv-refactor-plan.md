@@ -254,13 +254,13 @@ two `#if 0` blocks in `prPrinting.cpp`'s `ourinit()`; the live code assigns
 Each step is validated with a full build (all front-ends, both test suites), a
 `ninja clean && time ninja` in `build/` with debug and stripped binary sizes, a
 `--logtraps` structure diff, and a `-G CIncludes` diff (only U1 changes it, in
-the three places noted below).  Commit after each step.
+the two places noted below).  Commit after each step.
 
 - **U1 — declarations and aliases.**  Split into six commits, in this order.  None
   of them touch the template machinery.  Verify after each: builds, both suites,
-  CIncludes diff.  U1c (the new `ExecutorUnixMount` inline), U1d (MPW prototypes
-  re-spelled `LONGINT` → `int32_t`, same type) and U1f (the four new API
-  typedefs) should move it.
+  CIncludes diff.  U1c (the new `ExecutorUnixMount` inline) and U1f (the four
+  new API typedefs) should move it; U1d does not, because the CIncludes
+  generator skips `MPW.h` outright.
   - **U1a — `dotext` fix.**  Add an Executor-only `funptr` in `TextEdit.yaml`
     for `INTEGER(TEPtr, INTEGER, INTEGER, INTEGER)` with
     `Register<D0(A3, D3, D4, D7)>` (`TEDoTextUPP`); switch
@@ -291,7 +291,8 @@ the three places noted below).  Commit after each step.
     for the exported `C_mpw*` signatures and for the matching `MPW*ProcPtr`
     types in `MPW.yaml`.  Internal helpers (`getEntry` and locals) may stay
     `int`.  `int`/`LONGINT`/`int32_t` are one type on the supported ABIs, so
-    this only changes source spelling and the CIncludes prototypes.
+    this only changes source spelling.  `MPW.h` is not part of the CIncludes
+    output (`make-multiverse.rb` skips it), so CIncludes does not move.
   - **U1e — align the `Ptr`/`Peek` functions with the declared UPPs.**
     `ROMlib_filebox` takes `DialogPtr` (cast to `DialogPeek` inside);
     `PrGetPic`/`PrPutPic`/`donotPrGetPic`/`donotPrPutPic` take
