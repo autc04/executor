@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -76,13 +77,54 @@ WaylandVideoDriver::WaylandVideoDriver(Executor::IEventListener *eventListener, 
             registry_.bind(name, seat_, version);
         else if(interface == shm_t::interface_name)
             registry_.bind(name, shm_, version);
+        else if(interface == output_t::interface_name)
+        {
+            auto& output = outputs_[name];
+            registry_.bind(name, output, version);
+
+            uint32_t id = output.get_id();
+            outputScales_[id] = 1;
+            output.on_scale() = [this, id](int32_t factor) {
+                if(factor > 0)
+                {
+                    std::lock_guard lk(mutex_);
+                    outputScales_[id] = factor;
+                    if(id == currentOutputId_)
+                        outputScale_ = factor;
+                }
+            };
+        }
+        else if(interface == viewporter_t::interface_name && version >= 1)
+            registry_.bind(name, viewporter_, version);
         // TODO: handle changes
     };
     display_.roundtrip();
+    /* The outputs (and the viewporter, if any) are bound while dispatching the
+     * registry events above, so their initial events need a second roundtrip. */
+    display_.roundtrip();
+
+    /* Use the largest output scale as the initial guess; the surface-enter
+     * event below refines this once we know which output the window is on. */
+    for(const auto& entry : outputScales_)
+        outputScale_ = std::max(outputScale_, entry.second);
 
     xdg_wm_base_.on_ping() = [this] (uint32_t serial) { xdg_wm_base_.pong(serial); };
 
     surface_ = compositor_.create_surface();
+    if(viewporter_)
+        viewport_ = viewporter_.get_viewport(surface_);
+    else if(Executor::screen_scale != 1.0)
+        std::cerr << "warning: wp_viewporter is not available; --scale has no effect" << std::endl;
+
+    surface_.on_enter() = [this](output_t output) {
+        uint32_t id = output.get_id();
+        std::lock_guard lk(mutex_);
+        currentOutputId_ = id;
+        auto it = outputScales_.find(id);
+        if(it != outputScales_.end())
+            outputScale_ = it->second;
+    };
+
     xdg_surface_ = xdg_wm_base_.get_xdg_surface(surface_);
     xdg_toplevel_ = xdg_surface_.get_toplevel();
     xdg_toplevel_.set_title("Executor");
@@ -162,7 +204,18 @@ WaylandVideoDriver::WaylandVideoDriver(Executor::IEventListener *eventListener, 
     pointer_.on_motion() = [this] (uint32_t serial, double x, double y) {
         mouseX_ = x;
         mouseY_ = y;
-        callbacks_->mouseMoved(x, y);
+
+        double guestX = x, guestY = y;
+        {
+            std::lock_guard lk(mutex_);
+            if(committedShape_.width > 0 && committedShape_.height > 0
+                && guestWidth_ > 0 && guestHeight_ > 0)
+            {
+                guestX = x * guestWidth_ / committedShape_.width;
+                guestY = y * guestHeight_ / committedShape_.height;
+            }
+        }
+        callbacks_->mouseMoved(guestX, guestY);
     };
 
     keyboard_ = seat_.get_keyboard();
@@ -188,6 +241,24 @@ WaylandVideoDriver::WaylandVideoDriver(Executor::IEventListener *eventListener, 
     
     cursorSurface_.attach(cursorBuffer_.wlbuffer(), 0, 0);
     cursorSurface_.commit();
+}
+
+int WaylandVideoDriver::guestWidthFor(int logicalWidth) const
+{
+    int pixelsPerEmulatedPixel = viewport_
+        ? std::max(1, (int)std::floor(outputScale_ * Executor::screen_scale + 1e-6))
+        : std::max(1, outputScale_);
+
+    return std::max(1, (int)std::lround(double(logicalWidth) * outputScale_ / pixelsPerEmulatedPixel));
+}
+
+int WaylandVideoDriver::guestHeightFor(int logicalHeight) const
+{
+    int pixelsPerEmulatedPixel = viewport_
+        ? std::max(1, (int)std::floor(outputScale_ * Executor::screen_scale + 1e-6))
+        : std::max(1, outputScale_);
+
+    return std::max(1, (int)std::lround(double(logicalHeight) * outputScale_ / pixelsPerEmulatedPixel));
 }
 
 void WaylandVideoDriver::endEventLoop()
@@ -366,20 +437,28 @@ bool WaylandVideoDriver::updateMode()
 
     bool depthChanged = requestedBpp_ != framebuffer_.bpp;
 
-    if(sizeChanged || depthChanged)
+    int newGuestWidth = std::max(VDRIVER_MIN_SCREEN_WIDTH, guestWidthFor(configuredShape_.width));
+    int newGuestHeight = std::max(VDRIVER_MIN_SCREEN_HEIGHT, guestHeightFor(configuredShape_.height));
+
+    bool guestSizeChanged = newGuestWidth != guestWidth_ || newGuestHeight != guestHeight_;
+
+    if(sizeChanged || depthChanged || guestSizeChanged)
     {
-        framebuffer_ = Framebuffer(configuredShape_.width, configuredShape_.height, requestedBpp_);
+        guestWidth_ = newGuestWidth;
+        guestHeight_ = newGuestHeight;
+
+        framebuffer_ = Framebuffer(guestWidth_, guestHeight_, requestedBpp_);
         std::fill(framebuffer_.data.get(), framebuffer_.data.get() + framebuffer_.rowBytes * framebuffer_.height, 0);
     
         framebuffer_.rootless = configuredShape_.maximized;
 
-        if(sizeChanged)
+        if(sizeChanged || guestSizeChanged)
         {
             if(framebuffer_.rootless)
                 pendingRootlessRegion_ = { RGN_STOP, RGN_STOP };
             else
-                pendingRootlessRegion_ = { 0, 0, (int16_t)configuredShape_.width, RGN_STOP, 
-                            (int16_t)configuredShape_.height, 0, (int16_t)configuredShape_.width, RGN_STOP, RGN_STOP };
+                pendingRootlessRegion_ = { 0, 0, (int16_t)guestWidth_, RGN_STOP,
+                            (int16_t)guestHeight_, 0, (int16_t)guestWidth_, RGN_STOP, RGN_STOP };
             
             rootlessRegionDirty_ = true;
             surface_.set_input_region({});
@@ -390,7 +469,7 @@ bool WaylandVideoDriver::updateMode()
         updateTimeout_ = std::chrono::steady_clock::now() + 100ms;
         
         dirtyRects_.clear();
-        dirtyRects_.add(0, 0, configuredShape_.height, configuredShape_.width);
+        dirtyRects_.add(0, 0, guestHeight_, guestWidth_);
 
         state_ = State::waitingForUpdate;
         stateChanged_.notify_all();
@@ -406,7 +485,7 @@ bool WaylandVideoDriver::updateMode()
         requestUpdate();
     }
 
-    return sizeChanged || depthChanged;
+    return sizeChanged || depthChanged || guestSizeChanged;
 }
 
 bool WaylandVideoDriver::requestFrame()
@@ -458,11 +537,22 @@ void WaylandVideoDriver::frameCallback()
     }
 
     auto shape = allocatedShape_;
+    int guestWidth = guestWidth_ ? guestWidth_ : shape.width;
+    int guestHeight = guestHeight_ ? guestHeight_ : shape.height;
 
-    if(shape.width != committedShape_.width || shape.height != committedShape_.height)
+    if(buffer_.width() != guestWidth || buffer_.height() != guestHeight)
     {
-        buffer_ = Buffer(shm_, shape.width, shape.height);
-        dirtyRects_.add(0,0,shape.height,shape.width);
+        buffer_ = Buffer(shm_, guestWidth, guestHeight);
+        dirtyRects_.add(0,0,guestHeight,guestWidth);
+    }
+
+    /* Let the compositor scale the (possibly smaller) guest framebuffer up to
+     * the surface's logical size. */
+    if(viewport_ && (viewportDestWidth_ != shape.width || viewportDestHeight_ != shape.height))
+    {
+        viewport_.set_destination(shape.width, shape.height);
+        viewportDestWidth_ = shape.width;
+        viewportDestHeight_ = shape.height;
     }
 
     if(rootlessRegionDirty_ || clickCaptureDirty_)
@@ -479,8 +569,22 @@ void WaylandVideoDriver::frameCallback()
         }
         else
         {
+            auto addScaledRect = [&](int l, int t, int r, int b) {
+                if(guestWidth == shape.width && guestHeight == shape.height)
+                {
+                    waylandRgn.add(l, t, r-l, b-t);
+                    return;
+                }
+
+                int left = (int)std::floor(double(l) * shape.width / guestWidth);
+                int top = (int)std::floor(double(t) * shape.height / guestHeight);
+                int right = (int)std::ceil(double(r) * shape.width / guestWidth);
+                int bottom = (int)std::ceil(double(b) * shape.height / guestHeight);
+                waylandRgn.add(left, top, std::max(1, right-left), std::max(1, bottom-top));
+            };
+
             forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
-                waylandRgn.add(l, t, r-l, b-t);
+                addScaledRect(l, t, r, b);
             });
         }
         surface_.set_input_region(waylandRgn);

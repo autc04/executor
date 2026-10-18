@@ -20,6 +20,9 @@ class QtVideoDriver : public Executor::VideoDriver
 
     bool clickCaptureDirty_ = false;
 
+    QRect guestRectToWindow(const QRect& r) const;
+    QRect windowRectToGuestRect(const QRect& r) const;
+
     void render(QBackingStore *bs, QRegion rgn);
     void requestUpdate() override;
     void setClickCapture(bool capture) override;

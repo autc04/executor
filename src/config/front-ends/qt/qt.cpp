@@ -9,6 +9,7 @@
 #include <QPaintDevice>
 #include <QSurfaceFormat>
 #include <QTimer>
+#include <cmath>
 #ifdef STATIC_WINDOWS_QT
 #include <QtPlugin>
 #endif
@@ -90,7 +91,7 @@ public:
 
     void mousePressRelease(QMouseEvent *ev)
     {
-        drv_->callbacks_->mouseButtonEvent(!!(ev->buttons() & Qt::LeftButton), qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding);
+        drv_->callbacks_->mouseButtonEvent(!!(ev->buttons() & Qt::LeftButton), guestX(ev->position().x()), guestY(ev->position().y()));
     }
     void mousePressEvent(QMouseEvent *ev) override
     {
@@ -106,8 +107,28 @@ public:
 #ifdef __APPLE__
         macosx_hide_menu_bar(qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding, width(), height());
 #endif
-        drv_->callbacks_->mouseMoved(qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding);
+        drv_->callbacks_->mouseMoved(guestX(ev->position().x()), guestY(ev->position().y()));
     }
+
+private:
+    /* Window coordinates are logical (device-independent) pixels, while the
+     * guest framebuffer may have a different resolution. */
+    int guestX(double x) const
+    {
+        return drv_->framebuffer_.width && width()
+            ? qRound(x * drv_->framebuffer_.width / width())
+            : 0;
+    }
+
+    int guestY(double y) const
+    {
+        int contentHeight = height() - windowTopPadding;
+        return drv_->framebuffer_.height && contentHeight > 0
+            ? qRound((y - windowTopPadding) * drv_->framebuffer_.height / contentHeight)
+            : 0;
+    }
+
+public:
 
     void keyEvent(QKeyEvent *ev, bool down_p)
     {
@@ -204,19 +225,33 @@ bool QtVideoDriver::setMode(int width, int height, int bpp, bool grayscale_p)
     QMetaObject::invokeMethod(qapp, [=, &initEndMutex, &initEndCond, &initEnded] {
 #ifdef __APPLE__
         macosx_hide_menu_bar(500, 0, 1000, 1000);
-        QVector<QRect> screenGeometries = getScreenGeometries();
+        QVector<ScreenGeometry> screenGeometries = getScreenGeometries();
 #else
-        QVector<QRect> screenGeometries = getAvailableScreenGeometries();
+        QVector<ScreenGeometry> screenGeometries = getAvailableScreenGeometries();
 #endif
 
         printf("set_mode: %d %d %d\n", width, height, bpp);
         
-        QRect geom = screenGeometries[0];
-        for(const QRect& r : screenGeometries)
-            if(r.width() * r.height() > geom.width() * geom.height())
-                geom = r;
+        QRect geom = screenGeometries[0].rect;
+        double devicePixelRatio = screenGeometries[0].devicePixelRatio;
+        for(const ScreenGeometry& s : screenGeometries)
+            if(s.rect.width() * s.rect.height() > geom.width() * geom.height())
+            {
+                geom = s.rect;
+                devicePixelRatio = s.devicePixelRatio;
+            }
 
-        framebuffer_ = Framebuffer(geom.width(), geom.height(), bpp ? bpp : 8);
+        /* screen_scale is expressed in standard-display pixels; on a display
+         * with a device pixel ratio of `devicePixelRatio` that corresponds to
+         * devicePixelRatio * screen_scale device pixels per emulated pixel.
+         * Fractional device pixels make no sense, so round down (but never
+         * below 1).  This is what makes --scale 1.5 mean 3x on a 2x display
+         * and 1x on a standard display. */
+        int pixelsPerEmulatedPixel = std::max(1, (int)std::floor(devicePixelRatio * screen_scale + 1e-6));
+        int guestWidth = qRound(geom.width() * devicePixelRatio / pixelsPerEmulatedPixel);
+        int guestHeight = qRound(geom.height() * devicePixelRatio / pixelsPerEmulatedPixel);
+
+        framebuffer_ = Framebuffer(guestWidth, guestHeight, bpp ? bpp : 8);
         framebuffer_.rootless = true;
 
         /* Render with per-pixel alpha.  updateBuffer() already maps the rootless
@@ -273,6 +308,43 @@ bool QtVideoDriver::setMode(int width, int height, int bpp, bool grayscale_p)
     return true;
 }
 
+QRect QtVideoDriver::guestRectToWindow(const QRect& r) const
+{
+    if(!window || framebuffer_.width == 0 || framebuffer_.height == 0)
+        return r;
+
+    int contentWidth = window->width();
+    int contentHeight = window->height() - windowTopPadding;
+    if(contentWidth <= 0 || contentHeight <= 0)
+        return r;
+
+    int left = (int)std::floor(double(r.left()) * contentWidth / framebuffer_.width);
+    int top = (int)std::floor(double(r.top()) * contentHeight / framebuffer_.height) + windowTopPadding;
+    int right = (int)std::ceil(double(r.left() + r.width()) * contentWidth / framebuffer_.width);
+    int bottom = (int)std::ceil(double(r.top() + r.height()) * contentHeight / framebuffer_.height) + windowTopPadding;
+
+    return QRect(left, top, right - left, bottom - top);
+}
+
+QRect QtVideoDriver::windowRectToGuestRect(const QRect& r) const
+{
+    if(!window || framebuffer_.width == 0 || framebuffer_.height == 0)
+        return r;
+
+    int contentWidth = window->width();
+    int contentHeight = window->height() - windowTopPadding;
+    if(contentWidth <= 0 || contentHeight <= 0)
+        return r;
+
+    int left = (int)std::floor(double(r.left()) * framebuffer_.width / contentWidth);
+    int top = (int)std::floor(double(r.top() - windowTopPadding) * framebuffer_.height / contentHeight);
+    int right = (int)std::ceil(double(r.left() + r.width()) * framebuffer_.width / contentWidth);
+    int bottom = (int)std::ceil(double(r.top() - windowTopPadding + r.height()) * framebuffer_.height / contentHeight);
+
+    QRect result(left, top, right - left, bottom - top);
+    return result;
+}
+
 void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
 {
     std::unique_lock lk(mutex_);
@@ -288,12 +360,12 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
              * meant for the (busy) application are not lost to the host desktop
              * through the rootless holes.  The hole pixels stay transparent, so
              * this only changes hit-testing. */
-            qtRgn += QRect(0, windowTopPadding, width(), height());
+            qtRgn += QRect(0, windowTopPadding, window->width(), window->height() - windowTopPadding);
         }
         else
         {
             forEachRect(rootlessRegion_.begin(), [&](int l, int t, int r, int b) {
-                qtRgn += QRect(l, t + windowTopPadding, r-l, b-t);
+                qtRgn += guestRectToWindow(QRect(l, t, r-l, b-t));
             });
         }
 
@@ -312,7 +384,7 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
     lk.unlock();
 
     for(int i = 0; i < r.size(); i++)
-        rgn += QRect(r[i].left, r[i].top + windowTopPadding, r[i].right-r[i].left, r[i].bottom-r[i].top);
+        rgn += guestRectToWindow(QRect(r[i].left, r[i].top, r[i].right-r[i].left, r[i].bottom-r[i].top));
                                 
     updateBuffer(framebuffer_, (uint32_t*)qimage->bits(), qimage->width(), qimage->height(), r);
 
@@ -332,7 +404,11 @@ void QtVideoDriver::render(QBackingStore *bs, QRegion rgn)
         if(qimage)
         {
             for(const QRect& r : rgn)
-                painter.drawImage(r, *qimage, r.translated(0, -windowTopPadding));
+            {
+                QRect src = windowRectToGuestRect(r);
+                if(!src.isEmpty())
+                    painter.drawImage(r, *qimage, src);
+            }
         }
 
         painter.end();

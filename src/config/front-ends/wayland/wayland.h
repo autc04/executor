@@ -7,6 +7,7 @@
 
 #include <mutex>
 #include <vector>
+#include <map>
 #include <chrono>
 #include <condition_variable>
 
@@ -76,6 +77,19 @@ class WaylandVideoDriver : public Executor::VideoDriver
     wayland::surface_t surface_;
     wayland::xdg_surface_t xdg_surface_;
     wayland::xdg_toplevel_t xdg_toplevel_;
+
+    wayland::viewporter_t viewporter_;
+    wayland::viewport_t viewport_;
+    int viewportDestWidth_ = 0, viewportDestHeight_ = 0;
+
+    std::map<uint32_t, wayland::output_t> outputs_;
+    std::map<uint32_t, int> outputScales_;
+    uint32_t currentOutputId_ = 0;
+    int outputScale_ = 1;
+
+    /* Guest framebuffer dimensions corresponding to the current configured
+     * (surface-local) window size. */
+    int guestWidth_ = 0, guestHeight_ = 0;
 
     wayland::pointer_t pointer_;
     wayland::keyboard_t keyboard_;
@@ -152,6 +166,9 @@ class WaylandVideoDriver : public Executor::VideoDriver
 
     void frameCallback();
     bool requestFrame();
+
+    int guestWidthFor(int logicalWidth) const;
+    int guestHeightFor(int logicalHeight) const;
 
 
     void wakeEventLoop();

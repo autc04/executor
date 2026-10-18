@@ -3,5 +3,11 @@
 #include <QVector>
 #include <QRect>
 
-QVector<QRect> getScreenGeometries();
-QVector<QRect> getAvailableScreenGeometries();
+struct ScreenGeometry
+{
+    QRect rect;
+    double devicePixelRatio;
+};
+
+QVector<ScreenGeometry> getScreenGeometries();
+QVector<ScreenGeometry> getAvailableScreenGeometries();

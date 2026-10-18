@@ -192,5 +192,12 @@ protected:
 
 extern std::unique_ptr<VideoDriver> vdriver;
 
+/* Requested display scale, in units of "standard" display pixels.  The
+ * front-ends use this to choose how many host device pixels correspond to one
+ * emulated Mac pixel: on a display with device pixel ratio `dpr`, the number is
+ * floor(dpr * screen_scale), clamped to at least 1.  The default of 1 therefore
+ * gives 1x on a standard display and 2x on a high-DPI (dpr == 2) display. */
+extern double screen_scale;
+
 }
 #endif /* !_VDRIVER_H_ */

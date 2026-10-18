@@ -1,3 +1,5 @@
+#include "available_geometry.h"
+
 #include <QVector>
 #include <QRect>
 #include <QGuiApplication>
@@ -6,11 +8,11 @@
 #include <QEventLoop>
 #include <QResizeEvent>
 
-QVector<QRect> getScreenGeometries()
+QVector<ScreenGeometry> getScreenGeometries()
 {
-    QVector<QRect> geometries;
+    QVector<ScreenGeometry> geometries;
     for(QScreen *screen : QGuiApplication::screens())
-        geometries.push_back(screen->geometry());
+        geometries.push_back({screen->geometry(), screen->devicePixelRatio()});
 
     return geometries;
 }
@@ -19,11 +21,11 @@ QVector<QRect> getScreenGeometries()
 
 /* Actually, this should be the Qt-on-anything-but-X11 case. */
 
-QVector<QRect> getAvailableScreenGeometries()
+QVector<ScreenGeometry> getAvailableScreenGeometries()
 {
-    QVector<QRect> geometries;
+    QVector<ScreenGeometry> geometries;
     for(QScreen *screen : QGuiApplication::screens())
-        geometries.push_back(screen->availableGeometry());
+        geometries.push_back({screen->availableGeometry(), screen->devicePixelRatio()});
 
     return geometries;
 }
@@ -55,13 +57,13 @@ struct SizeTestWindow : QWindow
 template <class F>
 QWindow* makeSizeTestWindow(F f) { return new SizeTestWindow<F>(f); }
 
-QVector<QRect> getAvailableScreenGeometries()
+QVector<ScreenGeometry> getAvailableScreenGeometries()
 {
     if(qApp->platformName() != QLatin1String("xcb"))
     {
-        QVector<QRect> geometries;
+        QVector<ScreenGeometry> geometries;
         for(QScreen *screen : QGuiApplication::screens())
-            geometries.push_back(screen->availableGeometry());
+            geometries.push_back({screen->availableGeometry(), screen->devicePixelRatio()});
 
         return geometries;
     }
@@ -92,12 +94,12 @@ QVector<QRect> getAvailableScreenGeometries()
     }
     loop.exec();
 
-    QVector<QRect> geometries;
+    QVector<ScreenGeometry> geometries;
     for(QWindow *w : windows)
     {
-        geometries.push_back(w->geometry());
+        geometries.push_back({w->geometry(), w->devicePixelRatio()});
         delete w;
     }
     return geometries;
 }
-#endif 
+#endif

@@ -184,6 +184,14 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
                 flag_height = s.height;
             })
         , "screen size in pixels")
+        ("scale", pox::value(&screen_scale)->validator([](double s) {
+                return s > 0;
+            }),
+            "display scale relative to a standard (non-high-DPI) display. "
+            "The default of 1 shows one emulated pixel per host pixel on a "
+            "standard display and two per host pixel on a high-DPI display; "
+            "1.5 gives 3x on high-DPI and 1x on standard displays; 2 gives "
+            "4x on high-DPI and 2x on standard displays.")
         ("grayscale", po::bool_switch(&flag_grayscale), "grayscale graphics (for use with --bpp 2,4,8)");
     desc.add(screen);
 
