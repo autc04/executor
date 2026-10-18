@@ -181,10 +181,11 @@ model; those marked **[revisit]** may need a further decision before their phase
    match key is the host inode (with the kind), not the path, so a delete-and-recreate
    at an existing name is a *new* entry by design (Decision 3) — while a
    same-directory rename keeps its CNID and adopts the new name (Phase 10).
-9. **[revised] Identity creation and naming are transactions.** The per-directory
-   diff and a **NameResolve** over one group are each one atomic
-   read-modify-write, so concurrent writers converge. The batch is
-   now the prefix group, not the whole directory.
+9. **[revised] Every mapper read-modify-write is one transaction.** The
+   per-directory diff, get-or-create (`resolveChildCNID`), `nameGroup`, and
+   `deleteCNID`/`moveCNID` each read and write inside a single write transaction,
+   so concurrent writers converge (Phase 11). No host I/O runs inside one. The
+   naming batch is the prefix group, not the whole directory.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
     its file format; the format lives in a `FileRep` (see *Object model*).
 11. **[revised] Catalog order is `macNamePrefix`-major, host path as the
@@ -513,7 +514,10 @@ transient map, O(n+m)) rather than kept as an index.
 When no inode is usable (`d_ino == 0`, a filesystem without inodes, or Windows'
 `GetFileAttributesEx`, which exposes none and needs a handle-based variant,
 `GetFileInformationByHandle`), the posix-name map *is* the identity: move detection
-is off, and there is no false move.
+is off, and there is no false move. The same mode is selectable per volume when
+the host's inodes cannot be trusted across a restart or between mounts (Phases
+11b/11c), and it is what the diff already does for records whose `identity` is
+invalid.
 
 A binding failure is **not** resolved in place: the file may have moved, so nothing
 is dropped or deleted — the parent's listing is flushed, the following diff
@@ -582,20 +586,23 @@ Consequences:
 - The staleness bound is "as of the last access". Changes racing the guest's
   other traps are inherently un-transactional (HFS is not transactional either).
 
-CNID and naming changes made cross-instance through LMDB, with no host change, are
-invisible to the stamp. They stay coherent because the mapper is read through: the
-record table, the `(parID, posixName) -> cnid` lookup and the
-`(parID, macName) -> cnid` lookup answer every query from current state, inside a
-transaction LMDB serializes; Phase 11 adds only that atomicity.
+Only *naming* changes are made cross-instance through LMDB without a host change,
+and so are invisible to the stamp. Every other mapper mutation — create, delete,
+move — happens because a host entry appeared, disappeared or was renamed (or
+because a FileManager operation changed it), so the stamp or the binding check
+already invalidates any answer derived from the old state. Coherence therefore
+needs no generation counter: the mapper is read through, and each query answers
+from current state inside a transaction LMDB serializes.
 
 An answer that *is* held in memory is held only under a validity rule, never
 across one: a listed directory's descriptors carry the CNIDs of the listing they
-were scanned for (stamp-validated), and an `Item`'s decided `macName` is cached
-only because naming is **sticky per binding** — `nameGroup` never reassigns a name
-it has handed out, and a rename clears the decided name on both sides (the
-record's `macName` and the `Item`'s copy, via `relocate`). A cache without such a
-rule — a `(parID, macName) -> cnid` result kept across listings, say — would need a
-mapper generation checked like the stamp.
+were scanned for (stamp-validated) and no names, and an `Item`'s decided
+`macName` is cached only because naming is **sticky per binding** — `nameGroup`
+never reassigns a name it has handed out, and a rename clears the decided name on
+both sides (the record's `macName` and the `Item`'s copy, via `relocate`). A
+`(parID, macName) -> cnid` result kept across listings, for example, would need
+invalidating; the answer is not to cache it. If a mapper cache is ever added, key
+it to the database's own read-transaction snapshot, not a bespoke counter.
 
 Identity stability across re-enumeration (CNIDs and decided names survive for an
 unchanged entry) is provided by the mapper's inode match, pinned by
@@ -707,14 +714,22 @@ re-listing a directory (see *Binding staleness*).
 
 Operations:
 
-- CNIDResolve: look up `(parID, posixName)`, or create a record under a parent.
+- CNIDResolve: get-or-create for `(parID, posixName)` in **one** atomic call; a
+  lookup followed by a create would let two instances mint two CNIDs for one
+  binding.
 - **Resolve / diff** (the batch form): pair the fresh scan with the stored children
   by `(dev, ino)` (built from the scan) and by name — reuse, rename, create, or
-  delete, per *Reconciliation* — then NameResolve the affected groups.
-  `lookupChild`/`getOrCreateChild` go away.
-- `deleteCNID`/`moveCNID` maintain the two maps above.
-- A group's naming is a read-modify-write; larger operations are handed to the
-  mapper as a `std::function` so the transaction shape is backend-neutral
+  delete, per *Reconciliation* — then NameResolve the affected groups. The diff
+  re-reads the stored child set inside its write transaction even though the host
+  scan happened outside it. `lookupChild`/`getOrCreateChild` go away.
+- `deleteCNID`/`moveCNID` maintain the two maps above. `moveCNID` must not perform
+  host I/O inside the transaction: the caller renames the host file first and
+  passes the resulting name. A tear between the two is reconciled by the inode
+  diff, in either order.
+- A group's naming is a read-modify-write; a `NameRequest` carries the
+  `posixName` its `nameSource` was computed from, so the transaction can drop a
+  request whose binding was renamed in the meantime. Larger operations are handed
+  to the mapper as a `std::function` so the transaction shape is backend-neutral
   (Decision 9).
 
 ### `FileStamp` (`filestamp.h`, `filestamp.cpp`)
@@ -1081,12 +1096,108 @@ staleness*).
 
 ### Phase 11 — CNID persistence, transactions, multi-instance sharing
 
-Re-enable `LMDBCNIDMapper`: persist the record table and the indexes, and make the
-per-directory diff and `nameGroup` **transactional read-modify-writes**
-(Decision 9). LMDB's single-writer model then lets two Executor instances share
-CNID and naming decisions for the same volume. Cross-instance coherence rests on
-reading mapper state live (see *Caching*); it needs no generation counter until an
-in-memory mapper cache is introduced.
+Rewrite `LMDBCNIDMapper` against the current interface. The dormant implementation
+predates the link-free, identity-keyed design and cannot be re-enabled as is: it
+stores a path rather than an identity, drops kind, matches by sorted path, names
+every new entry eagerly, and has `deleteMapping` stubbed. LMDB's single writer
+then lets two Executor instances share CNID and naming decisions for the same
+volume.
+
+- **Record and indexes.** Persist `{parID, posixName, macName?, identity, isDir}`
+  with no stored path, plus the `(parID, posixName) -> cnid` and
+  `(parID, folded macName) -> cnid` indexes. `identity` is a value on the record,
+  not an index or a key: it is consulted only by the binding check and the diff's
+  inode pairing (see *Binding staleness*). Scope the environment per volume
+  (root path or volume identity) and store a schema version; the current code
+  opens one global environment and leaves its `config` DB unused.
+- **Allocator.** Persist a monotonic `nextCNID` in the config DB. Deriving
+  `max + 1` reuses the highest CNID after it is deleted, which can make a stale
+  guest CNID denote a different file.
+- **Transactions.** Each read-modify-write — the diff, get-or-create, `nameGroup`,
+  `deleteCNID`, `moveCNID` — runs in one LMDB write transaction, and no host I/O
+  runs inside one (Decision 9). CNID allocation happens inside the transaction.
+  The host scan stays outside; the diff re-reads the stored child set inside.
+- **Naming.** Keep Phase 9's rule: names are decided only in `nameGroup`, never
+  eagerly by the diff. `NameRequest` carries the binding (`posixName`) its
+  `nameSource` was derived from, and `nameGroup` drops a request whose record no
+  longer has that name, because another instance may have renamed it after the
+  listing.
+- **Coherence.** LMDB's single writer serializes the transactions; reads are
+  read-through and no mapper answer is cached across a validation boundary, so no
+  generation counter is needed (see *Caching*).
+
+**Identity is a verification value, not a key.** The persisted keys are the CNID
+and the `(parID, posixName)` binding; `identity` is recorded on the record and
+consulted only by the binding check and the diff's inode pairing (see *Binding
+staleness*). Persistence therefore does not depend on identity stability: if
+validation is wrong the maps are still intact, and what actually resets CNIDs and
+names is the *policy* that treats an identity mismatch as "the binding changed."
+The sub-phases below decide that policy.
+
+### Phase 11a — Disregard the problem
+
+Assume the volume is on a block-backed filesystem with stable device numbering
+(ext4, btrfs, xfs). Persist and validate identities as today. On an identity
+namespace change — tmpfs, overlayfs, device renumbering, NFS — the first re-list
+fails both diff passes and deletes and recreates every record, so persisted CNIDs
+and names are lost. Document that limitation and do not mitigate it; this is the
+default.
+
+### Phase 11b — Global switch to disable identity validation
+
+Add a global flag / command-line option that makes validation behave as it already
+does when the host exposes no inode (`FileIdentity::valid == false`:
+`sameIdentity` returns true, `filestamp.h:41-48`). The diff then matches by
+`(posixName, kind)` only, the `byInode` rename pairing is off, and the binding
+check degrades to existence, kind and name. The flag changes *comparison* only:
+records are still re-stamped from the live stat whenever a name+kind match
+reconciles them, so re-enabling validation does not resurrect a stale epoch.
+
+Consequences: no rename recovery (a same-directory rename reads as delete +
+create), and a same-name replacement is not detected. CNIDs and names survive
+identity-namespace changes because they are keyed by name. The switch is
+per-process, so instances sharing one LMDB must agree on it; otherwise the
+validating instance still deletes and recreates on a namespace change. Tests that
+pin rename recovery or identity invalidation must be skipped or constrained under
+the flag.
+
+### Phase 11c — Per-filesystem heuristic
+
+Choose the policy per volume at mount from the filesystem type reported by
+`statfs`/`fstatfs` on the root (`f_type` on Linux): validate identity on
+block-backed local filesystems (ext4, xfs, btrfs, f2fs, …); disable it on
+synthetic or network filesystems whose `(dev, ino)` is per-mount or synthesized
+(tmpfs, overlayfs, NFS, FUSE) and on unknown types. Precedence: explicit switch
+(11b) > filesystem heuristic > default (identity validation).
+
+A heuristic, not a proof: it says nothing about device renumbering, btrfs
+subvolume id quirks, or "same path, different volume." Keep the manual switch for
+exceptions. Detection is platform-specific — `f_type` is Linux; other platforms
+need their own mapping or the default.
+
+### Phase 11d — Identity epochs (preliminary; not agreed)
+
+Persist an identity epoch (the "generation" idea) with the volume: the `st_dev`
+observed at open, plus a volume identity. When the epoch changes, reconcile by
+`(posixName, kind)` instead of deleting — keep each CNID and `macName`, re-stamp
+`identity`, then resume validation. This preserves CNIDs and names across a
+namespace change at the cost of reading a rename made while no instance was
+running as delete + create. It is unrelated to the mapper-cache generation
+discounted under *Caching*.
+
+Preliminary and not agreed; do not implement without a decision. Open questions:
+
+- What volume identity distinguishes "the same data seen through a new namespace"
+  from "different data now at the same root path"? Root path plus schema is weak;
+  a volume UUID or a hidden marker is robust but invasive. Without one, a rebase
+  can carry CNIDs onto unrelated files that share names.
+- Multi-instance: instances must see the same identity namespace, or agree on the
+  epoch, or they will keep re-stamping each other. Two mounts of the same data
+  (host vs container, two overlays) do not share `st_dev`/`st_ino`.
+- tmpfs: after a fresh mount the contents are new, so a rebase can match only what
+  still exists; skipping persistence for such volumes is probably better.
+- Whether a rebase also repairs records with an invalid or missing identity, or
+  only records whose epoch differs.
 
 ### Phase 12 — Single-item name resolution
 
