@@ -19,8 +19,9 @@ cached". Assigning a CNID, reporting a directory's item count, and listing a
 directory all collapse onto one expensive "fully cache the whole directory"
 operation.
 
-This plan separates the stages that have been conflated. They are optional,
-orthogonal **states of an object**, not a pipeline:
+This plan separates the stages that have been conflated — Count, List,
+NameResolve and Materialize. They are optional, orthogonal **states of an
+object**, not a pipeline:
 
 | Object | State | Meaning |
 |---|---|---|
@@ -261,8 +262,8 @@ probed any file, and nothing is Materialized merely because its parent was liste
 ## Stage model
 
 These are optional, orthogonal **states** of an object — not a pipeline, with no
-implied ordering except where noted: List implies Count, and Realize is not a
-state at all (see below).
+implied ordering except where noted: List implies Count (and, for every child it
+describes, CNIDResolved), and Realize is not a state at all (see below).
 
 | Object | State | Meaning |
 |---|---|---|
@@ -275,8 +276,9 @@ state at all (see below).
 
 `CNIDResolve` and `NameResolve` are separate, and both are separate from
 `Materialize`: an item can be addressed by `CNID` without being named, and named
-without its format being known. That is what lets an ancestor be walked without
-listing or naming it.
+without its format being known. The per-entry form of `CNIDResolve` is what lets
+path resolution walk an ancestor without listing or naming it; List runs the
+same step for every child as part of its diff.
 
 Count and List are separate directory stages. `ioDrNmFls` is queried for *every*
 directory a listing displays, so counts vastly outnumber listings; and while List
@@ -302,17 +304,20 @@ so a Counted directory costs O(1) memory.
 ### List (DirectoryItem)
 
 Read the host directory once and store an ordered **descriptor list** — one
-`(posixName, kind, macNamePrefix, optional cnid)` per visible child (sidecar names
-filtered by name) — plus a validation stamp. The descriptors are sorted by
+`(posixName, kind, macNamePrefix, cnid)` per visible child (sidecar names filtered
+by name) — plus a validation stamp. The reconciliation diff assigns each child's
+`CNID` (see *Reconciliation*). The descriptors are sorted by
 `(macNamePrefix, posixName)`. The count is `descriptors.size()`: List implies
 Count. No child `Item` is created or retained.
 
 ### CNIDResolve (Item)
 
 Give an entry a `CNID` (and its `parID`) by looking it up in the mapper — keyed by
-`(dev, ino)` — or creating a record on a miss. This needs only the entry's parent
-and its host identity, not the parent's listing, which is what lets path
-resolution descend without enumerating.
+`(dev, ino)` — or creating a record on a miss. List performs it for every visible
+child as part of its reconciliation diff. The same per-entry primitive
+(`ItemCache::resolveChildCNID`) is what path resolution uses, component by
+component, so a walk needs only the entry's parent and its host identity, not the
+parent's listing, and can descend without enumerating.
 
 ### NameResolve / Resolve (a directory's group)
 
@@ -325,10 +330,10 @@ names the group it falls in, never a single entry.
 
 "I want this entry's name" is funnelled through a single directory-side entry
 point that owns both the lookup and the state change — it ensures the directory
-is `Listed`, CNIDResolves the group, and decides the names — so no caller drives
-those steps itself. Any read of an `Item`'s `macName` goes through it, so a
-caller never observes an undecided name. That entry point lives on
-`DirectoryItem`, which owns the Count/List/NameResolve machinery.
+is `Listed` (so every child's `CNID` is assigned) and decides the group's names —
+so no caller drives those steps itself. Any read of an `Item`'s `macName` goes
+through it, so a caller never observes an undecided name. That entry point lives
+on `DirectoryItem`, which owns the Count/List/NameResolve machinery.
 
 ### Materialize (FileItem)
 
@@ -363,8 +368,8 @@ external reference (see *Caching*).
   mutation to the rep, so a file's format need not be known until it is Materialized.
 - **`DirectoryItem : Item`** — the two directory stages and their stamps: an
   optional `count_` (+ stamp), and an optional **descriptor list** sorted by
-  `(macNamePrefix, posixName)` with a lazily populated per-descriptor `CNID`
-  (one `CNID` per entry once CNIDResolved). No child `Item`s.
+  `(macNamePrefix, posixName)` with a per-descriptor `CNID` (assigned by List's
+  reconciliation diff). No child `Item`s.
 - **`FileItem : Item`** — holds an optional `FileRep`.
 - **`FileRep`** — the format concern: `open`, `openRF`, `getInfo`, `setInfo`, and
   the host-file mutation `remove`/`move` (default = a single host file; the
@@ -393,7 +398,7 @@ stamp for each, and a per-descriptor CNID:
 std::optional<int> count_;                  // Counted: a tally only
 FileStamp countStamp_;                      // the stamp count_ is valid for
 std::vector<Descriptor> descriptors_;       // Listed: sorted by (macNamePrefix, posixName)
-                                            //   posixName, kind, macNamePrefix, optional cnid
+                                            //   posixName, kind, macNamePrefix, cnid
 bool listed_ = false;
 FileStamp stamp_;                           // (mtime, size) at the last scan
 ```
@@ -543,10 +548,11 @@ matches `c`:
 - else (several occurrences, none matching the old name) → `deleteCNID(c)`; each
   occurrence becomes a new entry.
 
-Every scanned entry not consumed by a match is new. A same-inode record in another
-directory is never a match here — that is a move, seen as delete + create (a new
-CNID). Reconciliation is **per directory**; cross-directory rename detection is
-deliberately not attempted (Phase 10).
+Every scanned entry not consumed by a match is new: List creates a record (a fresh
+`CNID`) for it, so List assigns identity to the whole visible child set. A
+same-inode record in another directory is never a match here — that is a move,
+seen as delete + create (a new CNID). Reconciliation is **per directory**;
+cross-directory rename detection is deliberately not attempted (Phase 10).
 
 The rules are order-independent and cover the regular, hard-link and no-inode cases
 uniformly. With a usable inode, the scan's entries are paired with the directory's
