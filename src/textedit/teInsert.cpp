@@ -798,18 +798,28 @@ DONE:
 
 namespace Executor
 {
-    PASCAL_FUNCTION_PTR(ROMlib_dotext); // FIXME: this is wrong and only mostly works because all calls to this are short-circuited.
+    REGISTER_FUNCTION_PTR(ROMlib_dotext, D0(A3, D3, D4, D7));
 }
+
+// The default implementation of LM(TEDoText).  The hook's ABI is
+// Register<D0(A3, D3, D4, D7)>: the TE record in A3, start/end/what in
+// D3/D4/D7, the result in D0, and the current port left in A0.
 int16_t Executor::C_ROMlib_dotext(TEPtr tep, int16_t start, int16_t end,
                                   int16_t what) /* INTERNAL */
 {
+    int16_t retval = 0;
+
     if(what == teHilite)
         te_hilite(tep, start, end);
     else if(what == teDraw)
         te_draw(tep, start, end);
     else if(what == teFind)
-        return te_find(tep, start, end);
-    return 0;
+        retval = te_find(tep, start, end);
+
+    // The generated callback thunk writes D0 after the call and does not touch
+    // A0, so setting it here is enough to satisfy the A0 half of the contract.
+    EM_A0 = US_TO_SYN68K(qdGlobals().thePort);
+    return retval;
 }
 /*
 INTEGER ROMlib_dotext(void)

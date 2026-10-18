@@ -24,9 +24,13 @@ template <int n> struct D;
 using A0 = A<0>;
 using A1 = A<1>;
 using A2 = A<2>;
+using A3 = A<3>;
 using D0 = D<0>;
 using D1 = D<1>;
 using D2 = D<2>;
+using D3 = D<3>;
+using D4 = D<4>;
+using D7 = D<7>;
 
 struct D0HighWord;
 struct D0LowWord;
