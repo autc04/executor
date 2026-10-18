@@ -1134,14 +1134,15 @@ validation is wrong the maps are still intact, and what actually resets CNIDs an
 names is the *policy* that treats an identity mismatch as "the binding changed."
 The sub-phases below decide that policy.
 
-### Phase 11a — Disregard the problem
+### Phase 11a — Disregard the problem — DONE
 
 Assume the volume is on a block-backed filesystem with stable device numbering
 (ext4, btrfs, xfs). Persist and validate identities as today. On an identity
 namespace change — tmpfs, overlayfs, device renumbering, NFS — the first re-list
 fails both diff passes and deletes and recreates every record, so persisted CNIDs
 and names are lost. Document that limitation and do not mitigate it; this is the
-default.
+default. The LMDB backend is enabled and validates `(dev, ino)` exactly as
+`SimpleCNIDMapper` does.
 
 ### Phase 11b — Global switch to disable identity validation
 
@@ -1231,8 +1232,12 @@ without a native path.
   `cmdlinePathToFSSpec`.
 - `tests/localvolume_macbinary.cpp` — native-only; backend functions, no
   FileManager.
-- `tests/main_executor.cpp` — global environment: initialises Executor,
-  `ROMlib_fileinit()` (mounts `/`), creates a temp dir opened as the default WD.
+- `tests/localvolume_cnidmap.cpp` — native-only; drives `LMDBCNIDMapper`
+  directly and reopens it to simulate a restart (persistence, the diff across a
+  reopen, move/delete).
+- `tests/main_executor.cpp` — global environment: initialises Executor, points
+  `ExecutorDirectoryMap` at the temp tree (so CNID state is per-run), calls
+  `ROMlib_fileinit()` (mounts `/`), and creates a temp dir opened as the default WD.
 - Build split: `NATIVE_TEST_SOURCES` vs `TEST_SOURCES` in `tests/CMakeLists.txt`;
   expected failures are labelled `xfail` in `tests/test-properties.cmake`.
 - Suites: `ctest --test-dir build`; the Retro68 Mac-app suite is separate.
@@ -1305,6 +1310,10 @@ operations. Helpers in
   (`._*`, `%*`, `.rsrc`, `.finf`) is reflected by `getInfo` on the next access —
   including a Plain file *becoming* AppleDouble when its `._*` appears, and
   becoming Plain again when it is removed.
+- **Persistence (Phase 11a)**: records and decided names survive destroying and
+  reopening the mapper; the CNID allocator continues rather than reusing an old
+  CNID; a re-open diff preserves CNIDs for unchanged entries and recovers a
+  same-directory rename by inode; move and recursive delete persist.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
   `--gtest_also_run_disabled_tests`). The validation, naming and Phase 10
   rename/hard-link tests above are enabled.
@@ -1317,7 +1326,6 @@ against regressing F1/F3.
 ## Out of scope
 
 - Changing how the volume root is chosen (`/`) or mounting behaviour.
-- Re-enabling the LMDB mapper, except insofar as it affects Phase 11.
 - HFS backend behaviour.
 
 ## Future Ideas

@@ -42,6 +42,8 @@ set(NATIVE_TEST_SOURCES
         localvolume_macbinary.cpp
         # FileManager-vs-host sequences against the mounted-'/' LocalVolume.
         localvolume_ops.cpp
+        # Persistence and transaction shape of the LMDB CNID mapper.
+        localvolume_cnidmap.cpp
         # Native-only: drives the .IPP driver through the Device Manager.
         # The dual-mode ABI comparison against Apple's headers belongs in
         # TEST_SOURCES later, once the Retro68 side has MacTCP.h.

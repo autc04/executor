@@ -487,11 +487,12 @@ void DirectoryItem::resolveGroup(mac_string_view prefix)
     {
         const Descriptor& d = descriptors_[i];
         // The whole group is offered, so already-decided names seed the collision
-        // set; only the undecided entries need a name source.
+        // set; only the undecided entries need a name source. The binding is
+        // passed too, so a rename that raced the listing is rejected.
         if(auto rec = mapper.lookupCNID(d.cnid); rec && rec->macname)
-            group.push_back({ d.cnid, {} });
+            group.push_back({ d.cnid, d.posixName, {} });
         else
-            group.push_back({ d.cnid, nameSourceOf(d) });
+            group.push_back({ d.cnid, d.posixName, nameSourceOf(d) });
     }
 
     mapper.nameGroup(cnid(), group);

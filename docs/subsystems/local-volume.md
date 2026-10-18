@@ -29,8 +29,14 @@ concrete reps (`PlainRep`, `AppleDoubleRep`, `AppleSingleRep`, `BasiliskRep`,
 
 **CNID mapping**: Mac HFS uses catalog node IDs (CNIDs) to identify files and
 directories. `LocalVolume` uses LMDB (via `lmdbcnidmapper.h`) to persist the
-CNID ↔ host-path mapping across Executor sessions. `SimpleCnidMapper` is an in-memory
-fallback used when LMDB is unavailable.
+records and the `(parID, posixName)` and `(parID, Mac name)` indexes across
+Executor sessions. A record stores `parID`, `posixName`, an optional `Mac name`,
+the `(dev, ino)` identity, and the kind; the host path is derived from the parent
+chain, not stored, and identity is a verification value rather than a lookup key.
+There is one LMDB environment per volume under `$ExecutorDirectoryMap` (default
+`~/.executor/cnidmap1`), named by a hash of the volume root. `SimpleCNIDMapper`
+implements the same interface in memory; it is the reference/alternative backend,
+not a runtime fallback.
 
 **Fork storage formats**:
 - **Plain**: data fork is the raw file; resource fork is stored in a `._filename`
@@ -43,11 +49,11 @@ fallback used when LMDB is unavailable.
   128-byte header. Detected last (just before the plain fallback), so a sidecar
   pair describing a file named `foo.bin` wins over the MacBinary interpretation.
 
-**`ItemCache`**: caches `Item` objects and manages CNID assignment. A cache miss
-scans the parent directory and constructs an identity `Item` per entry
-(`makeItem`: `DirectoryItem` for a directory, bare `FileItem` otherwise); the
-file's storage format is only decided later, on first access, by
-`materialize()`.
+**`ItemCache`**: caches `Item` objects and manages CNID assignment. Listing a
+directory stores a descriptor per child and assigns each child a CNID; an `Item`
+is realized from a descriptor on demand (`makeItem`: `DirectoryItem` for a
+directory, bare `FileItem` otherwise). The file's storage format is decided later,
+on first access, by `materialize()`.
 
 **Materialization**: `FileItem` holds an optional `FileRep`; `open()`, `openRF()`,
 `getInfo()`, `setInfo()`, `deleteItem()` and `moveItem()` call
@@ -93,8 +99,11 @@ reference number.
   resource fork. The concrete `Item` subclass decides where to find each fork on the
   host.
 - **CNID persistence**: LMDB stores CNIDs so that open-by-CNID calls (`PBOpenDF` with
-  a directory ID) survive across sessions. If the LMDB file is deleted, CNIDs are
+  a directory ID) survive across sessions. If the database is deleted, CNIDs are
   reassigned and any saved FSSpec values stored by applications become stale.
+  Identity validation assumes `(dev, ino)` is stable across a restart; on tmpfs or
+  overlayfs a fresh mount changes it, and the next re-list resets the persisted
+  mapping (Phase 11a accepts this limitation).
 - **Hidden files**: `ItemFactory::isHidden()` suppresses sidecar files (like `._foo`)
   from appearing as Mac files. Always override this in new `ItemFactory` subclasses.
 - **Factory order matters**: `itemFactories` is tried in order and the first match

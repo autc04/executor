@@ -150,6 +150,22 @@ std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupCNID(CNID cnid)
     return it->second;
 }
 
+CNID SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::path& posixName,
+    const FileIdentity& identity, bool isDir)
+{
+    if(auto mapping = lookupPosixName(parID, posixName))
+    {
+        // The same host file still holds the name, so reuse its CNID. A different
+        // kind, or a different file (the inode changed), is a new item.
+        if(mapping->isDir == isDir && sameIdentity(mapping->identity, identity))
+            return mapping->cnid;
+
+        deleteCNID(mapping->cnid);
+    }
+
+    return createRecord(parID, posixName, identity, isDir);
+}
+
 std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::lookupPosixName(CNID parID, const fs::path& posixName)
 {
     auto dirIt = posixNames_.find(parID);
@@ -190,6 +206,8 @@ void SimpleCNIDMapper::nameGroup(CNID parID, const std::vector<NameRequest>& gro
         auto mit = mappings_.find(req.cnid);
         if(mit == mappings_.end() || mit->second.parID != parID)
             continue;
+        if(mit->second.posixName != req.posixName)
+            continue;   // the binding changed after the listing
         if(mit->second.macname)
             continue;   // already decided; names are sticky
 
@@ -260,7 +278,8 @@ void SimpleCNIDMapper::deleteCNID(CNID cnid)
         names_.erase(nit);
 }
 
-void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop)
+void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
+    const fs::path& newPosixName)
 {
     auto it = mappings_.find(cnid);
     if(it == mappings_.end())
@@ -269,10 +288,9 @@ void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMa
     CNID oldParent = it->second.parID;
     if(newParent == 0)
         newParent = oldParent;
-    if(oldParent == newParent && newMacName.empty())
+    if(oldParent == newParent && newMacName.empty()
+       && newPosixName == it->second.posixName)
         return;
-
-    fs::path newPath = fsop();
 
     // Both name maps are keyed by parent, so a move re-homes the entries.
     forgetRecordName(it->second);
@@ -288,7 +306,7 @@ void SimpleCNIDMapper::moveCNID(CNID cnid, CNID newParent, mac_string_view newMa
             posixNames_.erase(pit);
     }
 
-    it->second.posixName = newPath.filename();
+    it->second.posixName = newPosixName;
     it->second.parID = newParent;
 
     posixNames_[newParent][it->second.posixName] = cnid;

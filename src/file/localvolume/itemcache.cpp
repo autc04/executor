@@ -236,17 +236,9 @@ ItemPtr ItemCache::realizeDescriptor(const DirectoryItemPtr& dir, const Descript
 
 CNID ItemCache::resolveChildCNID(CNID parID, const fs::path& posixName, const PathStat& st)
 {
-    if(auto mapping = cnidMapper_->lookupPosixName(parID, posixName))
-    {
-        // The same host file still holds the name, so reuse its CNID. A different
-        // kind, or a different file (the inode changed), is a new item.
-        if(mapping->isDir == st.isDirectory && sameIdentity(mapping->identity, st.identity))
-            return mapping->cnid;
-
-        cnidMapper_->deleteCNID(mapping->cnid);
-    }
-
-    return cnidMapper_->createRecord(parID, posixName, st.identity, st.isDirectory);
+    // One atomic get-or-create in the mapper: a lookup followed by a create would
+    // let two instances mint two CNIDs for the same binding.
+    return cnidMapper_->getOrCreateChild(parID, posixName, st.identity, st.isDirectory);
 }
 
 void ItemCache::ensureNamed(Item& item)
@@ -301,12 +293,11 @@ void ItemCache::renameItem(ItemPtr item, mac_string_view newName)
 {
     fs::path newPath = item->path().parent_path() / toUnicodeFilename(newName);
     flushDirectoryCache(item->parID());
-    cnidMapper_->moveCNID(item->cnid(), 0, newName, 
-        [&] {
-            item->moveItem(newPath, newName);
-            return item->path();
-        });
 
+    // Host I/O first, then the mapper: the two cannot be made atomic, and the
+    // inode diff converges if they tear (see Phase 11).
+    item->moveItem(newPath, newName);
+    cnidMapper_->moveCNID(item->cnid(), 0, newName, newPath.filename());
 }
 
 void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_view newName)
@@ -320,9 +311,7 @@ void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_vi
     else
         newPath /= toUnicodeFilename(newName);
 
-    cnidMapper_->moveCNID(item->cnid(), newParent->cnid(), newName, 
-        [&] {
-            item->moveItem(newPath, newName);
-            return item->path();
-        });
+    // Host I/O first, then the mapper; a tear is reconciled by the inode diff.
+    item->moveItem(newPath, newName);
+    cnidMapper_->moveCNID(item->cnid(), newParent->cnid(), newName, newPath.filename());
 }

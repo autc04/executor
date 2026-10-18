@@ -9,6 +9,9 @@
 #include <rsys/executor.h>
 #include <osevent/osevent.h>
 
+#include <cstdlib>
+#include <string>
+
 using namespace Executor;
 
 // Host path of the temporary working directory created below; exposed so native
@@ -58,6 +61,20 @@ public:
 
     virtual void SetUp() override
     {
+        // The persistent CNID database lives under the test tree, and InitPaths
+        // reads ExecutorDirectoryMap, so isolate both before ROMlib_fileinit.
+        tempDir = fs::current_path()
+            / fs::unique_path("temptest-%%%%-%%%%-%%%%-%%%%");
+        fs::create_directory(tempDir);
+        ExecutorTestTempDir = tempDir;
+
+        const std::string dirMap = (tempDir / "cnidmap").string();
+#ifdef _WIN32
+        _putenv_s("ExecutorDirectoryMap", dirMap.c_str());
+#else
+        setenv("ExecutorDirectoryMap", dirMap.c_str(), 1);
+#endif
+
         Executor::InitMemory(thingOnStack);
 
         EventSink::instance = std::make_unique<EventSink>();
@@ -81,10 +98,6 @@ public:
         EM_A5 = EM_A7 = ptr_to_longint(LM(MemTop)-4);
 
         Executor::ROMlib_fileinit();
-
-        tempDir = fs::current_path() / fs::unique_path("temptest-%%%%-%%%%-%%%%-%%%%");
-        fs::create_directory(tempDir);
-        ExecutorTestTempDir = tempDir;
 
         if(auto fsspec = nativePathToFSSpec(tempDir))
         {

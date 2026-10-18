@@ -12,7 +12,6 @@
 #include "appledouble.h"
 #include "macbinary.h"
 
-#include "simplecnidmapper.h"
 #include "lmdbcnidmapper.h"
 #include "itemcache.h"
 #include "stats.h"
@@ -58,8 +57,7 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     itemCache = std::make_unique<ItemCache>(
             root,
             getVolumeName(),
-            std::make_unique<SimpleCNIDMapper>(getVolumeName()),
-            //std::make_unique<LMDBCNIDMapper>(root, getVolumeName()),
+            std::make_unique<LMDBCNIDMapper>(root, getVolumeName()),
             static_cast<ItemFactory*>(this)
         );
 

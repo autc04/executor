@@ -36,10 +36,13 @@ public:
     virtual std::optional<Mapping> lookupPosixName(CNID parID, const fs::path& posixName) override;
     virtual CNID createRecord(CNID parID, const fs::path& posixName,
         const FileIdentity& identity, bool isDir) override;
+    virtual CNID getOrCreateChild(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir) override;
     virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) override;
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) override;
     virtual void deleteCNID(CNID cnid) override;
-    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) override;
+    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
+        const fs::path& newPosixName) override;
 };
 
 }

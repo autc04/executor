@@ -3,7 +3,6 @@
 #include "filestamp.h"
 #include <rsys/filesystem.h>
 #include <util/macstrings.h>
-#include <functional>
 #include <optional>
 #include <vector>
 
@@ -44,11 +43,14 @@ public:
         bool isDir;
     };
 
-    // One member of a name group: the entry to name and the filename its Mac
-    // name is derived from (MacBinary drops a trailing ".bin").
+    // One member of a name group: the entry to name, the binding the nameSource
+    // was derived from (so a name request can be dropped if another instance
+    // renamed that binding after the listing), and the filename its Mac name is
+    // derived from (MacBinary drops a trailing ".bin").
     struct NameRequest
     {
         CNID cnid;
+        fs::path posixName;
         fs::path nameSource;
     };
 
@@ -75,6 +77,15 @@ public:
     virtual CNID createRecord(CNID parID, const fs::path& posixName,
         const FileIdentity& identity, bool isDir) = 0;
 
+    // CNIDResolve as one atomic read-modify-write: the CNID for the child of
+    // `parID` stored under `posixName`, creating a record when there is none.
+    // The same identity and kind reuse the CNID; any other file at that name is
+    // a different item, so the old record is dropped and a fresh CNID assigned.
+    // No name is decided. This is one transaction so two instances cannot mint
+    // two CNIDs for one binding.
+    virtual CNID getOrCreateChild(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir) = 0;
+
     // The child of `parID` whose decided Mac name is `macName` (case-folded), or
     // nothing.
     virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) = 0;
@@ -85,7 +96,11 @@ public:
     virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) = 0;
 
     virtual void deleteCNID(CNID cnid) = 0;
-    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) = 0;
+    // Re-home a binding. The caller has already performed the host rename and
+    // passes the resulting host name; this is a pure mapper update, so no host
+    // I/O runs inside the transaction.
+    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
+        const fs::path& newPosixName) = 0;
 };
 
 }
