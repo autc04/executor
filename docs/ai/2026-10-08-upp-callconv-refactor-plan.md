@@ -1,7 +1,7 @@
 # UPP<> and calling-convention refactor (plan)
 
 > Date: 2026-10-08
-> Status: U1–U3 are done.  U4–U5 remain.
+> Status: U1–U4 are done.  U5 remains.
 
 The goal: make the *generator* the single source of truth for calling
 conventions by generating **one marshaller set per signature**, and using that
@@ -489,7 +489,7 @@ the two places noted above).  Commit after each step.
   functions and the per-signature marshallers.  `ReferenceEntries_<module>`
   simply odr-uses every wrapper object in the module.
 
-- **U4 — replace `invokeUPP`'s delegating body and delete the invokers.**
+- **U4 — replace `invokeUPP`'s delegating body and delete the invokers (done).**
   Generate the straight-line host→guest body, mirroring `callto68K` exactly:
   Pascal pushes the return slot then the arguments, saves/restores D1–D7/A0–A6
   around `execute68K` and pops the result; Register applies `ArgConv::set` in
@@ -686,6 +686,38 @@ per-trap functions are replaced by per-trap lambdas (with debug info); the
 stripped binary and the library shrink.  U4 removes the `callto68K`
 instantiations and is where the remaining invoker template code goes.
 
+## U4 — done
+
+`invokeUPP` is now straight-line generated code:
+
+- Pascal pushes a value-initialised return slot (`std::decay_t<Ret>()`, which
+  also handles `UPP` and pointer return types), pushes the arguments in
+  declaration order, wraps `execute68K` in the D1–D7/A0–A6 save/restore and pops
+  the result;
+- Register applies `ArgConv::set` in declaration order, executes, applies
+  `afterCall` in reverse order and reads the return with `RetConv()`.  As before,
+  `invokeUPP` ignores the register extras (they are a guest→host concern);
+- CCall is not emitted: no CCall UPP is invoked host→guest.
+
+Deleted: `callto68K` (`Invoker`, `InvokerRec`), `callfrom68K` (`Invoker`,
+`PascalInvoker`, `RegInvoker`, `Reverse`, `readCArgsAndCall`) and
+`callfromPPC::Invoker`/`InvokerRet`.  `callfrom68K` and `callfromPPC::Invoker`
+had been unused since U2/U3, so removing them changes no instantiation; the
+remaining invoker instantiation was `callto68K`.  `readCArg` moved to
+`callconv` and is used by the generated CCall marshaller.  `ParameterPasser`,
+`stack`, the descriptors and extras stay.
+
+Validation: 138/138; Mac suite 90 passed + the two known `FileTest` xfails;
+`--logtraps` still produces the 2880-name sequence; `-G CIncludes` still has
+only the five U1 hunks.
+
+Measurements (Debug, `ninja clean && ninja`): wall 44.1 s → 42.5 s; `executor`
+71,338,176 → 70,167,560; stripped 10,672,104 → 10,631,144; `libromlib.a`
+124,782,884 → 122,954,962.  The stripped binary is almost flat because the
+straight-line `invokeUPP` bodies replace the template-instantiated ones; the
+debug/library drop is the removed `callto68K` instantiations and their debug
+info.
+
 ## Risks and open questions
 
 - **Per-trap entry lambdas.**  Each wrapper gets one tiny non-capturing lambda
@@ -737,10 +769,10 @@ instantiations and is where the remaining invoker template code goes.
   marshaller leaving `A0` alone after the native call.
 - **Compile time / binary size.**  The generated marshallers are per signature
   (817 68K keys, 800 PPC signatures) instead of per trap (~2000).  U2 was
-  additive (+5.0 MB debug / +1.6 MB stripped); U3 is flat in debug and −0.5 MB
-  stripped because the removed per-trap entries are replaced by small lambdas.
-  U4 removes the `callto68K` instantiations and the remaining invoker code.
-  Measure every sub-step; a modest net win is a legitimate stopping point.
+  additive (+5.0 MB debug / +1.6 MB stripped); U3 was flat in debug and −0.5 MB
+  stripped; U4 removed the `callto68K` instantiations (wall 42.5 s, debug
+  −1.2 MB, library −1.8 MB).  U5 only removes now-unreachable logging helpers.
+  A modest net win is a legitimate stopping point.
 
 ## Not in scope
 
