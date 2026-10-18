@@ -142,8 +142,8 @@ the YAML.  They fall into these categories:
 | `mbdfprocp` | menu bar definition function (MBDF) | declare **`MenuBarDefUPP`** in `MenuMgr.yaml` |
 | `listprocp` | list definition procedure (LDEF) | declare **`ListDefUPP`** in `ListMgr.yaml` |
 | `ctlfuncp` | control definition function (CDEF) | declare **`ControlDefUPP`** in `ControlMgr.yaml` |
-| `snthfp` | `Boolean(SndChannelPtr, SndCommand*, ModifierStubPtr)` (sound `snth`) | declare in `SoundMgr.yaml`, together with an opaque `ModifierStub`; **name still to choose** |
-| `dcmpProcPtr` | `void(Ptr, Ptr, Ptr, Size)` (`dcmp` resource) | declare in `ResourceMgr.yaml`; **name still to choose** |
+| `snthfp` | `Boolean(SndChannelPtr, SndCommand*, ModifierStubPtr)` (sound `snth`) | declare as **`SndModifierUPP`** in `SoundMgr.yaml`, together with an opaque `ModifierStub` struct (both `only-for: Executor`) |
+| `dcmpProcPtr` | `void(Ptr, Ptr, Ptr, Size)` (`dcmp` resource) | declare in `ResourceMgr.yaml` as `ResourceDecompressionUPP` |
 
 The four def-proc names are canonical Apple API types (from the Universal
 Interfaces: `MenuDefUPP`/`MenuDefProcPtr` in `Menus.h`, `MenuBarDefUPP` in
@@ -151,9 +151,8 @@ Interfaces: `MenuDefUPP`/`MenuDefProcPtr` in `Menus.h`, `MenuBarDefUPP` in
 no `MDEFUPP`/`MBDFUPP`/`LDEFUPP`/`CDEFUPP` spelling).  Because they are real API
 types they belong in the normal API YAMLs and **will also appear in the
 CIncludes output**; that change is intended.  `snthfp`/`dcmpProcPtr` have no
-canonical Apple name and are Executor-internal (`only-for: Executor`); we may
-want to rename both before landing them, but their homes (`SoundMgr.yaml`,
-`ResourceMgr.yaml`) are settled.
+canonical Apple name and are Executor-internal (`only-for: Executor`); they
+become `SndModifierUPP` and `ResourceDecompressionUPP`.
 
 `prinitprocp`/`cmpf` are worth noting separately: their marshallers are covered
 by trap signatures, so their local aliases can remain (they are already named
@@ -195,7 +194,7 @@ numeric-typedef equivalences were confirmed with `__is_same` on this host
 
 **7 need the U1 declarations above:** `cdef0`, `cdef16`, `cdef1008` (→
 `ControlDefUPP`), `ldef0` (→ `ListDefUPP`), `mdef0` (→ `MenuDefUPP`), `mbdf0`
-(→ `MenuBarDefUPP`), `snth5` (→ the `snthfp` replacement).  `cdef1008` spells
+(→ `MenuBarDefUPP`), `snth5` (→ `SndModifierUPP`).  `cdef1008` spells
 `int16_t`/`int32_t` where `cdef0` spells `INTEGER`/`LONGINT` — identical types,
 so one `ControlDefUPP` covers both.
 
@@ -215,7 +214,7 @@ exactly, modulo the numeric typedefs.
 
 | object | resolution |
 |---|---|
-| `unixmount` | new `defs/Executor.yaml` funptr for `OSErr(CInfoPBRec *)` (**name TBD**).  This is a genuine Executor extension API — the no-op magic entrypoint that only the prebuilt `Browser` binary needs (`src/init.cpp:212-223`), passed to `guest_cast<LONGINT>`. |
+| `unixmount` | declare the API **function** `ExecutorUnixMount` in the new `defs/Executor.yaml`, with the same `m68k-inline` sequence as `packages/go/go.h` (`[0x2078, 0x0058, 0x2068, 0x0020, 0x4E90]`) and `executor_marshaling: true`.  This is a genuine Executor extension API: a normal API declaration that is also generated for CIncludes, not a trap and not a CFM export.  `PASCAL_FUNCTION_PTR(unixmount)` stays — the declaration and the macro object are separate entities, wired together only by the inline opcodes and the hand-written jump-table initialization. |
 | `ROMlib_filebox` | **is** a `UserItemUPP`: `DialogPeek`/`WindowPeek`/`DialogPtr`/`WindowPtr`/`GrafPtr` were all interconvertible in the classic API; the type distinction is modern-C++ spelling of one contract.  Take `DialogPtr` and move the `DialogPeek` cast inside the function. |
 | `ROMlib_dotext` | new Executor-only funptr in `TextEdit.yaml`, plus the convention fix below. |
 | `PrGetPic`, `PrPutPic`, `donotPrGetPic`, `donotPrPutPic` | change `void(Ptr, INTEGER)` to the public API's `void(void*, INTEGER)` / `void(const void*, INTEGER)` (`QDGetPicUPP` / `QDPutPicUPP`).  The old API used `Ptr` for the same semantics; `Ptr` = `char*` is what differed, not the intent. |
@@ -224,8 +223,14 @@ Two details:
 
 - **`unixmount`'s home.**  `defs/*.yaml` is globbed by `make-multiverse.rb`, so a
   new `defs/Executor.yaml` is picked up automatically — no module registration
-  and no build-system change.  The entry should still be `only-for: Executor`,
-  which keeps the whole file out of the CIncludes generator by construction.
+  and no build-system change.  Declare it as a plain `- function:`: no `trap:`,
+  no `executor:`, no `only-for:` (it belongs in the CIncludes output too, like
+  any other API declaration).  The Executor generator then emits only a
+  prototype; the guest entry remains the manually installed
+  `PASCAL_FUNCTION_PTR(unixmount)` object.  Mark it `executor_marshaling: true`
+  so its `(Sig, CC)` is added to the U2 overload set even though no wrapper is
+  generated.  That is what makes `OSErr(CInfoPBRec *)` available to the
+  existing macro object.
 - **`dotext`.**  The `FIXME`, the commented-out implementation below it and
   `ROMlib_call_TEDoText` (`teMisc.cpp:599-630`) all agree the real ABI is *TE
   record in A3, the three `INTEGER`s in D3/D4/D7, result in D0*:
@@ -249,15 +254,16 @@ two `#if 0` blocks in `prPrinting.cpp`'s `ourinit()`; the live code assigns
 Each step is validated with a full build (all front-ends, both test suites), a
 `ninja clean && time ninja` in `build/` with debug and stripped binary sizes, a
 `--logtraps` structure diff, and a `-G CIncludes` diff (only U1 changes it, in
-the two places noted below).  Commit after each step.
+the three places noted below).  Commit after each step.
 
 - **U1 — declarations and aliases.**  Split into six commits, in this order.  None
   of them touch the template machinery.  Verify after each: builds, both suites,
-  CIncludes diff.  Only U1d (MPW prototypes re-spelled `LONGINT` → `int32_t`,
-  same type) and U1f (the four new API typedefs) should move it at all.
+  CIncludes diff.  U1c (the new `ExecutorUnixMount` inline), U1d (MPW prototypes
+  re-spelled `LONGINT` → `int32_t`, same type) and U1f (the four new API
+  typedefs) should move it.
   - **U1a — `dotext` fix.**  Add an Executor-only `funptr` in `TextEdit.yaml`
     for `INTEGER(TEPtr, INTEGER, INTEGER, INTEGER)` with
-    `Register<D0(A3, D3, D4, D7)>` (proposed name `TEDoTextUPP`); switch
+    `Register<D0(A3, D3, D4, D7)>` (`TEDoTextUPP`); switch
     `ROMlib_dotext` to `REGISTER_FUNCTION_PTR`/`EXTERN_REGISTER_FUNCTION_PTR`.
     Also make `C_ROMlib_dotext` a single-exit function that ends with
     `EM_A0 = US_TO_SYN68K(qdGlobals().thePort);` before returning its result.
@@ -270,11 +276,17 @@ the two places noted below).  Commit after each step.
     The only guest-visible behaviour change in U1 — exercise it with an app that
     really edits text, not just the self-tests.
   - **U1b — Sound Manager API.**  Add an opaque `ModifierStub` struct to
-    `SoundMgr.yaml`, then the `snthfp` replacement
+    `SoundMgr.yaml` (Executor-only — it is documented in Inside Macintosh but
+    absent from Apple's headers), then `SndModifierUPP`
     (`Boolean(SndChannelPtr, SndCommand*, ModifierStub*)`, `only-for:
-    Executor`, name TBD) and use it for `snth5`.
-  - **U1c — Executor extension API.**  New `defs/Executor.yaml` with
-    `unixmount`'s `OSErr(CInfoPBRec*)` funptr (name TBD).
+    Executor`) and use it for `snth5`.
+  - **U1c — Executor extension API.**  New `defs/Executor.yaml` declaring
+    `ExecutorUnixMount` as a plain function with the `go.h` call sequence
+    (`m68k-inline: [0x2078, 0x0058, 0x2068, 0x0020, 0x4E90]`) and
+    `executor_marshaling: true` (a new key, consumed in U2) — no `trap:`, no
+    `executor:`, no `only-for:`.
+    No source change: `C_unixmount`, `PASCAL_FUNCTION_PTR(unixmount)` and the
+    manual table entry in `init.cpp` stay as they are.
   - **U1d — `mpw` type cleanup.**  Use `int32_t` — not `int`, not `LONGINT` —
     for the exported `C_mpw*` signatures and for the matching `MPW*ProcPtr`
     types in `MPW.yaml`.  Internal helpers (`getEntry` and locals) may stay
@@ -285,17 +297,25 @@ the two places noted below).  Commit after each step.
     `PrGetPic`/`PrPutPic`/`donotPrGetPic`/`donotPrPutPic` take
     `void*`/`const void*` to match `QDGetPicUPP`/`QDPutPicUPP`.
   - **U1f — remaining types and aliases.**  Add `MenuDefUPP`, `MenuBarDefUPP`,
-    `ListDefUPP`, `ControlDefUPP` to the API YAMLs; add the `dcmpProcPtr`
-    replacement (`void(Ptr, Ptr, Ptr, Size)`, `only-for: Executor`, name TBD) to
-    `ResourceMgr.yaml` — it is the `dcmp` resource decompressor used by
-    `resOpen.cpp`, its signature exists nowhere else; replace
+    `ListDefUPP`, `ControlDefUPP` to the API YAMLs.  Add
+    `ResourceDecompressionUPP` (`void(Ptr, Ptr, Ptr, Size)`, `only-for:
+    Executor`) to `ResourceMgr.yaml` — it is the `dcmp` resource decompressor
+    used by `resOpen.cpp`, and its signature exists nowhere else.  Replace
     `pritemprocp`/`useritemp`/`modalprocp` with
     `UserItemUPP`/`UserItemUPP`/`ModalFilterUPP`.  Keep `prinitprocp`/`cmpf`
     (already covered by trap signatures).
-- **U2 — emit the two overload sets as a behaviour-preserving seam.**  Generate,
-  per distinct `(Sig, CC)`, an `invokeUPP` and a `createCallbackUPP` overload
-  whose bodies **delegate to the existing `callto68K`/`callfrom68K`**.  Switch
-  `UPP<>::operator()` and `WrappedFunction<>::init()` to them.  Behaviour
+- **U2 — emit the two overload sets as a behaviour-preserving seam.**  Generate an
+  `invokeUPP` and a `createCallbackUPP` overload for every distinct `(Sig, CC)`
+  in the union of (a) the signatures the generator already emits wrappers for,
+  (b) every `funptr:` type, and (c) every `function:` marked
+  `executor_marshaling: true`.  The bodies **delegate to the existing
+  `callto68K`/`callfrom68K`**.  (c) is the escape hatch for a declaration that
+  produces no wrapper but still needs a marshaller; `ExecutorUnixMount` is the
+  only user, and it provides `OSErr(CInfoPBRec *)` to the existing
+  `PASCAL_FUNCTION_PTR(unixmount)`.  Do not widen this to every declared
+  function: many `- function:` items are CIncludes-only prototypes with no
+  Executor implementation, and their signatures would only add dead overloads.
+  Switch `UPP<>::operator()` and `WrappedFunction<>::init()` to them.  Behaviour
   byte-identical; this is the seam that lets U3 delete the invokers with no
   other change.
 - **U3 — move the marshalling bodies in and delete the invokers.**  Replace the
