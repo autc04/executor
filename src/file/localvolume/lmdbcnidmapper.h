@@ -66,6 +66,12 @@ public:
     LMDBCNIDMapper(fs::path root, mac_string volumeName);
     ~LMDBCNIDMapper();
 
+    // Readable, deterministic directory name for a volume root: "root" for
+    // "/", "drive-C" for "C:/", and "path-..." for anything else. The config
+    // DB stores the canonical root, so a name collision is detected rather than
+    // silently mixing volumes.
+    static fs::path volumeDirectoryName(const fs::path& root);
+
     virtual std::vector<Mapping> mapDirectoryContents(CNID dirID,
         std::vector<DirEntry> entries) override;
     virtual std::optional<Mapping> lookupCNID(CNID cnid) override;

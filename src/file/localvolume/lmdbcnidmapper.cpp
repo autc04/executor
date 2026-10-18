@@ -4,7 +4,7 @@
 #include <rsys/paths.h>
 
 #include <algorithm>
-#include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <set>
@@ -111,24 +111,6 @@ mac_string foldName(mac_string_view name)
     return folded;
 }
 
-// A stable, deterministic per-volume directory name: FNV-1a over the root path.
-// The root itself is stored in the config DB and checked on open, so a hash
-// collision is detected rather than silently mixing two volumes.
-std::string volumeKey(const fs::path& root)
-{
-    std::uint64_t h = 1469598103934665603ull;
-    for(unsigned char c : root.string())
-    {
-        h ^= c;
-        h *= 1099511628211ull;
-    }
-
-    char buffer[17];
-    std::snprintf(buffer, sizeof buffer, "%016llx",
-        static_cast<unsigned long long>(h));
-    return buffer;
-}
-
 Bytes encodeRecord(const LMDBCNIDMapper::StoredMapping& rec)
 {
     Bytes out;
@@ -233,11 +215,55 @@ auto growMapIfNecessary(lmdb::env& env, const F& f) -> decltype(f())
 }
 }
 
+fs::path LMDBCNIDMapper::volumeDirectoryName(const fs::path& root)
+{
+    std::string name = root.string();
+
+    // Normalize away trailing separators and a Windows trailing colon:
+    // "/" -> "", "C:/" -> "C", "C:\\" -> "C".
+    while(!name.empty() && (name.back() == '/' || name.back() == '\\'))
+        name.pop_back();
+    if(!name.empty() && name.back() == ':')
+        name.pop_back();
+
+    if(name.empty())
+        return "root";
+
+    // A bare drive letter is a Windows drive root.
+    if(name.size() == 1 && std::isalpha(static_cast<unsigned char>(name[0])))
+        return fs::path(std::string("drive-")
+            + static_cast<char>(std::toupper(static_cast<unsigned char>(name[0]))));
+
+    // Anything else: a readable, separator-free name. The stored root check
+    // catches the (currently unreachable) case of two roots sanitizing alike.
+    std::string readable;
+    bool pendingDash = false;
+    for(char c : name)
+    {
+        if(c == '/' || c == '\\' || c == ':')
+        {
+            pendingDash = !readable.empty();
+            continue;
+        }
+
+        if(pendingDash)
+        {
+            readable.push_back('-');
+            pendingDash = false;
+        }
+        readable.push_back(c);
+    }
+
+    if(readable.empty())
+        return "root";
+    return fs::path("path-" + readable);
+}
+
 LMDBCNIDMapper::LMDBCNIDMapper(fs::path root, mac_string volumeName)
     : env_(lmdb::env::create())
 {
     // One environment per volume, under the configured directory-map folder.
-    const fs::path envPath = ROMlib_DirectoryMap / ("v-" + volumeKey(root));
+    const fs::path envPath = ROMlib_DirectoryMap / volumeDirectoryName(root);
     fs::create_directories(envPath);
 
     env_.set_max_dbs(4);

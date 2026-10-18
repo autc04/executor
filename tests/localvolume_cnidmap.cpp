@@ -75,6 +75,18 @@ protected:
     }
 };
 
+TEST(CNIDMapNaming, ReadableVolumeDirectories)
+{
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("/").string(), "root");
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("C:/").string(), "drive-C");
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("c:\\").string(), "drive-C");
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("D:/").string(), "drive-D");
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("/home/alice/data").string(),
+        "path-home-alice-data");
+    EXPECT_EQ(LMDBCNIDMapper::volumeDirectoryName("C:/Users/Alice").string(),
+        "path-C-Users-Alice");
+}
+
 TEST_F(CNIDMapFixture, RecordsAndNamesSurviveReopen)
 {
     CNID dir = 0;

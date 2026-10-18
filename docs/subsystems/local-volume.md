@@ -34,9 +34,9 @@ Executor sessions. A record stores `parID`, `posixName`, an optional `Mac name`,
 the `(dev, ino)` identity, and the kind; the host path is derived from the parent
 chain, not stored, and identity is a verification value rather than a lookup key.
 There is one LMDB environment per volume under `$ExecutorDirectoryMap` (default
-`~/.executor/cnidmap1`), named by a hash of the volume root. `SimpleCNIDMapper`
-implements the same interface in memory; it is the reference/alternative backend,
-not a runtime fallback.
+`~/.executor/cnidmap1`), named `root` for `/`, `drive-C` for a Windows `C:/`, and
+`path-...` for any other root. `SimpleCNIDMapper` implements the same interface
+in memory; it is the reference/alternative backend, not a runtime fallback.
 
 **Fork storage formats**:
 - **Plain**: data fork is the raw file; resource fork is stored in a `._filename`
