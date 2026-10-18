@@ -1,70 +1,176 @@
 # UPP<> and calling-convention refactor (plan)
 
 > Date: 2026-10-08
-> Status: **designed, not started.**
+> Status: U1 is done.  U2 is partly landed: the generator already emits an
+> `invokeUPP`/`createCallbackUPP` pair for some signatures and the two
+> consumers use it.  The remaining work is described under U2–U5.
 
 The goal: make the *generator* the single source of truth for calling
-conventions, so the hand-written invocation machinery in
-`src/base/functions.impl.h` can go, without giving up `UPP<>`'s role as the
-host-side representation of a guest procedure pointer.
+conventions by generating **one marshaller set per signature**, and using that
+set from all three places that marshal today: the trap entrypoints,
+`UPP<>::operator()`, and the `*_FUNCTION_PTR` callbacks.  The hand-written
+invocation machinery in `src/base/functions.impl.h` then goes, without giving
+up `UPP<>`'s role as the host-side representation of a guest procedure pointer.
 
 ## Decision
 
-`UPP<F, CC>` **remains a template**.  Only the calling-convention functionality
-moves out, into **two overload sets emitted by multiversal**:
+`UPP<F, CC>` **remains a template**.  For every signature in the generated set
+(below) the generator emits four functions:
 
 ```cpp
-// host call -> guest (what UPP<>::operator() does today)
-Ret  invokeUPP(const UPP<Ret(Args...), CC>&, Args...);
+// guest -> host, 68K: decode the arguments, log, call f, log, encode the
+// result and return the guest return address.  Used by the trap entrypoints
+// and, through createCallbackUPP, by *_FUNCTION_PTR callbacks.
+syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, Ret (*f)(Args...),
+                            traps::Entrypoint* ep);
 
-// native function -> guest callback (what WrappedFunction::init does today)
+// guest -> host, PowerPC.  Used by the trap entrypoints.
+uint32_t invokeFromPPC(PowerCore& cpu, Ret (*f)(Args...),
+                       traps::Entrypoint* ep);
+
+// host -> guest, 68K.  Used by UPP<>::operator().
+Ret invokeUPP(const UPP<Ret(Args...), CC>& f, Args... args);
+
+// *_FUNCTION_PTR adapter: installs a 68K callback that checks breakpoints and
+// then calls invokeFrom68K.  It contains no marshalling logic of its own.
 void createCallbackUPP(Ret (*f)(Args...), UPP<Ret(Args...), CC>& out,
                        traps::Entrypoint* ep);
 ```
 
-Both are keyed on the **UPP type**, which already carries both `Sig` and `CC`,
-and are **deduplicated by type identity, not by name**.  Names are only aliases
-for `UPP<...>`; two names with the same signature are the same type and must map
-to the same overload.
+All four are keyed on the **emitted C++ type**, never on a name:
+
+- `invokeFrom68K`, `invokeUPP` and `createCallbackUPP` are keyed on
+  `(Sig, CC)`;
+- `invokeFromPPC` is keyed on `Sig` alone, because the PowerPC ABI reads the
+  same argument list regardless of the 68K register/stack descriptors in `CC`.
+
+Names are only aliases for `UPP<...>`; two names with the same signature are
+the same type and must map to the same overload.  Type identity, not spelling,
+is what deduplicates the generated definitions.
+
+`GeneratedEntrypoint` is not a template and must store one 68K and one PPC
+entry for every trap, so it stores the **entry** shape rather than the
+signature-typed marshaller:
+
+```cpp
+// Uniform types stored by traps::GeneratedEntrypoint.
+using Entry68KFn = syn68k_addr_t (*)(syn68k_addr_t, traps::Entrypoint*);
+using EntryPPCFn = uint32_t (*)(PowerCore&, traps::Entrypoint*);
+```
+
+Each generated wrapper class already exists per trap, so its constructor passes
+a non-capturing lambda that names its own implementation and calls the typed
+marshaller:
+
+```cpp
+// Generated once per trap.
+Wrapper_Open::Wrapper_Open()
+    : traps::GeneratedEntrypoint("Open", "InterfaceLib", 0xA000,
+        [](syn68k_addr_t addr, traps::Entrypoint* ep) -> syn68k_addr_t
+        {
+            return invokeFrom68K(addr, &C_Open, ep);
+        },
+        [](PowerCore& cpu, traps::Entrypoint* ep) -> uint32_t
+        {
+            return invokeFromPPC(cpu, &C_Open, ep);
+        })
+{}
+```
+
+The lambdas are non-capturing; `&C_Open` is a namespace-scope function, not a
+capture.  The implementation pointer therefore never leaves its typed form: the
+compiler checks it against the marshaller's parameter, and there is no
+`void*`/`reinterpret_cast` bridge and no cross-translation-unit declaration for
+a per-signature entry thunk.  The marshaller itself is still emitted once per
+signature; only the one-line call site is per trap.
+
+Raw 68K handlers use the same shape, through one hand-written function:
+
+```cpp
+syn68k_addr_t invokeFromRaw68K(syn68k_addr_t addr,
+                               syn68k_addr_t (*f)(syn68k_addr_t),
+                               traps::Entrypoint* ep);
+```
+
+A raw wrapper's lambda passes `&RAW_<name>` directly and `invokeFromRaw68K`
+reproduces the untyped register/stack dump.
 
 Then:
 
-- `UPP<>::operator()` becomes a one-line forwarder to `invokeUPP`.
+- `GeneratedEntrypoint` stores the 68K/PPC entry pointers; `handle68K`/`handlePPC`
+  do the breakpoint check and call them.  For a typed trap each entry is a
+  non-capturing lambda that calls the signature's marshaller with its own
+  implementation.  The generated per-trap `entry_*` functions disappear for
+  everything except the PPC-only variant adapters (which forward to another
+  wrapper and never cross the guest boundary).
+- `UPP<>::operator()` forwards to `invokeUPP`.
 - The `*_FUNCTION_PTR` macro family **stays**, providing the immediate wrapper
-  class (today `WrappedFunction<>`); it calls `createCallbackUPP`.
+  class (today `WrappedFunction<>`); its `init()` calls `createCallbackUPP`.
 - The `callconv` **meta-language declarations stay** in `functions.h`/`impl.h`
-  (the vocabulary the YAML and the generated code speak); most of the
-  *implementation* — the invokers — goes.
+  (the vocabulary the YAML and the generated marshallers speak); the invokers go.
+
+### The signature set
+
+Marshallers are emitted for every distinct signature in the union of:
+
+1. every entrypoint the generator emits (`:pascal`, `:register`, `:sub`,
+   `:notrap`) — every signature that can be called from guest code;
+2. every `funptr:` type — the callback surface;
+3. every function declaration marked `executor_marshaling: true` — the escape
+   hatch for a declaration that produces no wrapper but still needs a
+   marshaller.  `ExecutorUnixMount` is the only user.
+
+`Raw` entries have no typed signature and are not in the set.  PPC-only
+`variants` forward to another generated wrapper; they are not in the set
+either.
+
+All four functions are emitted for every key in the set.  The set is defined by
+what the generator knows about, not by which consumer happens to need a
+particular shape; a missing overload is then a hard compile error naming the
+UPP type at the call site, which is the property that keeps the macros and
+hand-written declarations honest.
 
 ## Why this shape
 
-- **Signature identity is automatic.** Two names for the same signature are the
-  same `UPP<...>` template-id, so they are the same type with no aliasing or
-  conversion machinery.  This is load-bearing: `QDRectUPP` and `QDOvalUPP` are
-  both `UPP<void(GrafVerb, const Rect *)>`, and `qHooks.cpp` compares a stored
-  `QDRectUPP` against `&StdRect` and a `QDOvalUPP` against `&StdOval`.  A
-  class-per-name design would need explicit aliasing or matcher machinery to
+- **Signature identity is automatic.**  Two names for the same signature are
+  the same `UPP<...>` template-id, so they are the same type with no aliasing
+  or conversion machinery.  This is load-bearing: `QDRectUPP` and `QDOvalUPP`
+  are both `UPP<void(GrafVerb, const Rect *)>`, and `qHooks.cpp` compares a
+  stored `QDRectUPP` against `&StdRect` and a `QDOvalUPP` against `&StdOval`.
+  A class-per-name design would need explicit aliasing or matcher machinery to
   preserve that.
-- **Every type is spellable.** A generated wrapper's `operator&` can return
+- **Every type is spellable.**  A generated wrapper's `operator&` can return
   `UPP<Sig, cc>` for any trap, so no type has to be minted for signature-only
   types and none of the 64 `&Trap` sites change.
-- **The convention is part of the overload's key.** The calling convention is not
-  in the parameter list (`DisposeHandle` is `void(Handle)` as Pascal and
+- **The convention is part of the overload's key.**  The calling convention is
+  not in the parameter list (`DisposeHandle` is `void(Handle)` as Pascal and
   `Register<void(A0), ReturnMemErr<D0>>` as a trap), but it is part of
   `UPP<..., CC>`, so the two overloads do not collide.  Overloading on the
   parameter list alone would conflate them.
-- **Overloads are preferable to template specialization here.** A missing
+- **Overloads are preferable to template specialization here.**  A missing
   overload is a `no matching function` naming the UPP type; a missing
-  specialization is an `incomplete type` error, or ill-formed with no diagnostic
-  if a primary template exists.  The two directions (host→guest and
-  guest→native) also stay independent overload sets instead of one specialization
-  carrying both.
-- **`createCallbackUPP` needs no witness argument.** Its output parameter is
-  typed `UPP<...>&`, which already carries `CC`; a bare `Ret (*)(Args...)`
-  parameter could not, so a witness argument would otherwise be required.  The
-  `Entrypoint*` is not part of the type key: it carries the per-object state
-  (`name` and the breakpoint check) that a keyed-on-`(Sig, CC)` function
-  otherwise loses.
+  specialization is an `incomplete type` error, or ill-formed with no
+  diagnostic if a primary template exists.  The two directions (host→guest and
+  guest→native) also stay independent overload sets instead of one
+  specialization carrying both.  `createCallbackUPP` and `invokeUPP` take the
+  `UPP<...>`/typed function pointer directly, so no witness argument is needed
+  to carry `CC`.
+- **One marshaller per signature, not per trap.**  The marshalling body is
+  generated once per signature.  The per-trap data that remains at runtime is
+  the `Entrypoint*`, which carries the name and the breakpoint check; the
+  implementation is named in the per-trap one-line lambda.  Logging therefore
+  does not multiply the generated code; it is the same data-driven
+  `logging::logTrapCallData` / per-type printer scheme the generated
+  entrypoints already use.
+- **No type erasure between the wrapper and the marshaller.**  The generated
+  wrapper's call site names its implementation directly, so the function
+  pointer is checked by the compiler and never cast.  Sharing one entry per
+  signature would require `void*` + `reinterpret_cast` plus a declaration in
+  every mentioning module; the per-trap lambda costs one tiny function per trap
+  and removes both.
+- **`createCallbackUPP` is a thin adapter.**  It only installs a callback,
+  performs the breakpoint check and calls `invokeFrom68K`; it is usable for any
+  signature in the set and is not coupled to the `*_FUNCTION_PTR` family.
 
 ## Background
 
@@ -90,27 +196,35 @@ All in `src/base/functions.*` unless noted:
 |---|---|---|
 | `UPP<>` | `functions.h` | **stays** (thin; `operator()` forwards to `invokeUPP`) |
 | convention tags (`Pascal`, `CCall`, `Raw`, `Register<T, Extras...>`) | `functions.h` | **stay** (meta-language) |
-| descriptors `D<n>`, `A<n>`, `D0HighWord`, `D0LowWord`, `Out<>`, `InOut<>`, `TrapBit<>` | `functions.impl.h` | **stay** (generated entry code uses them) |
+| descriptors `D<n>`, `A<n>`, `D0HighWord`, `D0LowWord`, `Out<>`, `InOut<>`, `TrapBit<>` | `functions.impl.h` | **stay** (the generated marshallers use them) |
 | extras `ReturnMemErr<>`, `CCFromD0`, `ClearD0`, `SaveA1D1D2`, `MoveA1ToA0` | `functions.impl.h` | **stay** |
-| `callconv::stack::push/pop` | `functions.impl.h` | **stay** (generated Pascal entries) |
+| `callconv::stack::push/pop` | `functions.impl.h` | **stay** (the generated marshallers use them) |
+| `readCArg` | `functions.impl.h` | **stays**, moves out of `callfrom68K` into `callconv` (shared primitive for CCall) |
 | `callfrom68K` (`Invoker`, `PascalInvoker`, `RegInvoker`, `readCArgsAndCall`) | `functions.impl.h` | **goes** |
 | `callto68K` (`Invoker`, `InvokerRec`) | `functions.impl.h` | **goes** |
-| `callfromPPC::Invoker` | `functions.impl.h` | **goes** (only reachable through `WrappedFunction::init()` when `libname` is non-null, and the `*_FUNCTION_PTR` macros never set it) |
-| `callfromPPC::ParameterPasser` | `functions.impl.h` | **stays** (generated PPC entries) |
+| `callfromPPC::Invoker` | `functions.impl.h` | **goes** (only reachable through the `libname` branch of `WrappedFunction::init()`, which no `*_FUNCTION_PTR` macro can reach) |
+| `callfromPPC::ParameterPasser` | `functions.impl.h` | **stays** (generated PPC marshallers) |
 | `UPP<>::operator()` | `functions.impl.h` | stays, becomes a forwarder |
 | `WrappedFunction<>` + `operator&` | `traps.h` | stays (the `*_FUNCTION_PTR` wrapper class) |
-| `WrappedFunction<>::init()` | `traps.impl.h` | stays, uses `createCallbackUPP` instead of the invokers |
+| `WrappedFunction<>::init()` | `traps.impl.h` | stays, calls `createCallbackUPP` and `invokeFromPPC` |
+| `LoggedFunction`, `makeLoggedFunction`, `makeLoggedFunction1` | `logging.h` | **go** (the marshallers log data-driven) |
+| `logTrapCall`, `logTrapValReturn`, `logTrapVoidReturn`, `logList` | `logging.h` | **go** with `LoggedFunction` (nothing else uses them) |
 | `PASCAL/REGISTER/CCALL_FUNCTION_PTR` (+ `EXTERN_`/`DEFINE_`) | `traps.h` | stays |
 
 ### Who uses what (verified)
 
 - `callto68K` is used **only** by `UPP<>::operator()`.
-- `callfrom68K` and `callfromPPC::Invoker` are used **only** by
-  `WrappedFunction<>::init()`.
-- The descriptors are used by both `callto68K`/`callfrom68K` and the **generated
-  entrypoints** (`build/src/trap_entries/*.cpp`: `callconv::D0 c0; x = c0;`,
-  `callconv::ReturnMemErr<D0>` in `extras`), so they are the shared primitive
-  layer and stay.
+- `callfrom68K` is used **only** by `WrappedFunction<>::init()` (through
+  `createCallbackUPP`).
+- `callfromPPC::Invoker` is used **only** by `WrappedFunction<>::init()`'s
+  `libname` branch.  Every `*_FUNCTION_PTR` macro passes only a name to the
+  `Entrypoint` constructor, so `libname` is null and the branch cannot run.
+- The descriptors are used by both directions of the old invokers and by the
+  **generated entrypoints** (`build/src/trap_entries/*.cpp`:
+  `callconv::D0 c0; x = c0;`, `callconv::ReturnMemErr<D0>` in `extras`), so
+  they are the shared primitive layer the generated marshallers also use.
+- `LoggedFunction` is used only by the callback paths.  The generated
+  entrypoints already log with `logTrapCallData`.
 
 So "marshal and call" is implemented **three times** today: the generated
 entrypoints, `callfrom68K`+`callfromPPC` (for `*_FUNCTION_PTR`) and `callto68K`
@@ -166,17 +280,17 @@ typedefs); naming them is optional tidiness.
 
 Every `PASCAL_`/`REGISTER_`/`CCALL_FUNCTION_PTR` expands to an explicit
 `template class WrappedFunction<decltype(C_NAME), &C_NAME[, CC]>`
-instantiation, so its `init()` body must compile.  In U2 that body calls
-`createCallbackUPP`, so the `(Sig, CC)` pair of **every** one of these 73 objects
-must have a declared UPP to overload on.  That is also the coverage check: the
-existing explicit instantiation turns a missing declaration into a build-time
-`no matching function` naming the offending object, so no separate test is
-needed.
+instantiation, so its `init()` body must compile.  That body calls
+`createCallbackUPP`, so the `(Sig, CC)` pair of **every** one of these 73
+objects must have a declared UPP to overload on.  That is also the coverage
+check: the existing explicit instantiation turns a missing declaration into a
+build-time `no matching function` naming the offending object, so no separate
+test is needed.
 
-Checked mechanically against the generated `build/src/api/*.h`, plus by hand for
-every typedef-spelling case (`Ptr` vs `char*`, `int` vs `int32_t`, `short` vs
-`int16_t`, `DialogPeek` vs `DialogPtr`, `DialogRecord*` vs `CInfoPBRec*`).  The
-numeric-typedef equivalences were confirmed with `__is_same` on this host
+Checked mechanically against the generated `build/src/api/*.h`, plus by hand
+for every typedef-spelling case (`Ptr` vs `char*`, `int` vs `int32_t`, `short`
+vs `int16_t`, `DialogPeek` vs `DialogPtr`, `DialogRecord*` vs `CInfoPBRec*`).
+The numeric-typedef equivalences were confirmed with `__is_same` on this host
 (`int`≡`int32_t`, `short`≡`int16_t`).
 
 **59 of the 73 are already covered** by an existing declared UPP:
@@ -212,7 +326,7 @@ aliases already exist in Executor's own generated headers — `MenuRef` in
 - `ControlDefUPP`: `SInt32(SInt16 varCode, ControlHandle theControl, ControlDefProcMessage message, SInt32 param)`
 
 These match the local `C_mdef0`/`C_mbdf0`/`C_ldef0`/`C_cdef0` argument lists
-exactly, modulo the numeric typedefs.  The ones is
+exactly, modulo the numeric typedefs.
 
 **The last 7 objects are resolved by signature updates or new declarations:**
 
@@ -232,7 +346,7 @@ Two details:
   any other API declaration).  The Executor generator then emits only a
   prototype; the guest entry remains the manually installed
   `PASCAL_FUNCTION_PTR(unixmount)` object.  Mark it `executor_marshaling: true`
-  so its `(Sig, CC)` is added to the U2 overload set even though no wrapper is
+  so its `(Sig, CC)` is added to the U2 set even though no wrapper is
   generated.  That is what makes `OSErr(CInfoPBRec *)` available to the
   existing macro object.
 - **`dotext`.**  The `FIXME`, the commented-out implementation below it and
@@ -258,13 +372,13 @@ two `#if 0` blocks in `prPrinting.cpp`'s `ourinit()`; the live code assigns
 Each step is validated with a full build (all front-ends, both test suites), a
 `ninja clean && time ninja` in `build/` with debug and stripped binary sizes, a
 `--logtraps` structure diff, and a `-G CIncludes` diff (only U1 changes it, in
-the two places noted below).  Commit after each step.
+the two places noted above).  Commit after each step.
 
-- **U1 — declarations and aliases.**  Split into six commits, in this order.  None
-  of them touch the template machinery.  Verify after each: builds, both suites,
-  CIncludes diff.  U1c (the new `ExecutorUnixMount` inline) and U1f (the four
-  new API typedefs) should move it; U1d does not, because the CIncludes
-  generator skips `MPW.h` outright.
+- **U1 — declarations and aliases.**  Split into six commits, in this order.
+  None of them touch the template machinery.  Verify after each: builds, both
+  suites, CIncludes diff.  U1c (the new `ExecutorUnixMount` inline) and U1f
+  (the four new API typedefs) should move it; U1d does not, because the
+  CIncludes generator skips `MPW.h` outright.
   - **U1a — `dotext` fix.**  Add an Executor-only `funptr` in `TextEdit.yaml`
     for `INTEGER(TEPtr, INTEGER, INTEGER, INTEGER)` with
     `Register<D0(A3, D3, D4, D7)>` (`TEDoTextUPP`); switch
@@ -272,10 +386,10 @@ the two places noted below).  Commit after each step.
     Also make `C_ROMlib_dotext` a single-exit function that ends with
     `EM_A0 = US_TO_SYN68K(qdGlobals().thePort);` before returning its result.
     That reproduces the `A0 = thePort` half of the `TEDoText` contract as a
-    deliberate hack instead of a new descriptor: the generated
-    `createCallbackUPP` thunk writes the result to `D0` after the call and does
-    not touch `A0`, so the write survives.  Note the side effect: the two native
-    (short-circuit) call paths also write `EM_A0`; neither reads `A0` back, and
+    deliberate hack instead of a new descriptor: the generated marshaller
+    writes the result to `D0` after the call and does not touch `A0`, so the
+    write survives.  Note the side effect: the two native (short-circuit) call
+    paths also write `EM_A0`; neither reads `A0` back, and
     `ROMlib_call_TEDoText` ignores it, so this is inert there.
     The only guest-visible behaviour change in U1 — exercise it with an app that
     really edits text, not just the self-tests.
@@ -309,45 +423,75 @@ the two places noted below).  Commit after each step.
     `pritemprocp`/`useritemp`/`modalprocp` with
     `UserItemUPP`/`UserItemUPP`/`ModalFilterUPP`.  Keep `prinitprocp`/`cmpf`
     (already covered by trap signatures).
-- **U2 — emit the two overload sets as a behaviour-preserving seam.**  Generate an
-  `invokeUPP` and a `createCallbackUPP` declaration for every distinct
-  `(Sig, CC)` in the union of (a) the signatures the generator already emits
-  wrappers for, (b) every `funptr:` type, and (c) every `function:` marked
-  `executor_marshaling: true`.  The bodies **delegate to the existing
-  `callto68K`/`callfrom68K`**.  (c) is the escape hatch for a declaration that
-  produces no wrapper but still needs a marshaller; `ExecutorUnixMount` is the
-  only user, and it provides `OSErr(CInfoPBRec *)` to the existing
-  `PASCAL_FUNCTION_PTR(unixmount)`.
 
-  Two restrictions keep the generated code proportional to what is used:
+- **U2 — emit the marshaller set.**  The generator emits all four functions for
+  every key in the set:
 
-  - `invokeUPP` is defined for (a), (b) and (c) except `callconv::CCall`.
-    `callto68K` has no CCall invoker and no CCall UPP is ever invoked, so a
-    call is a link error rather than dead code.
-  - `createCallbackUPP` is defined only for (b) and (c): those are the
-    signatures a `WrappedFunction` (a `*_FUNCTION_PTR` object) can use.  (a)'s
-    ~800 trap signatures are patched through `invokeUPP` but never installed as
-    native callbacks.
+  | function | key | body |
+  |---|---|---|
+  | `invokeFrom68K` | `(Sig, CC)` | current `gen_68k_entry` / `gen_68k_register_entry` / CCall invoker body, with `impl` replaced by `f(args...)` and the compile-time trap name replaced by `ep->name` |
+  | `invokeFromPPC` | `Sig` | current `gen_ppc_entry` body, same substitution |
+  | `invokeUPP` | `(Sig, CC)` | initially delegates to `callto68K::Invoker` (removed in U4) |
+  | `createCallbackUPP` | `(Sig, CC)` | installs the callback, checks breakpoints, calls `invokeFrom68K` |
 
-  Generation is two-pass: all headers first, so the callback set is complete
-  before definitions are written.  Do not widen this to every declared function:
-  many `- function:` items are CIncludes-only prototypes with no Executor
-  implementation, and their signatures would only add dead overloads.  Switch
-  `UPP<>::operator()` and `WrappedFunction<>::init()` to the generated
-  functions.  Behaviour byte-identical; this is the seam that lets U3 delete
-  the invokers with no other change.
-- **U3 — move the marshalling bodies in and delete the invokers.**  Replace the
-  delegating bodies with straight-line generated marshalling (using the
-  descriptors, `callconv::stack`, `ParameterPasser`); delete `callto68K`,
-  `callfrom68K`, `callfromPPC::Invoker`.
-- **U4 — traps.**  Emit `invokeUPP` for **non-selector** trap signatures and route
-  the generated wrappers' patched path through it.  Dispatcher subtraps need
-  nothing here: they are constructed with `trapno == 0`, so
-  `GeneratedEntrypoint::isPatched()` is always false and their `operator()` never
-  marshals into the guest.  (`operator&` still returns `UPP<Sig, cc>`, but that
-  only needs the type, not the overload.)
-- **U5 — sweep and docs.**  Delete whatever is left of the invocation machinery;
-  update `docs/subsystems/trap-dispatch.md`, `docs/architecture.md`, `AGENTS.md`.
+  `invokeFrom68K` and `invokeFromPPC` log with the same data-driven scheme as
+  the generated entrypoints: the defining module emits `logArg_<i>` for every
+  argument/return type of the marshallers it defines and the marshaller builds
+  the `lgvals` array; the name comes from `ep->name`.  This is what keeps the
+  callback path from re-instantiating the variadic `logTrapCall` templates.
+
+  The candidate record that feeds the key set must carry the decomposed
+  convention (`retconv`, `argconvs`, `extras`, or nil for Pascal/CCall), not
+  just the `cc` string, because the 68K body is generated from the descriptors.
+
+  All four functions are emitted for every key, trap signatures included.
+  The generated code stays proportional to the set because the bodies are
+  non-template straight-line code; the ~800 trap keys add no template
+  instantiations.  In particular `createCallbackUPP` is not restricted to the
+  signatures that `*_FUNCTION_PTR` objects happen to use today: it is a generic
+  adapter, and the emitted set is defined by the signature set, not by its
+  current callers.
+
+  Also in U2: `UPP<>::operator()` forwards to `invokeUPP`; `WrappedFunction<>::init()`
+  calls `createCallbackUPP` and, when `libname` is set, registers its PPC entry
+  with `invokeFromPPC`; raw handlers get `invokeFromRaw68K`; the PPC variant
+  adapters keep their generated `entry_*_ppc` shape (with the extra
+  `traps::Entrypoint*` parameter) because they call a wrapper object, not a free
+  function.
+
+  Validation: behaviour must be byte-identical for `--logtraps`; the two
+  consumers (UPP calls and callbacks) now exercise `invokeUPP`/`invokeFrom68K`
+  while the entrypoints still use their own `entry_*` code, so the two paths
+  can be compared.
+
+- **U3 — entrypoints use the marshallers.**  Change `GeneratedEntrypoint` to
+  store `Entry68KFn`/`EntryPPCFn`; `handle68K`/`handlePPC` keep the breakpoint
+  check and call them with `(addr, this)` / `(cpu, this)`.  Generate the wrapper
+  constructors (in `trap_entries/<module>.cpp`) with the two non-capturing
+  lambdas; the implementation is named inside the lambda and the marshaller
+  checks its type.  Update `GeneratedDispatcherTrap::addSelector` and `SelectorEntry` to carry the entry
+  function and the subtrap's `traps::Entrypoint*` (the dispatcher keeps its own
+  breakpoint check on the subtrap).  Delete `gen_68k_entry` / `gen_ppc_entry`
+  for everything except the PPC variant adapters.
+
+  This is the step where the per-trap decode/encode code disappears.  The
+  emitted `trap_entries/*.cpp` shrink to wrapper constructors, reference
+  functions and the per-signature marshallers.  `ReferenceEntries_<module>`
+  simply odr-uses every wrapper object in the module.
+
+- **U4 — replace `invokeUPP`'s delegating body and delete the invokers.**
+  Generate the straight-line host→guest body, mirroring `callto68K` exactly:
+  Pascal pushes the return slot then the arguments, saves/restores D1–D7/A0–A6
+  around `execute68K` and pops the result; Register applies `ArgConv::set` in
+  declaration order, executes, applies `afterCall` in reverse order and reads
+  the return with `RetConv()`.  Delete `callto68K`, `callfrom68K` and
+  `callfromPPC::Invoker`; keep `readCArg` (moved to `callconv`),
+  `ParameterPasser`, `stack` and the descriptors.
+
+- **U5 — sweep and docs.**  Delete `LoggedFunction`/`makeLoggedFunction` and
+  the variadic logging helpers that become unreachable; delete whatever else
+  is left of the invocation machinery; update
+  `docs/subsystems/trap-dispatch.md`, `docs/architecture.md`, `AGENTS.md`.
 
 ## U1 — done
 
@@ -375,10 +519,10 @@ Measurements (Debug, full clean builds): wall 41.9–42.6 s throughout; `executo
 
 ## Signature identity (U2)
 
-The overloads are emitted once per distinct `(Ret(Args...), CC)` **C++ type**.
-Names are only aliases, so the key ignores them, and it is computed on the
-spelling that will actually appear in the generated code — after `decl()`
-guestifies it — not on the YAML spelling.
+The overloads are emitted once per distinct emitted **C++ type**.  Names are
+only aliases, so the key ignores them, and it is computed on the spelling that
+will actually appear in the generated code — after `decl()` guestifies it — not
+on the YAML spelling.
 
 ### What goes into the key
 
@@ -395,6 +539,11 @@ A candidate is `(ret, [arg types], cc)`:
 whitespace.  The convention is part of the key: the same `Sig` occurs with
 several of them (`void(Handle)` is Pascal for `DisposeHandle` and
 `Register<void(A0), ReturnMemErr<D0>>` for the trap).
+
+`invokeFrom68K`, `invokeUPP` and `createCallbackUPP` use the full `(Sig, CC)`
+key.  `invokeFromPPC` drops `CC` and uses `(ret, [arg types])`: on PowerPC the
+arguments are read from the PPC register/spill area regardless of the 68K
+descriptors, so two conventions with one signature need one body.
 
 ### Canonicalising a type
 
@@ -430,6 +579,11 @@ The generator only canonicalises YAML spellings.  Whether a hand-written
 ABIs.  U1d removes that particular mismatch by spelling the MPW signatures
 `int32_t` on both sides.
 
+The definition of each marshaller is emitted in the module that first declares
+the key, using that module's spelling of the types (the representative).  Every
+name in it is therefore in scope in that translation unit, which is why the
+representative spelling, not the canonical spelling, is what the body uses.
+
 ### Failure modes
 
 Both mistakes are compile-time errors:
@@ -445,67 +599,89 @@ canonical rendering in the module that mentions it:
 names are all in scope there, so a wrong canonicalisation is a generation-time
 compile error even when the type is otherwise unused.
 
-## U2 — done
+## Current state
 
-The generator now emits, per distinct canonical signature:
+The generator already emits, per distinct canonical signature:
 
 - an `invokeUPP` declaration in every module that mentions it, and one
-  definition in the module that first declares it;
-- a `createCallbackUPP` declaration in every mentioning module, and a definition
-  only where a `WrappedFunction` can use it (every `funptr:` signature and every
-  `executor_marshaling: true` function);
+  definition (delegating to `callto68K`) in the module that first declares it;
+- a `createCallbackUPP` declaration in every mentioning module, and a
+  definition only where a `WrappedFunction` can use it (the `funptr:`
+  signatures and the `executor_marshaling: true` functions);
 - a `static_assert` in each mentioning module, comparing that module's spelling
   with the generated canonical spelling.
 
 813 `invokeUPP` definitions (all distinct signatures except the four CCall
-ones), 56 `createCallbackUPP` definitions and 1070 `static_assert`s.  Emitting
-`createCallbackUPP` for all ~800 trap signatures instead added about 13 MB of
-binary; the restriction above is what keeps this step near the U1 footprint.
-
-`createCallbackUPP` takes the owning `Entrypoint*`, so the per-object breakpoint
-check and logged name survive; its body is otherwise the old
-`WrappedFunction::init` lambda.
+ones), 56 `createCallbackUPP` definitions and 1070 `static_assert`s.
+`UPP<>::operator()` and `WrappedFunction<>::init()` use the generated
+functions.  The remaining work is U2 (the full set and the straight-line
+bodies), U3 (entrypoints), U4 (delete the invokers) and U5 (sweep).
 
 Validation: 138/138; Mac suite 90 passed + the two known `FileTest` xfails;
 `--logtraps` structure identical; `-G CIncludes` unchanged.
 
 Measurements (Debug, full clean build): wall 42.6 s → 44.0 s; `executor`
 66,191,744 → 67,620,216; stripped 9,582,568 → 9,836,520; `libromlib.a`
-119,967,390 → 122,232,512.  The increase is the 813 thin `invokeUPP` functions
-and the 56 callback definitions; U3 replaces their bodies and removes the
-invoker templates.
+119,967,390 → 122,232,512.
 
 ## Risks and open questions
 
-- **Signature canonicalisation.**  The key is the emitted C++ type, not the YAML
-  spelling; the rules and failure modes are in "Signature identity (U2)".
-  `cdef1008` vs `cdef0` is the smallest example of two spellings that must
-  collapse.
+- **Per-trap entry lambdas.**  Each wrapper gets one tiny non-capturing lambda
+  per direction (around 2000 in total) instead of a shared per-signature entry
+  plus an erased implementation pointer.  The lambda's function-pointer target
+  is used only inside the defining TU, where the global wrapper object is
+  constructed; its identity is never compared across TUs.  `--logtraps` and
+  breakpoints are keyed on `Entrypoint::name`, not on the pointer.  Debug
+  symbols show closure names for these frames; the marshaller body remains one
+  named function per signature.
+- **Signature canonicalisation.**  The key is the emitted C++ type, not the
+  YAML spelling; the rules and failure modes are above.  `cdef1008` vs
+  `cdef0` is the smallest example of two spellings that must collapse.
+- **Definition spelling.**  The marshaller body is emitted in the first
+  declaring module; its argument and return types must be spellable there.  A
+  type that exists only in another module's header is a `no matching
+  function`/unknown-name error at generation-compile time.
 - **Overload visibility.**  The generated overload declarations must be visible
   (by ordinary lookup or ADL) at every instantiation of `UPP<>::operator()` and
   of `WrappedFunction<>::init()`; a miss is a hard `no matching function`, which
   is the point of choosing overloads.
-- **Breakpoints and `--logtraps` for `*_FUNCTION_PTR`.**  Resolved in U2: the
-  generated `createCallbackUPP` takes the owning `Entrypoint*`, so the
-  breakpoint check and the logged name are preserved and `--logtraps` is
-  unchanged.
-- **`createCallbackUPP` naming/ergonomics.**  The `UPP<...>& out` parameter
-  carries the convention; the two names (`invokeUPP`/`createCallbackUPP`) are
-  provisional and exist mainly so the pair is greppable.
-- **Register- and CCall-convention `*_FUNCTION_PTR`s.**  Covered by existing
-  declarations: the `serial`/`mactcp` ones (`Register<D0(A0,A1)>`) by
-  `DriverUPP`, and the `mpw` `CCall` ones by the `MPW*ProcPtr` types.
+- **Logging equivalence for callbacks.**  The callback path moves from
+  `LoggedFunction`/`logTrapCall` to the data-driven printers.  `logValue` and
+  `logList` produce the same text, and `--logtraps` over the Mac suite is the
+  check, but any `*_FUNCTION_PTR` that appears in the golden log is the place
+  to look if it changes.
+- **`createCallbackUPP` for all keys.**  It is a thin adapter now, so emitting
+  it for the ~800 trap signatures adds one small function per key; the
+  measurement after U2 is the check.  The set is not narrowed to its current
+  callers.
+- **CCall `invokeUPP` is not emitted.**  No CCall UPP is ever invoked
+  host→guest today (the `MPW*ProcPtr` types are stored in guest structs and
+  called by guest code), and `callto68K` has no CCall invoker to mirror.  A
+  host→guest CCall would therefore be a link error rather than dead code.  If
+  one appears, the body is the C-caller mirror of the 68K callback: read the
+  arguments from the stack, call `execute68K`, pop them again, result in `D0`.
+- **CCall `invokeFrom68K`.**  That direction is generated and has no current
+  guest entrypoint exercise; its only users are the six `mpw` callbacks.  It is
+  generated from the same rules as the old CCall invoker; `readCArg` stays for
+  it.
+- **Breakpoints and `--logtraps` for `*_FUNCTION_PTR`.**  `createCallbackUPP`
+  keeps the owning `Entrypoint*`, so the breakpoint check and the logged name
+  survive; `GeneratedEntrypoint` does the same for entrypoints.
 - **`dotext`'s `A0` write.**  The commented-out implementation in
   `teInsert.cpp` also returned the current port in `A0`, not just the result in
-  `D0`.  **Decided:** reproduce it with an
-  explicit `EM_A0 = US_TO_SYN68K(qdGlobals().thePort)` at the end of
+  `D0`.  **Decided:** reproduce it with an explicit
+  `EM_A0 = US_TO_SYN68K(qdGlobals().thePort)` at the end of
   `C_ROMlib_dotext` (U1a), not with a descriptor.  This relies on the generated
-  thunk leaving `A0` alone after the native call — U2/U3 must keep that true for
-  `Register` conventions that do not mention `A0`.
-- **Compile time / binary size.**  Hypothesis: deleting the per-argument
-  recursion chain helps the generated `trap_entries/*.cpp` (they currently
-  instantiate the invokers); the per-`(Sig, CC)` `UPP<>` instantiation itself
-  stays.  Measure every sub-step; a modest win is a legitimate stopping point.
+  marshaller leaving `A0` alone after the native call.
+- **Compile time / binary size.**  The generated marshallers are per signature
+  (813/838) instead of per trap (~2000), and the two invoker template chains
+  plus the `LoggedFunction` instantiations disappear.  The per-trap call sites
+  are one-line non-capturing lambdas with no template code.  Deleting the
+  `callfromPPC::Invoker` instantiation from each of the 73 `*_FUNCTION_PTR`
+  objects and the `callto68K` instantiation from each distinct invoked UPP is
+  the direct compile-time win; the per-signature bodies are straight-line
+  copies of code that already compiled.  Measure every sub-step; a modest win
+  is a legitimate stopping point.
 
 ## Not in scope
 
@@ -513,5 +689,5 @@ invoker templates.
 - A lazy global native-address → callback map for `*_FUNCTION_PTR`; each object
   keeps installing its own callback through the macros.
 - Any change to the guest ABI, the trap tables, or the generated entrypoint
-  structure.
+  structure beyond the function-pointer plumbing described in U3.
 - The `funptr` → `New…UPP`/`Dispose…UPP` CIncludes surface.
