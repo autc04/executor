@@ -71,6 +71,12 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             if(rec.isDir != e.isDir || !sameIdentity(rec.identity, e.identity))
                 continue;
 
+            // After a --dont-use-inodes session the record has no usable
+            // identity; re-adopt one now that the host exposes it. A usable
+            // identity is never replaced by an unusable one.
+            if(!rec.identity.valid && e.identity.valid)
+                rec.identity = e.identity;
+
             consumed[i] = true;
             surviving.insert(rec.cnid);
         }
@@ -158,7 +164,11 @@ CNID SimpleCNIDMapper::getOrCreateChild(CNID parID, const fs::path& posixName,
         // The same host file still holds the name, so reuse its CNID. A different
         // kind, or a different file (the inode changed), is a new item.
         if(mapping->isDir == isDir && sameIdentity(mapping->identity, identity))
+        {
+            if(!mapping->identity.valid && identity.valid)
+                mappings_.at(mapping->cnid).identity = identity;
             return mapping->cnid;
+        }
 
         deleteCNID(mapping->cnid);
     }

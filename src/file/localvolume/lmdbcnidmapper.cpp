@@ -542,6 +542,15 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(
                || !sameIdentity(rec.identity, entries[i].identity))
                 continue;
 
+            // After a --dont-use-inodes session the record has no usable
+            // identity; re-adopt one now that the host exposes it. A usable
+            // identity is never replaced by an unusable one.
+            if(!rec.identity.valid && entries[i].identity.valid)
+            {
+                rec.identity = entries[i].identity;
+                putMapping(txn, rec);
+            }
+
             consumed[i] = true;
             surviving.insert(rec.cnid);
         }
@@ -668,7 +677,14 @@ CNID LMDBCNIDMapper::getOrCreateChild(CNID parID, const fs::path& posixName,
             if(rec && rec->isDir == isDir
                && sameIdentity(rec->identity, identity))
             {
-                txn.abort();
+                if(!rec->identity.valid && identity.valid)
+                {
+                    rec->identity = identity;
+                    putMapping(txn, *rec);
+                    txn.commit();
+                }
+                else
+                    txn.abort();
                 return *existing;
             }
 

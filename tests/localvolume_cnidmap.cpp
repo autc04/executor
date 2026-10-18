@@ -109,6 +109,75 @@ TEST_F(CNIDMapFixture, DontUseInodesDisablesIdentity)
     EXPECT_TRUE(sameIdentity(withInodes.identity, withoutInodes.identity));
 }
 
+TEST_F(CNIDMapFixture, DiffAdoptsInodesAfterNoInodeSession)
+{
+    CNID a = 0;
+
+    {
+        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
+        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        ASSERT_EQ(mappings.size(), 1u);
+        a = mappings.at(0).cnid;
+
+        auto rec = mapper.lookupCNID(a);
+        ASSERT_TRUE(rec.has_value());
+        EXPECT_FALSE(rec->identity.valid);
+    }
+
+    {
+        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
+        // Validation is back on: the name+kind match re-adopts the live identity
+        // without changing the CNID.
+        auto mappings = mapper.mapDirectoryContents(2, { entry("a", 100, false) });
+        ASSERT_EQ(mappings.size(), 1u);
+        EXPECT_EQ(mappings.at(0).cnid, a);
+
+        auto rec = mapper.lookupCNID(a);
+        ASSERT_TRUE(rec.has_value());
+        EXPECT_TRUE(rec->identity.valid);
+        EXPECT_EQ(rec->identity.device, 1u);
+        EXPECT_EQ(rec->identity.inode, 100u);
+    }
+
+    {
+        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
+        // The reverse direction does not overwrite a usable identity with an
+        // unusable one (as when the flag is enabled again).
+        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        ASSERT_EQ(mappings.size(), 1u);
+        EXPECT_EQ(mappings.at(0).cnid, a);
+
+        auto rec = mapper.lookupCNID(a);
+        ASSERT_TRUE(rec.has_value());
+        EXPECT_TRUE(rec->identity.valid);
+        EXPECT_EQ(rec->identity.inode, 100u);
+    }
+}
+
+TEST_F(CNIDMapFixture, GetOrCreateChildAdoptsInodesAfterNoInodeSession)
+{
+    CNID a = 0;
+
+    {
+        LMDBCNIDMapper mapper(root_, makeName("restamp-get"));
+        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        ASSERT_EQ(mappings.size(), 1u);
+        a = mappings.at(0).cnid;
+        ASSERT_FALSE(mapper.lookupCNID(a)->identity.valid);
+    }
+
+    LMDBCNIDMapper mapper(root_, makeName("restamp-get"));
+    EXPECT_EQ(mapper.getOrCreateChild(2, "a", identity(100), false), a);
+
+    auto rec = mapper.lookupCNID(a);
+    ASSERT_TRUE(rec.has_value());
+    EXPECT_TRUE(rec->identity.valid);
+    EXPECT_EQ(rec->identity.inode, 100u);
+}
+
 TEST_F(CNIDMapFixture, RecordsAndNamesSurviveReopen)
 {
     CNID dir = 0;

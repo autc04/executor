@@ -106,7 +106,7 @@ reference number.
   mapping (Phase 11a accepts this limitation). `--dont-use-inodes` disables
   identity validation for the whole process: `statPath()` reports no usable
   identity, so matching falls back to host name and kind (and rename recovery is
-  off).
+  off); records written while it was on re-adopt inodes on the next reconcile.
 - **Hidden files**: `ItemFactory::isHidden()` suppresses sidecar files (like `._foo`)
   from appearing as Mac files. Always override this in new `ItemFactory` subclasses.
 - **Factory order matters**: `itemFactories` is tried in order and the first match

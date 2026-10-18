@@ -1151,8 +1151,9 @@ report no usable identity — exactly the inode-0 path (`FileIdentity::valid ==
 false`: `sameIdentity` returns true, `filestamp.h:41-48`). The diff then matches by
 `(posixName, kind)` only, the `byInode` rename pairing is off, and the binding
 check degrades to existence, kind and name. Records written while the flag is on
-store `identity.valid = false`; removing the flag does not retroactively
-re-stamp them.
+store `identity.valid = false`; when the flag is removed, the next name+kind
+match re-stamps the live identity (a usable identity is never overwritten with an
+unusable one).
 
 Consequences: no rename recovery (a same-directory rename reads as delete +
 create), and a same-name replacement is not detected. CNIDs and names survive
