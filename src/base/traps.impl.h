@@ -50,7 +50,7 @@ void WrappedFunction<Ret (Args...), fptr, CallConv>::init()
                 if(auto ret = this->checkBreakPPC(cpu); ~ret)
                     return ret;
 
-                return callfromPPC::Invoker<Ret (Args...)>::invokeFromPPC(cpu, logging::makeLoggedFunction(name, fptr)); 
+                return invokeFromPPC(cpu, fptr, this); 
             }
         );
     }

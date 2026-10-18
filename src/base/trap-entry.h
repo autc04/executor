@@ -67,5 +67,11 @@ private:
     syn68k_addr_t originalFunction = 0;
 };
 
+// Runs a raw 68K handler (RAW_<name>) with the untyped register/stack dump that
+// --logtraps produced for the old templated wrappers.
+syn68k_addr_t invokeFromRaw68K(syn68k_addr_t addr,
+                               syn68k_addr_t (*f)(syn68k_addr_t),
+                               traps::Entrypoint* ep);
+
 }
 }

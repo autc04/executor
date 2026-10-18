@@ -3,6 +3,7 @@
 #include <base/builtinlibs.h>
 #include <base/cpu.h>
 #include <base/debugger.h>
+#include <base/logging.h>
 
 #include <cassert>
 #include <cstdlib>
@@ -151,4 +152,18 @@ void GeneratedDispatcherTrap::addSelector(uint32_t sel, Entrypoint* entrypoint,
 }
 
 }
+
+syn68k_addr_t invokeFromRaw68K(syn68k_addr_t addr,
+                               syn68k_addr_t (*f)(syn68k_addr_t),
+                               traps::Entrypoint* ep)
+{
+    logging::LogNestingScope logScope;
+    if(logScope.active)
+        logging::logUntypedArgs(ep->name);
+    syn68k_addr_t ret = f(addr);
+    if(logScope.active)
+        logging::logUntypedReturn(ep->name);
+    return ret;
+}
+
 }
