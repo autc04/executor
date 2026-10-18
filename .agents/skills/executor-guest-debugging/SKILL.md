@@ -135,8 +135,8 @@ adding prints. If you do add logging, extend the central facility rather than
 scattering env-gated output: `--logtraps` already decodes the yaml-defined
 structs/unions via the generated `describeStruct` functions, so usually no new
 per-site code is needed. To improve how a particular field/type is shown, adjust
-`logValueTo`/`logField` in `src/base/logging.{h,cpp}` (or the generator in
-`multiversal/executor.rb`), not the call site. Keep any ad-hoc instrumentation
+`logValueTo`/`logField` in `src/base/logging.{h,cpp}` (or the generator under
+`multiversal/executor*.rb`), not the call site. Keep any ad-hoc instrumentation
 opt-in, and remove it once the investigation is done.
 
 ## Docs

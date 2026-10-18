@@ -72,9 +72,9 @@ What landed (each commit builds all front-ends and passes the suites):
 9. **L3** — data-driven `--logtraps` (per-type printers + a non-template
    formatter).
 10. **Flag removal** — delete `EXECUTOR_ENABLE_LOGGING` and its `#ifdef`s.
-11. **Phase 5 — planned.** Retire `MODULE_NAME` / `api-module.h` /
-    `INSTANTIATE_TRAPS_*` / the generated `trap_instances/*.cpp`; outlined at the
-    end of [Sub-steps](#sub-steps).
+11. **Phase 5 — done.** `MODULE_NAME` / `api-module.h` /
+    `INSTANTIATE_TRAPS_*` / the generated `trap_instances/*.cpp` are retired;
+    outlined at the end of [Sub-steps](#sub-steps).
 
 See [Sub-steps](#sub-steps) for the full outline that was reviewed, and
 [Baseline to beat](#baseline-to-beat) for the raw numbers.
@@ -432,8 +432,7 @@ list of sub-steps is in [Sub-steps](#sub-steps).
 This is the outline that was reviewed before implementation.  Every sub-step was
 required to build all front-ends, run `ctest -LE xfail` and the Retro68 Mac suite,
 be benchmarked with `ninja clean && time ninja` (plus sizes), and be committed
-separately.  Everything through L3 and the flag removal is **done**; Phase 5,
-outlined at the end of this section, is **planned**.
+separately.  Everything through L3, the flag removal and Phase 5 is **done**.
 
 Same shape as Phase 1 throughout: for each trap the generator emits a
 `Wrapper_<Trap>` class (declared in the module header) plus straight-line 68K and
@@ -507,7 +506,7 @@ applications** (see the note under [Risks and open questions](#risks-and-open-qu
 Each sub-step left the old path intact for the traps it had not yet converted, so
 a regression stayed bisectable.
 
-### Phase 5 — retire the module-instantiation machinery (planned)
+### Phase 5 — retire the module-instantiation machinery (done)
 
 **Why.**  After Phase 4b the only thing keeping `MODULE_NAME` / `api-module.h` /
 `INSTANTIATE_TRAPS_<Module>` / `TRAP_INSTANTIATION` alive is a handful of objects
@@ -519,7 +518,7 @@ plus `ReferenceAllTraps.cpp`), ~90 s of the 961 s serial build (1.2–1.9 s each
 all of it header parsing; e.g. `trap_instances/Navigation` is 1.88 s and contains
 only the boilerplate).  Retiring the mechanism deletes those TUs.
 
-**What still consumes it** (inspected on the landed tree):
+**What still consumed it** (inspected before Phase 5):
 
 | Site | Use | Kind |
 |---|---|---|

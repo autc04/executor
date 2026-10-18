@@ -244,11 +244,11 @@ primitives.
 ### The surface
 
 - `*_FUNCTION_PTR`: **73 definitions** across 19 files.
-- `funptr:` YAML entries: **50** (`executor.rb:956-973`).
+- `funptr:` YAML entries: **50** (the `funptr:` branch of the generator).
 - Generated wrappers: **2039** objects (33 raw; ~600 dispatcher subtraps);
   **849 distinct `(Sig, CC)`** pairs but only 838 distinct `Sig`s.
-  `operator&` returns `UPP<Sig, cc>` (`executor.rb:636,874`) and the patched path
-  is `(UPP<Sig, cc>(SYN68K_TO_US(tableEntry())))(args)` (`executor.rb:885,891`).
+  `operator&` returns `UPP<Sig, cc>` (`emit_wrapper`) and the patched path
+  is `(UPP<Sig, cc>(SYN68K_TO_US(tableEntry())))(args)` (`gen_wrapper_methods`).
 - The **64 hand-written address-of uses** of trap objects (all in `.cpp`; 49 of
   them need the *typed* UPP, the rest a plain `ProcPtr`).  These do not change.
 

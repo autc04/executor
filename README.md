@@ -209,10 +209,12 @@ between Executor 2000 and the Retro68 cross-compiler suite.
 
 The directory `multiversal/defs` contains YAML files that describe (a subset
 of) the MacOS API; the ruby scripts in `multiversal`, invoked from
-`src/CMakeLists.txt`, generate actual C++ header files for Executor from those
-descriptions. You can find the C++ headers in `build/src/api` once you've built
-Executor 2000, but you should of course only edit the YAML files they are
-generated from. 
+`src/CMakeLists.txt`, generate the C++ headers and the trap entrypoint and
+marshaller sources for Executor from those descriptions. You can find the C++
+headers in `build/src/api`, the generated entrypoint sources in
+`build/src/trap_entries` and the struct descriptions in `build/src/structdump`
+once you've built Executor 2000, but you should of course only edit the YAML
+files they are generated from. 
 
 There is a JSON schema describing the format of those YAML files in
 `multiversal/multiversal.schema.json`. If you happen to be using Visual Studio

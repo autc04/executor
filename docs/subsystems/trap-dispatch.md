@@ -41,10 +41,11 @@ generated marshaller. Its `init()` installs the 68K callback via
 **Generated wrapper objects**: For each trap the generator emits a small
 `Executor::trapentries::Wrapper_<Trap>` class deriving from `GeneratedEntrypoint`. It adds
 the typed `operator()` (direct call, or the guest trap table when patched) and
-`operator&` returning the typed `UPP`. The public object — `Executor::<Trap>`, or
-`Executor::stub_<Trap>` for the `REGISTER_TRAP2`-style traps — is the same name
-hand-written code has always used. The module header declares the class and an `extern`
-object; the object is defined in the generated `trap_entries/<Module>.cpp`.
+`operator&` returning the typed `UPP`. The object keeps the name hand-written
+code has always used — `Executor::<Trap>`, or `Executor::stub_<Trap>` /
+`Executor::stub_<Impl>` for an entry object that wraps another function. The
+module header declares the class and an `extern` object; the object is defined in
+the generated `trap_entries/<Module>.cpp`.
 
 **`GeneratedDispatcherTrap`** (declared in `src/base/traps.h`, defined in
 `src/base/trap-entry.cpp`): handles traps that dispatch on a sub-selector (e.g.
@@ -69,7 +70,7 @@ otherwise drop them).
 | `callconv::Pascal` | Parameters right-to-left on the 68K stack; return value on stack (most Toolbox traps) |
 | `callconv::Register<Ret(Args...), locs...>` | Each argument/return mapped to a specific register (most OS traps) |
 | `callconv::CCall` | Standard C calling convention; used for internal stubs |
-| `callconv::Raw` | Legacy convention tag; raw traps are `RAW_<Trap>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
+| `callconv::Raw` | Unused legacy tag; raw traps are `RAW_<Trap>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
 
 ### Marshallers
 
@@ -95,8 +96,10 @@ code built from the shared primitives (`callconv::stack`, `D<n>`/`A<n>`,
 
 ## Generated vs. hand-written
 
-`multiversal/executor.rb` turns every `- function:` / `- dispatcher:` entry in
-`multiversal/defs/*.yaml` into:
+The Executor generator (`multiversal/executor.rb` plus the `executor_types.rb`,
+`executor_calling_conventions.rb` and `executor_traps.rb` modules it loads)
+turns every `- function:` / `- dispatcher:` entry in `multiversal/defs/*.yaml`
+into:
 
 | Output | Content |
 |--------|---------|
@@ -134,7 +137,7 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 | `src/base/structdump.h` | `TypeDesc` + type registry used by `describeStruct` |
 | `src/base/emustubs.cpp` | Low-level 68K stubs and glue |
 | `src/base/patches.cpp` | Support for `GetTrapAddress` / `SetTrapAddress` patching |
-| `multiversal/executor.rb` | Generates all of the above |
+| `multiversal/executor*.rb` | Generate all of the above |
 
 ## Important Data Structures / Classes
 

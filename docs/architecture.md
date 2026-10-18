@@ -142,7 +142,7 @@ The `callconv` namespace (`src/base/functions.h`) models the conventions used by
 | `callconv::Pascal` | Parameters pushed right-to-left on the 68K stack; return value on stack |
 | `callconv::Register<Ret(Args...), locs...>` | Parameters and return value in specified 68K registers (`A0`–`A7`, `D0`–`D7`) |
 | `callconv::CCall` | Standard C calling convention |
-| `callconv::Raw` | Legacy tag; raw traps are `RAW_<name>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
+| `callconv::Raw` | Unused legacy tag; raw traps are `RAW_<name>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
 
 For each signature the generator emits one marshaller per direction: `invokeFrom68K` (guest 68K → native, with a `const CC*` witness so conventions sharing a signature stay distinct), `invokeFromPPC` (guest PowerPC → native), `invokeUPP` (native → guest 68K, used by `UPP<>::operator()`) and `createCallbackUPP` (the `*_FUNCTION_PTR` adapter). The bodies are generated from the shared primitives (`callconv::stack`, `D<n>`/`A<n>`, `Out<>`/`InOut<>`, `TrapBit<>`, the extras and `callfromPPC::ParameterPasser`); the old `callfrom68K`/`callto68K` invokers are gone. See `docs/subsystems/trap-dispatch.md`.
 
@@ -363,7 +363,7 @@ System resources (the built-in `System` file, `Browser`, `Printer`, and related 
 
 Several parts of the build run scripts before compilation:
 
-- `multiversal/`: `make-multiverse.rb` turns the YAML API descriptions in `multiversal/defs/*.yaml` into the generated C++ headers (`build/src/api/`, notably `ExMacTypes.h`) and the trap-instance translation units. Do not hand-edit the generated files — edit the YAML definitions instead.
+- `multiversal/`: `make-multiverse.rb` turns the YAML API descriptions in `multiversal/defs/*.yaml` into the generated C++ headers (`build/src/api/`, notably `ExMacTypes.h`), the trap entrypoint and marshaller sources (`build/src/trap_entries/`) and the struct descriptions (`build/src/structdump/`). The Executor generator is split across `executor.rb` (lifecycle), `executor_types.rb`, `executor_calling_conventions.rb` and `executor_traps.rb`. Do not hand-edit the generated files — edit the YAML definitions instead.
 - Bison generates the parser for the preferences file (`src/prefs/parse.ypp`).
 - Perl generates QuickDraw blitter code (`src/quickdraw/makerawblt.pl`).
 

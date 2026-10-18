@@ -8,7 +8,9 @@
 
 The generated-trap-entrypoint work
 (`docs/ai/2026-10-07-generated-trap-entrypoints-plan.md`) took the clean-build
-wall time from 1m04.3s to ~47.5s.  That work is done.  This document lists
+wall time from 1m04.3s to ~47.5s, and the final Phase 5 (retiring the
+module-instantiation TUs) brought it to 45.0s.  That work is done.  This
+document lists
 **general** further build-time improvements, i.e. ones that are not specific to
 the trap machinery, with the measurements that motivate each one so the list can
 be prioritised.
@@ -39,7 +41,9 @@ previous plan's:
 
 All measured 2026-10-08 on this machine (24 cores, Nix GCC 14.3.0), from a
 `ninja clean && ninja` whose `.ninja_log` was then reduced to the outputs that
-still exist.
+still exist.  The snapshot predates the final Phase 5, which removed the 66
+`trap_instances/*.cpp` translation units (and their 90 s); the other rows are
+unchanged.
 
 | | value |
 |---|---|
@@ -56,7 +60,7 @@ Per-category serial time:
 |---|---|---|
 | ordinary hand-written TUs | 582 s (61%) | the majority |
 | generated `trap_entries/*.cpp` | 131 s | 66 TUs |
-| generated `trap_instances/*.cpp` | 90 s | 66 nearly-empty TUs |
+| generated `trap_instances/*.cpp` (removed by Phase 5) | 90 s | 66 nearly-empty TUs; no longer built |
 | generated `structdump/*.cpp` | 84 s | 66 TUs |
 | per-front-end sources | 73 s | `main.cpp` ×5 + front-end dirs |
 
@@ -102,7 +106,7 @@ meaningful together with the measured candidate.
 
 | # | idea | evidence | expected | effort | risk / trade-off |
 |---|---|---|---|---|---|
-| A1 | **Precompiled header** over the stable hand-written `base/*` headers, and possibly over the generated `api/*` headers | 88% of `init.cpp` is parsing; 214 TUs include generated headers | large serial (hundreds of s) if it works | medium | PCH must be rebuilt whenever any included header changes; the generated headers change on every YAML edit, so a PCH over them can make *incremental* builds worse. `api-module.h` is deliberately include-guard-free and re-included with a different `MODULE_NAME` per module header, which is exactly the construct a frozen PCH token stream is worst at — this needs a prototype before it can be trusted. |
+| A1 | **Precompiled header** over the stable hand-written `base/*` headers, and possibly over the generated `api/*` headers | 88% of `init.cpp` is parsing; 214 TUs include generated headers | large serial (hundreds of s) if it works | medium | PCH must be rebuilt whenever any included header changes; the generated headers change on every YAML edit, so a PCH over them can make *incremental* builds worse.  A PCH over the stable `base/*` includes is therefore the safer first prototype. |
 | A2 | **Split the generated module headers** into "types + `C_` declarations" (what most hand-written code needs) and "trap objects" (wrapper classes, `extern` objects, which pull `base/trap-entry.h` → `traps.h` → `functions.h`).  Include the second only where trap objects are actually used. | 2004 wrapper classes; 214 TUs include generated headers but few use trap objects | medium serial | medium | Hand-written files that use `&Trap`/`operator&` (e.g. `init.cpp` storing `&stub_SwapMMUMode`) need the second header; getting the split wrong is a compile error, not a silent bug. |
 | A3 | **Include hygiene / IWYU** on the widely-included hand-written headers (`base/functions.h`, `traps.h`, `logging.h`, `structdump.h`, `base/mactype.h`): drop transitive includes, forward-declare, move heavy bits behind narrower headers. | An IWYU report already exists locally; these headers are pulled in by every module header | medium serial | medium | Mechanical but broad; needs care with the generated `#include` order. |
 | A4 | **Reduce template instantiation in `base/functions.h`** (`UPP`/`callconv` descriptors, the `logValueTo` overload set).  Small functions, but instantiated per use across 214 TUs. | template instantiation 28% of `init.cpp` parsing | medium serial | medium-high | This is the machinery hand-written `*_FUNCTION_PTR` sites depend on; changing it is what the trap work deliberately avoided. |
@@ -113,7 +117,7 @@ meaningful together with the measured candidate.
 | # | idea | evidence | expected | effort | risk / trade-off |
 |---|---|---|---|---|---|
 | B1 | **Compile `main.cpp` once, not five times.**  It is the same ~6 s TU built per front-end (qt/x/sdl/sdl2/wayland) | 5 × ~6 s ≈ 30 s serial, and each is a long pole | ~25–30 s serial; possibly 1–2 s wall | medium-high | Needs the front-end to be selected at link time (a small registration/callback seam) instead of by `#include`/`#ifdef`.  Risk of changing front-end selection semantics. |
-| B2 | **Merge the tiny generated TUs.**  `structdump/*` (66 TUs, 84 s) and `trap_instances/*` (66 TUs, 90 s) are individually small; `structdump` in particular has no per-TU macro state and could be a single TU. | 132 small TUs | 20–50 s serial | medium | Fewer TUs = less parallelism; on 24 cores 961 s of work is 40 s ideal, so *removing* work matters more than merging, but merging also cuts fixed per-TU overhead (preprocessing of the same headers, CC1 startup).  `trap_instances/*` **cannot** simply be merged (each defines a different `INSTANTIATE_TRAPS_<Module>`), so only `structdump` and the entry files are candidates. |
+| B2 | **Merge the tiny generated TUs.**  `structdump/*` (66 TUs, 84 s) are individually small and have no per-TU macro state, so they could be a single TU. | 66 small TUs | 20–50 s serial | medium | Fewer TUs = less parallelism; on 24 cores 961 s of work is 40 s ideal, so *removing* work matters more than merging, but merging also cuts fixed per-TU overhead (preprocessing of the same headers, CC1 startup). |
 | B3 | **`tests/guestvalues.compfail.cpp` ×4** (compile-fail tests) and **`x_keycodes.cpp` ×3**: fold the four expected failures into one `try_compile`-style check per header. | 4–7 extra small TUs | small | low-medium | The compile-fail tests are a real correctness net; keep them, just dedupe. |
 
 ### C. Tooling and caching
@@ -140,7 +144,7 @@ meaningful together with the measured candidate.
 |---|---|---|---|---|---|
 | E1 | **Track build time and sizes in CI** with a budget (the numbers in this document are the baseline). | manual today | prevents regressions | low | None. |
 | E2 | A small script that reduces `.ninja_log` to *existing* outputs and prints the per-category/ per-TU table above. | `.ninja_log` keeps stale entries (896 of 1235 outputs no longer exist) and is easy to misread | makes every future comparison trustworthy | low | None; this document's tables were produced with an ad-hoc version of it. |
-| E3 | **Explain the `nix build` vs `ninja` gap.**  `time nix build` was 1:26 while `ninja` in a configured tree is ~47 s; the difference includes the submodule builds (`syn68k`, `PowerCore`, `cxmon`, `lmdb`, gtest), CMake configuration, and Nix sandbox overhead. | user's 1:26 vs 47 s | unknown | medium | Needs `nix build --print-build-logs` / `--trace-verbose` before anything can be claimed; may be mostly fixed cost that no candidate here touches. |
+| E3 | **Explain the `nix build` vs `ninja` gap.**  `time nix build` was 1:26 while `ninja` in a configured tree is ~45 s; the difference includes the submodule builds (`syn68k`, `PowerCore`, `cxmon`, `lmdb`, gtest), CMake configuration, and Nix sandbox overhead. | user's 1:26 vs 45 s | unknown | medium | Needs `nix build --print-build-logs` / `--trace-verbose` before anything can be claimed; may be mostly fixed cost that no candidate here touches. |
 
 ### F. Continued work on the generated trap machinery (for completeness)
 
