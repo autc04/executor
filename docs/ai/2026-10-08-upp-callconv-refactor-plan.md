@@ -1,8 +1,7 @@
 # UPP<> and calling-convention refactor (plan)
 
 > Date: 2026-10-08
-> Status: **design decided, not started.**  This supersedes the earlier
-> "generate `FooUPP` classes" sketch: `UPP<>` stays.
+> Status: **designed, not started.**
 
 The goal: make the *generator* the single source of truth for calling
 conventions, so the hand-written invocation machinery in
@@ -38,38 +37,30 @@ Then:
 
 ## Why this shape
 
-- **Keeping `UPP<>` keeps signature identity automatic.** Two names with the
-  same signature are the same template-id, so they are the same type with no
-  aliasing machinery and no interconversion.  This is load-bearing: today
-  `QDRectUPP` and `QDOvalUPP` are both `UPP<void(GrafVerb, const Rect *)>`, and
-  `qHooks.cpp` compares a stored `QDRectUPP` against `&StdRect` and a
-  `QDOvalUPP` against `&StdOval`.  A class-per-name design would have to avoid
-  breaking exactly this with aliasing or matcher machinery.
-- **No "anonymous UPP" problem.** `UPP<Sig, cc>` is always spellable, so a
-  generated wrapper's `operator&` can return it for *every* trap, exactly as
-  today; nothing needs to mint a name, and none of the 64 `&Trap` sites change.
-- **Overloads keyed on the UPP type carry the convention in the signature.** The
-  calling convention is not in the parameter list (`DisposeHandle` is
-  `void(Handle)` as Pascal and `Register<void(A0), ReturnMemErr<D0>>` as a trap),
-  but it *is* in `UPP<..., CC>`, so the two do not collide.  Deduplicating by
-  `(Sig, CC)` is then just the compiler's normal type identity.
-- **Overloads beat specialization here**: they fail loudly (a missing overload is
-  a `no matching function` diagnostic naming the UPP type, where a missing
-  specialization is `incomplete type`, or IFNDR if a primary exists), and the two
-  directions are independent overload sets rather than one specialization that
-  must carry both.
-- **`createCallbackUPP` needs no witness argument**: the output parameter's type
-  carries `CC`, which a bare `Ret(*)(Args...)` cannot.
-
-## Verdict on the original question
-
-The claim holds, with the boundary now explicit: the *invocation machinery* is
-removable (`callto68K`, `callfrom68K`, `callfromPPC::Invoker`, and `Register<>`'s
-role as an invoker parameter), while `UPP<>`, the convention tags, the
-descriptors and `WrappedFunction<>` stay.  The descriptors are already shared
-with the generated entrypoints, so what is left is one marshalling
-implementation (the generator) over one primitive layer, which is the "single
-source of truth" that was wanted.
+- **Signature identity is automatic.** Two names for the same signature are the
+  same `UPP<...>` template-id, so they are the same type with no aliasing or
+  conversion machinery.  This is load-bearing: `QDRectUPP` and `QDOvalUPP` are
+  both `UPP<void(GrafVerb, const Rect *)>`, and `qHooks.cpp` compares a stored
+  `QDRectUPP` against `&StdRect` and a `QDOvalUPP` against `&StdOval`.  A
+  class-per-name design would need explicit aliasing or matcher machinery to
+  preserve that.
+- **Every type is spellable.** A generated wrapper's `operator&` can return
+  `UPP<Sig, cc>` for any trap, so no type has to be minted for signature-only
+  types and none of the 64 `&Trap` sites change.
+- **The convention is part of the overload's key.** The calling convention is not
+  in the parameter list (`DisposeHandle` is `void(Handle)` as Pascal and
+  `Register<void(A0), ReturnMemErr<D0>>` as a trap), but it is part of
+  `UPP<..., CC>`, so the two overloads do not collide.  Overloading on the
+  parameter list alone would conflate them.
+- **Overloads are preferable to template specialization here.** A missing
+  overload is a `no matching function` naming the UPP type; a missing
+  specialization is an `incomplete type` error, or ill-formed with no diagnostic
+  if a primary template exists.  The two directions (host→guest and
+  guest→native) also stay independent overload sets instead of one specialization
+  carrying both.
+- **`createCallbackUPP` needs no witness argument.** Its output parameter is
+  typed `UPP<...>&`, which already carries `CC`; a bare `Ret (*)(Args...)`
+  parameter could not, so a witness argument would otherwise be required.
 
 ## Background
 
@@ -100,7 +91,7 @@ All in `src/base/functions.*` unless noted:
 | `callconv::stack::push/pop` | `functions.impl.h` | **stay** (generated Pascal entries) |
 | `callfrom68K` (`Invoker`, `PascalInvoker`, `RegInvoker`, `readCArgsAndCall`) | `functions.impl.h` | **goes** |
 | `callto68K` (`Invoker`, `InvokerRec`) | `functions.impl.h` | **goes** |
-| `callfromPPC::Invoker` | `functions.impl.h` | **goes** (only reached when `libname != nullptr`, which is never true post-Phase-5) |
+| `callfromPPC::Invoker` | `functions.impl.h` | **goes** (only reachable through `WrappedFunction::init()` when `libname` is non-null, and the `*_FUNCTION_PTR` macros never set it) |
 | `callfromPPC::ParameterPasser` | `functions.impl.h` | **stays** (generated PPC entries) |
 | `UPP<>::operator()` | `functions.impl.h` | stays, becomes a forwarder |
 | `WrappedFunction<>` + `operator&` | `traps.h` | stays (the `*_FUNCTION_PTR` wrapper class) |
@@ -112,8 +103,8 @@ All in `src/base/functions.*` unless noted:
 - `callto68K` is used **only** by `UPP<>::operator()`.
 - `callfrom68K` and `callfromPPC::Invoker` are used **only** by
   `WrappedFunction<>::init()`.
-- The descriptors are used by both the old path and the **generated entrypoints**
-  (`build/src/trap_entries/*.cpp`: `callconv::D0 c0; x = c0;`,
+- The descriptors are used by both `callto68K`/`callfrom68K` and the **generated
+  entrypoints** (`build/src/trap_entries/*.cpp`: `callconv::D0 c0; x = c0;`,
   `callconv::ReturnMemErr<D0>` in `extras`), so they are the shared primitive
   layer and stay.
 
@@ -135,8 +126,10 @@ primitives.
 
 ## U1 — the UPP types to name / declare
 
-The eleven hand-written `UPP<...>` aliases in `src/` are the blockers for "no
-direct `UPP<...>` in `src/`".  They fall into three groups:
+Eleven hand-written `UPP<...>` aliases remain in `src/`.  Each has to be
+replaced by a declared type, or by an existing declared type with the same
+signature, so that every signature used outside generated code is declared in
+the YAML.  They fall into these categories:
 
 | alias | what it is | action |
 |---|---|---|
@@ -157,17 +150,16 @@ Interfaces: `MenuDefUPP`/`MenuDefProcPtr` in `Menus.h`, `MenuBarDefUPP` in
 `Menus.h`, `ListDefUPP` in `Lists.h`, `ControlDefUPP` in `Controls.h`; there is
 no `MDEFUPP`/`MBDFUPP`/`LDEFUPP`/`CDEFUPP` spelling).  Because they are real API
 types they belong in the normal API YAMLs and **will also appear in the
-CIncludes output** — an intentional correctness improvement (like `GetGrayRgn`),
-not a byte-identical change.  `snthfp`/`dcmpProcPtr` have no canonical Apple
-name and are Executor-internal (`only-for: Executor`); we may want to rename both
-before landing them, but their homes (`SoundMgr.yaml`, `ResourceMgr.yaml`) are
-settled.
+CIncludes output**; that change is intended.  `snthfp`/`dcmpProcPtr` have no
+canonical Apple name and are Executor-internal (`only-for: Executor`); we may
+want to rename both before landing them, but their homes (`SoundMgr.yaml`,
+`ResourceMgr.yaml`) are settled.
 
 `prinitprocp`/`cmpf` are worth noting separately: their marshallers are covered
 by trap signatures, so their local aliases can remain (they are already named
 typedefs); naming them is optional tidiness.
 
-### U1 research: coverage of the 73 `*_FUNCTION_PTR` objects
+### Coverage of the 73 `*_FUNCTION_PTR` objects
 
 Every `PASCAL_`/`REGISTER_`/`CCALL_FUNCTION_PTR` expands to an explicit
 `template class WrappedFunction<decltype(C_NAME), &C_NAME[, CC]>`
@@ -198,17 +190,8 @@ numeric-typedef equivalences were confirmed with `__is_same` on this host
 | `DeviceLoopDrawingUPP` | `new_draw_scroll`, `new_pos_ctl` |
 | `WindowDefUPP` | `wdef0`, `wdef16` |
 | `QDTextUPP` | `PrText`, `donotPrText`, `textasPS` |
-| `QDLineUPP`, `QDRectUPP`, `QDRRectUPP`, `QDOvalUPP`, `QDArcUPP`, `QDPolyUPP`, `QDRgnUPP`, `QDBitsUPP`, `QDCommentUPP`, `QDTexMeasUPP` | the `PrX`/`donotPrX` pairs for the matching `QDProcs` slot, plus `PrComment`, `PrTxMeas` |
-| `MPWQuitProcPtr`, `MPWFileProcPtr`, `MPWAccessProcPtr`, `MPWIOCtlProcPtr` | `mpwQuit`; `mpwClose`/`mpwRead`/`mpwWrite`; `mpwAccess`; `mpwIOCtl` |
-
-Two corrections to the earlier draft:
-
-- `wdef0`/`wdef16` need **nothing** from U1 — `WindowDefUPP` already exists.
-- The `mpw*` objects are covered, not uncovered.  `MPW.yaml` already declares
-  `MPWQuitProcPtr`/`MPWFileProcPtr`/`MPWAccessProcPtr`/`MPWIOCtlProcPtr` with
-  `callconv: C`, and the hand-written `C_mpwX` take/return `int`, which is the
-  same type as `LONGINT` (`int32_t`).  Only the *spelling* differs, which is
-  exactly why this had to be checked by type identity and not by text.
+| `QDLineUPP`, `QDRectUPP`, `QDRRectUPP`, `QDOvalUPP`, `QDArcUPP`, `QDPolyUPP`, `QDRgnUPP`, `QDBitsUPP`, `QDCommentUPP`, `QDTexMeasUPP` | the `PrX`/`donotPrX` pairs for the matching `QDProcs` slot, plus `PrComment`, `PrTxMeas` (the get/put-pic slots are the exception — see below) |
+| `MPWQuitProcPtr`, `MPWFileProcPtr`, `MPWAccessProcPtr`, `MPWIOCtlProcPtr` | `mpwQuit`; `mpwClose`/`mpwRead`/`mpwWrite`; `mpwAccess`; `mpwIOCtl` (the source spells the results/arguments `int`; identical to `int32_t` on the supported ABIs) |
 
 **7 need the U1 declarations above:** `cdef0`, `cdef16`, `cdef1008` (→
 `ControlDefUPP`), `ldef0` (→ `ListDefUPP`), `mdef0` (→ `MenuDefUPP`), `mbdf0`
@@ -255,19 +238,18 @@ Two details:
   part of the contract and is implemented as an explicit write inside
   `C_ROMlib_dotext` (see U1a), not as a new calling-convention descriptor.
 
-The four `Pr*` functions keep their `PASCAL_FUNCTION_PTR` lines; they simply stop
-being the odd ones out.  (Their only uses are inside the two `#if 0` blocks in
-`prPrinting.cpp`'s `ourinit()`; the live code assigns `&StdGetPic`/`&StdPutPic`.)
-After the signature change there is no `UPP<void(char*, int16_t)>` →
-`GUEST<QDGetPicUPP>` conversion left, which settles the question the throw-away
-probe was for.
+The four `Pr*` functions keep their `PASCAL_FUNCTION_PTR` lines; after the
+signature change their types are the already-declared `QDGetPicUPP` and
+`QDPutPicUPP`, so no new declaration is needed.  Their only uses are inside the
+two `#if 0` blocks in `prPrinting.cpp`'s `ourinit()`; the live code assigns
+`&StdGetPic`/`&StdPutPic`.
 
 ## Sub-steps
 
-Same rules as the generated-trap work: full front-ends, both suites,
-`ninja clean && time ninja` plus binary sizes, `--logtraps` structure diff, and a
-`-G CIncludes` diff (U1 changes it intentionally in two places; later steps
-must not).  Commit after each.
+Each step is validated with a full build (all front-ends, both test suites), a
+`ninja clean && time ninja` in `build/` with debug and stripped binary sizes, a
+`--logtraps` structure diff, and a `-G CIncludes` diff (only U1 changes it, in
+the two places noted below).  Commit after each step.
 
 - **U1 — declarations and aliases.**  Split into six commits, in this order.  None
   of them touch the template machinery.  Verify after each: builds, both suites,
@@ -351,12 +333,12 @@ must not).  Commit after each.
 - **`createCallbackUPP` naming/ergonomics.**  The `UPP<...>& out` parameter
   carries the convention; the two names (`invokeUPP`/`createCallbackUPP`) are
   provisional and exist mainly so the pair is greppable.
-- **Register- and CCall-convention `*_FUNCTION_PTR`s.**  All covered: the
-  `serial`/`mactcp` ones (`Register<D0(A0,A1)>`) by the declared `DriverUPP`, and
-  the `mpw` `CCall` ones by the already-declared `MPW*ProcPtr` types.  (An
-  earlier draft claimed the `mpw` pair was uncovered; that was wrong.)
-- **`dotext`'s `A0` write.**  The old implementation also returned the current
-  port in `A0`, not just the result in `D0`.  **Decided:** reproduce it with an
+- **Register- and CCall-convention `*_FUNCTION_PTR`s.**  Covered by existing
+  declarations: the `serial`/`mactcp` ones (`Register<D0(A0,A1)>`) by
+  `DriverUPP`, and the `mpw` `CCall` ones by the `MPW*ProcPtr` types.
+- **`dotext`'s `A0` write.**  The commented-out implementation in
+  `teInsert.cpp` also returned the current port in `A0`, not just the result in
+  `D0`.  **Decided:** reproduce it with an
   explicit `EM_A0 = US_TO_SYN68K(qdGlobals().thePort)` at the end of
   `C_ROMlib_dotext` (U1a), not with a descriptor.  This relies on the generated
   thunk leaving `A0` alone after the native call — U2/U3 must keep that true for
@@ -369,8 +351,8 @@ must not).  Commit after each.
 ## Not in scope
 
 - Removing `UPP<>` or the descriptor vocabulary — they stay.
-- The lazy native-address → callback map for `*_FUNCTION_PTR` (considered and not
-  adopted; the macros stay).
+- A lazy global native-address → callback map for `*_FUNCTION_PTR`; each object
+  keeps installing its own callback through the macros.
 - Any change to the guest ABI, the trap tables, or the generated entrypoint
   structure.
 - The `funptr` → `New…UPP`/`Dispose…UPP` CIncludes surface.
