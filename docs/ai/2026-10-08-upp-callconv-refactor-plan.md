@@ -1,7 +1,7 @@
 # UPP<> and calling-convention refactor (plan)
 
 > Date: 2026-10-08
-> Status: U1–U4 are done.  U5 remains.
+> Status: U1–U5 are done.  The plan is complete.
 
 The goal: make the *generator* the single source of truth for calling
 conventions by generating **one marshaller set per signature**, and using that
@@ -498,7 +498,7 @@ the two places noted above).  Commit after each step.
   `callfromPPC::Invoker`; keep `readCArg` (moved to `callconv`),
   `ParameterPasser`, `stack` and the descriptors.
 
-- **U5 — sweep and docs.**  Delete `LoggedFunction`/`makeLoggedFunction` and
+- **U5 — sweep and docs (done).**  Delete `LoggedFunction`/`makeLoggedFunction` and
   the variadic logging helpers that become unreachable; delete whatever else
   is left of the invocation machinery; update
   `docs/subsystems/trap-dispatch.md`, `docs/architecture.md`, `AGENTS.md`.
@@ -718,6 +718,33 @@ straight-line `invokeUPP` bodies replace the template-instantiated ones; the
 debug/library drop is the removed `callto68K` instantiations and their debug
 info.
 
+## U5 — done
+
+Sweep:
+
+- deleted `LoggedFunction`, `makeLoggedFunction`, `makeLoggedFunction1`,
+  `FunctionTypeForFunctor`, the variadic `logTrapCall`/`logTrapValReturn`/
+  `logTrapVoidReturn` helpers and `logList`; nothing used them after U2;
+- removed `traps.impl.h`'s now-unused `<base/logging.h>` include and `traps.h`'s
+  now-unused `<functional>` include;
+- `callconv::Raw` stays as a legacy tag; nothing instantiates it.
+
+Docs: `docs/subsystems/trap-dispatch.md` now describes `GeneratedEntrypoint`'s
+`Entry68KFn`/`EntryPPCFn` shape, the four generated marshallers and the `CC`
+witness; `docs/architecture.md`'s trap-dispatch section no longer mentions the
+removed `TrapFunction<>`/`SubTrapFunction<>` hierarchy and points at the
+subsystem document; `AGENTS.md` says the marshalling is generated and forbids
+reintroducing the invokers.
+
+Validation: 138/138; Mac suite 90 passed + the two known `FileTest` xfails;
+`--logtraps` still produces the 2880-name sequence; `-G CIncludes` still has
+only the five U1 hunks.
+
+Measurements (Debug, `ninja clean && ninja`): wall 43.6 s; `executor`
+70,164,280; stripped 10,631,144; `libromlib.a` 122,939,794.  The stripped
+binary is unchanged and the debug/library figures move by ~15 KB: the deleted
+templates were already uninstantiated.
+
 ## Risks and open questions
 
 - **Per-trap entry lambdas.**  Each wrapper gets one tiny non-capturing lambda
@@ -750,10 +777,10 @@ info.
   callers.
 - **CCall `invokeUPP` is not emitted.**  No CCall UPP is ever invoked
   host→guest today (the `MPW*ProcPtr` types are stored in guest structs and
-  called by guest code), and `callto68K` has no CCall invoker to mirror.  A
-  host→guest CCall would therefore be a link error rather than dead code.  If
-  one appears, the body is the C-caller mirror of the 68K callback: read the
-  arguments from the stack, call `execute68K`, pop them again, result in `D0`.
+  called by guest code), and there is no CCall invoker to mirror.  A host→guest
+  CCall would therefore be a link error rather than dead code.  If one appears,
+  the body is the C-caller mirror of the 68K callback: read the arguments from
+  the stack, call `execute68K`, pop them again, result in `D0`.
 - **CCall `invokeFrom68K`.**  That direction is generated and has no current
   guest entrypoint exercise; its only users are the six `mpw` callbacks.  It is
   generated from the same rules as the old CCall invoker; `readCArg` stays for
@@ -767,12 +794,17 @@ info.
   `EM_A0 = US_TO_SYN68K(qdGlobals().thePort)` at the end of
   `C_ROMlib_dotext` (U1a), not with a descriptor.  This relies on the generated
   marshaller leaving `A0` alone after the native call.
-- **Compile time / binary size.**  The generated marshallers are per signature
-  (817 68K keys, 800 PPC signatures) instead of per trap (~2000).  U2 was
-  additive (+5.0 MB debug / +1.6 MB stripped); U3 was flat in debug and −0.5 MB
-  stripped; U4 removed the `callto68K` instantiations (wall 42.5 s, debug
-  −1.2 MB, library −1.8 MB).  U5 only removes now-unreachable logging helpers.
-  A modest net win is a legitimate stopping point.
+- **Compile time / binary size.**  Final state: 817 68K keys and 800 PPC
+  signatures produce four marshallers each instead of ~1850 per-trap 68K entries
+  and ~2000 PPC entries.  U2 was additive (+5.0 MB debug / +1.6 MB stripped),
+  U3/U4 removed most of it again, and U5 deletes the last unreachable templates.
+  Relative to the U1 baseline (66,128,592 debug / 9,582,568 stripped /
+  119,811,898 library, wall 41.9–42.6 s) the final tree is 70,164,280 /
+  10,631,144 / 122,939,794 at 43.6 s.  The wall time is inside the run-to-run
+  noise; the size cost is the per-signature marshallers, which now exist once
+  each and are shared by entrypoints, `UPP` calls and callbacks.  The win is
+  structural: one generated implementation of each calling convention instead of
+  the per-trap template instantiations and the invoker chains.
 
 ## Not in scope
 

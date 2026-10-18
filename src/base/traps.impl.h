@@ -2,7 +2,6 @@
 
 #include <base/traps.h>
 #include <base/functions.impl.h>
-#include <base/logging.h>
 #include <base/debugger.h>
 
 #include <cassert>

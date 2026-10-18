@@ -27,10 +27,12 @@ implementation with its own), and invokes the appropriate handler.
 - Bits 0–8: primary trap index.
 
 **`GeneratedEntrypoint`** (`src/base/trap-entry.{h,cpp}`): the non-template base for
-every trap object. It holds two plain function pointers — a straight-line 68K entry
-(`syn68k_addr_t (*)(syn68k_addr_t)`) and a straight-line PowerPC entry
-(`uint32_t (*)(PowerCore&)`) — plus the trap number and, for dispatcher sub-traps, the
-dispatcher and selector. Its `init()` installs the 68K callback via
+every trap object. It holds two uniform entry pointers — `Entry68KFn`
+(`syn68k_addr_t (*)(syn68k_addr_t, Entrypoint*)`) and `EntryPPCFn`
+(`uint32_t (*)(PowerCore&, Entrypoint*)`) — plus the trap number and, for dispatcher
+sub-traps, the dispatcher and selector. The generated wrapper constructor passes
+non-capturing lambdas that name the trap implementation and call the signature's
+generated marshaller. Its `init()` installs the 68K callback via
 `::callback_install`, fills `tooltraptable`/`ostraptable`, registers the PPC entry with
 `builtinlibs::addPPCEntrypoint`, and (when applicable) calls
 `dispatcher->addSelector()`. A trap object only exists once a trap number is known;
@@ -48,7 +50,8 @@ object; the object is defined in the generated `trap_entries/<Module>.cpp`.
 `src/base/trap-entry.cpp`): handles traps that dispatch on a sub-selector (e.g.
 `_OSDispatch`). The selector convention is *data* (a `SelectorKind` plus a mask) passed
 to the constructor, so no template is instantiated. It reads the selector, looks it up in
-the inherited `unordered_map<uint32_t, SelectorEntry>`, and invokes the matching handler.
+the inherited `unordered_map<uint32_t, SelectorEntry>`, and invokes the stored
+`Entry68KFn` with the sub-trap's `Entrypoint*`.
 
 **`DeferredInit`**: Every `Entrypoint` registers itself on a linked list at static
 construction time; `DeferredInit::initAll()` walks it during `traps::init()`. Do not
@@ -66,7 +69,29 @@ otherwise drop them).
 | `callconv::Pascal` | Parameters right-to-left on the 68K stack; return value on stack (most Toolbox traps) |
 | `callconv::Register<Ret(Args...), locs...>` | Each argument/return mapped to a specific register (most OS traps) |
 | `callconv::CCall` | Standard C calling convention; used for internal stubs |
-| `callconv::Raw` | Legacy direct-syn68k handler; raw traps are now plain `Entry68KFn`s (see below) |
+| `callconv::Raw` | Legacy convention tag; raw traps are `RAW_<Trap>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
+
+### Marshallers
+
+For every distinct signature in the generated set — the trap entrypoints, the
+`funptr:` types and functions marked `executor_marshaling` — `multiversal` emits
+four functions once per signature:
+
+| Function | Direction / use |
+|----------|-----------------|
+| `invokeFrom68K(addr, f, ep, (const CC*)nullptr)` | guest 68K → native; used by the trap entries and `createCallbackUPP` |
+| `invokeFromPPC(cpu, f, ep)` | guest PowerPC → native; keyed on the signature alone |
+| `invokeUPP(upp, args...)` | native → guest 68K; used by `UPP<>::operator()` |
+| `createCallbackUPP(f, out, ep)` | installs the 68K callback for a `*_FUNCTION_PTR` object |
+
+The `const CC*` witness on `invokeFrom68K` is always `nullptr`; it carries the
+convention in the parameter list because two conventions can share one signature
+(`DisposeHandle` is `void(Handle)` as Pascal and
+`Register<void(A0), ReturnMemErr<D0>>` as a trap).  The bodies are straight-line
+code built from the shared primitives (`callconv::stack`, `D<n>`/`A<n>`,
+`Out<>`/`InOut<>`, `TrapBit<>`, the extras and
+`callfromPPC::ParameterPasser`).  The hand-written `callfrom68K`/`callto68K`/
+`callfromPPC::Invoker` templates no longer exist.
 
 ## Generated vs. hand-written
 
@@ -75,16 +100,16 @@ otherwise drop them).
 
 | Output | Content |
 |--------|---------|
-| `api/<Module>.h` | Types, `C_<Trap>` declarations, and the `Wrapper_<Trap>` class + `extern` object per trap |
-| `trap_entries/<Module>.cpp` | Straight-line 68K and PowerPC entrypoints, wrapper methods, per-type logging printers, and the objects |
+| `api/<Module>.h` | Types, `C_<Trap>` declarations, the `Wrapper_<Trap>` class + `extern` object per trap, and the marshaller declarations |
+| `trap_entries/<Module>.cpp` | Wrapper methods and objects, PPC variant adapters, the per-signature marshallers and logging printers |
 | `structdump/<Module>.cpp` | `describeStruct()` per type (used by `--logtraps` and the debugger) plus the type registry |
 
 There is no per-module trap-instantiation translation unit any more: every trap,
 including the raw 68K ones (`executor_raw: true` in the YAML), is a generated
-straight-line entrypoint. A raw trap's body is still hand-written as
+wrapper.  A raw trap's body is still hand-written as
 `syn68k_addr_t RAW_<Trap>(syn68k_addr_t)` (declared in the generated header, defined in
-`emustubs.cpp`/`pack.cpp`/`patches.cpp` via `RAW_68K_IMPLEMENTATION`) and the generated
-entry just forwards to it with the untyped logging.
+`emustubs.cpp`/`pack.cpp`/`patches.cpp` via `RAW_68K_IMPLEMENTATION`); the wrapper's
+lambda calls `invokeFromRaw68K`, which runs it with the untyped logging.
 
 Hand-written `src/` code only uses the `*_FUNCTION_PTR` macros in `src/base/traps.h` for
 functions it publishes itself: `PASCAL_FUNCTION_PTR` / `REGISTER_FUNCTION_PTR` /
@@ -99,12 +124,12 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 |------|-------------|
 | `src/base/dispatcher.cpp` | `alinehandler`; debug trap history |
 | `src/base/dispatcher.h` | Declaration of `alinehandler` |
-| `src/base/trap-entry.h` | `GeneratedEntrypoint`, `Entry68KFn`/`EntryPPCFn` |
-| `src/base/trap-entry.cpp` | `GeneratedEntrypoint::init()`, `GeneratedDispatcherTrap` |
-| `src/base/traps.h` | `Entrypoint`, `GenericDispatcherTrap`, `GeneratedDispatcherTrap`, `WrappedFunction`, `SelectorKind`, the `*_FUNCTION_PTR` and `RAW_68K_IMPLEMENTATION` macros |
-| `src/base/traps.impl.h` | Template implementations (included by translation units) |
+| `src/base/trap-entry.h` | `GeneratedEntrypoint` |
+| `src/base/trap-entry.cpp` | `GeneratedEntrypoint::init()`, `GeneratedDispatcherTrap`, `invokeFromRaw68K` |
+| `src/base/traps.h` | `Entrypoint`, `Entry68KFn`/`EntryPPCFn`, `GenericDispatcherTrap`, `GeneratedDispatcherTrap`, `WrappedFunction`, `SelectorKind`, the `*_FUNCTION_PTR` and `RAW_68K_IMPLEMENTATION` macros |
+| `src/base/traps.impl.h` | `WrappedFunction::init()` and `traps::callback_install` (included by translation units) |
 | `src/base/functions.h` | `callconv` namespace, descriptor types (`Out`, `TrapBit`, …), `UPP<>`, `ProcPtr` |
-| `src/base/functions.impl.h` | `callfrom68K`/`callfromPPC`/`callto68K` invokers (used by `*_FUNCTION_PTR`) |
+| `src/base/functions.impl.h` | Shared marshalling primitives (`callconv::stack`, `readCArg`, `callfromPPC::ParameterPasser`); `UPP<>::operator()` forwarder |
 | `src/base/logging.{h,cpp}` | `--logtraps`: runtime gate, filter, value formatting, data-driven trap call/return |
 | `src/base/structdump.h` | `TypeDesc` + type registry used by `describeStruct` |
 | `src/base/emustubs.cpp` | Low-level 68K stubs and glue |
@@ -115,8 +140,8 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 
 - **`Entrypoint`**: base class for everything dispatchable; carries a name, optional
   library name, and a breakpoint flag used by the debugger.
-- **`GeneratedEntrypoint`**: one static-lifetime object per trap; holds the generated
-  entry function pointers and the guest function pointer (`guestFP`) installed at startup.
+- **`GeneratedEntrypoint`**: one static-lifetime object per trap; holds the two
+  entry pointers and the guest function pointer (`guestFP`) installed at startup.
 - **`GeneratedDispatcherTrap`**: owns the `std::unordered_map` from selector value to
   `SelectorEntry`; sub-traps register themselves with `addSelector()`.
 - **`UPP<Ret(Args...), CallConv>`**: a typed wrapper around a `void*` pointer that
@@ -129,24 +154,25 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 | `alinehandler(pc, ignored)` | Entry point for all A-line traps |
 | `DeferredInit::initAll()` | Register all traps at startup |
 | `GeneratedEntrypoint::init()` | Install the 68K callback, PPC entry and trap-table slot |
-| `GeneratedEntrypoint::handle68K` | Breakpoint check, then the generated entry |
+| `GeneratedEntrypoint::handle68K` | Breakpoint check, then the stored entry with `this` |
 | `GeneratedDispatcherTrap::addSelector()` | Add a sub-trap handler at a given selector value |
 | `logging::logTrapCallData()` | Format one logged trap call (data-driven) |
 
 ## Logging
 
 `--logtraps` prints every OS/toolbox call and return. Logging is a **runtime** feature:
-the generated entrypoints always contain the logging calls, gated by
+the generated marshallers always contain the logging calls, gated by
 `logging::enabled()`.
 
-To keep the per-trap cost down, the entrypoints do not use per-trap templates. Each
+To keep the per-trap cost down, the marshallers do not use per-trap templates. Each
 module has one generated printer per distinct argument/return type
-(`logArg_<n>(const void*)`, calling `logging::logValue`), and each trap has a small
-`static const logging::LogArgFn` table. The entrypoint passes pointers to its typed
-locals plus that table to the single non-template
-`logging::logTrapCallData` / `logTrapValReturnData` / `logTrapVoidReturnData`. Logged
-output is therefore identical to the old `logTrapCall(name, args...)` for the same
-values, and `--logtraps-filter` still applies.
+(`logArg_<n>(const void*)`, calling `logging::logValue`), and each marshaller (and
+each PPC variant) has a small `static const logging::LogArgFn` table. The
+marshaller passes pointers to its typed locals plus that table to the single
+non-template `logging::logTrapCallData` / `logTrapValReturnData` /
+`logTrapVoidReturnData`, using `Entrypoint::name` as the logged name. Logged
+output is therefore identical to the historical `logTrapCall(name, args...)`
+format, and `--logtraps-filter` still applies.
 
 ## Design Notes / Gotchas
 

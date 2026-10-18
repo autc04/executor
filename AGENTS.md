@@ -145,8 +145,9 @@ manipulate the trap tables at runtime.
 
 Trap declarations are **generated**, not hand-written. `multiversal/defs/*.yaml`
 is turned by `multiversal/make-multiverse.rb` into the headers under
-`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …) and the straight-line entrypoints
-under `build/src/trap_entries/`. Do not hand-edit generated headers — edit the YAML
+`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), the wrapper/marshaller sources
+under `build/src/trap_entries/`, and the struct descriptions under
+`build/src/structdump/`. Do not hand-edit generated headers — edit the YAML
 definitions instead. Every trap is a generated `GeneratedEntrypoint`; there is no module
 instanciation macro (the old `MODULE_NAME` / `api-module.h` / `INSTANTIATE_TRAPS_<name>`
 mechanism is gone). Implementation functions are named `C_TrapName`; raw 68K handlers
@@ -154,8 +155,18 @@ are `RAW_TrapName` with `RAW_68K_IMPLEMENTATION(Name)`, declared in the YAML wit
 `executor_raw: true`.
 
 Calling conventions (`callconv`, `src/base/functions.h`): `Pascal` (most Toolbox
-traps), `Register<...>` (most OS traps), `CCall`, and `Raw` (direct CPU state —
-avoid). Pick the convention of the original Mac API.
+traps), `Register<...>` (most OS traps), and `CCall`. Pick the convention of the
+original Mac API. `Raw` is only a legacy tag; raw handlers are declared with
+`executor_raw: true` and run through `invokeFromRaw68K`.
+
+The marshalling itself is generated. For every signature in the set (generated
+traps, `funptr:` types, and `executor_marshaling: true` declarations)
+multiversal emits `invokeFrom68K`, `invokeFromPPC`, `invokeUPP` and
+`createCallbackUPP`; generated wrapper constructors and `*_FUNCTION_PTR` objects
+use those. Do not reintroduce the old `callfrom68K`/`callto68K`/
+`callfromPPC::Invoker` templates. `invokeFrom68K`'s `const CC*` parameter is a
+witness (always `nullptr`): two conventions can share one signature
+(`DisposeHandle`), so the convention must be part of the parameter list.
 
 ## Coding conventions
 

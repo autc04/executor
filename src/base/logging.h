@@ -39,8 +39,9 @@ void logTrapVoidReturnData(const char* name, const LogArgFn* printers, const voi
 
 extern int nestingLevel;
 
-// RAII nesting guard used by the generated trap entrypoints so that --logtraps
-// indentation and the "suppress nested traps" rule match the old LoggedFunction.
+// RAII nesting guard used by the generated trap entrypoints and marshallers so
+// that --logtraps indentation and the "suppress nested traps" rule stay
+// consistent.
 struct LogNestingScope
 {
     bool active;
@@ -202,21 +203,6 @@ void logValue(guestvalues::GuestWrapper<T*> p)
 }
 
 
-template<typename Arg>
-inline void logList(Arg a)
-{
-    logValue(a);
-}
-inline void logList()
-{
-}
-template<typename Arg1, typename Arg2, typename... Args>
-void logList(Arg1 a, Arg2 b, Args... args)
-{
-    logValue(a);
-    std::clog << ", ";
-    logList(b,args...);
-}
 
 template<class T>
 bool validAddress(GUEST<T*> p)
@@ -224,127 +210,6 @@ bool validAddress(GUEST<T*> p)
     return validAddress(p.raw_host_order());
 }
 
-template<typename... Args>
-void logTrapCall(const char* trapname, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    std::clog.clear();
-    indent();
-    std::clog << trapname << "(";
-    logList(args...);
-    std::clog << ")\n" << std::flush;
-}
-
-template<typename Ret, typename... Args>
-void logTrapValReturn(const char* trapname, Ret ret, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    indent();
-    std::clog << "returning: " << trapname << "(";
-    logList(args...);
-    std::clog << ") => ";
-    logValue(ret);
-    std::clog << std::endl << std::flush;
-}
-template<typename... Args>
-void logTrapVoidReturn(const char* trapname, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    indent();
-    std::clog << "returning: " << trapname << "(";
-    logList(args...);
-    std::clog << ")\n" << std::flush;
-}
-
-template<typename T>
-struct FunctionTypeForFunctor : FunctionTypeForFunctor<decltype(&T::operator())>
-{ };
-
-template<typename Cls, typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (Cls::*)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (*)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (&)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (Args...)>
-{
-    using type = Ret (Args...);
-};
-
-
-template<typename CallConv, typename F,
-         typename FunType = typename FunctionTypeForFunctor<F>::type>
-class LoggedFunction;
-
-template<typename CallConv, typename F, typename Ret, typename... Args>
-class LoggedFunction<CallConv, F, Ret(Args...)>
-{
-    const char *name;
-    F fun;
-
-    struct LogLevelAdjuster
-    {
-        LogLevelAdjuster() { nestingLevel++; }
-        ~LogLevelAdjuster() { nestingLevel--; }
-    };
-public:
-    LoggedFunction(const char *name, const F& fun)
-        : name(name), fun(fun)
-    {
-    }
-
-    Ret operator() (Args... args) const
-    {
-        // Runtime gate: this functor is always used in a logging-enabled build,
-        // so that the marshalling templates are instantiated once per trap
-        // rather than once for the logged path and once for the unlogged path.
-        if(!enabled())
-            return fun(args...);
-
-        LogLevelAdjuster adj;
-
-        if constexpr(std::is_same_v<CallConv, callconv::Raw>)
-            logUntypedArgs(name);
-        else
-            logTrapCall(name, args...);
-
-        if constexpr(std::is_same_v<Ret, void>)
-        {
-            fun(args...);
-            logTrapVoidReturn(name, args...);
-        }
-        else
-        {
-            Ret ret = fun(args...);
-
-            if constexpr(std::is_same_v<CallConv, callconv::Raw>)
-                logUntypedReturn(name);
-            else 
-                logTrapValReturn(name, ret, args...);
-
-            return ret;
-        }
-    }
-};
-
-template<class CallConv = callconv::Pascal, class F>
-LoggedFunction<CallConv, F> makeLoggedFunction(const char *name, const F& f)
-{
-    return LoggedFunction<CallConv, F>(name, f);
-}
-template<class F1, class F>
-LoggedFunction<callconv::Pascal, F, F1> makeLoggedFunction1(const char *name, const F& f)
-{
-    return LoggedFunction<callconv::Pascal, F, F1>(name, f);
-}
 
 }
 }

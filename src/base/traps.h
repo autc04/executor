@@ -5,7 +5,6 @@
 
 #include <stdint.h>
 #include <unordered_map>
-#include <functional>
 #include <string>
 
 class PowerCore;
