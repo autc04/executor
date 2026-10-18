@@ -332,6 +332,30 @@ the two places noted below).  Commit after each step.
 - **U5 — sweep and docs.**  Delete whatever is left of the invocation machinery;
   update `docs/subsystems/trap-dispatch.md`, `docs/architecture.md`, `AGENTS.md`.
 
+## U1 — done
+
+Landed as six commits (U1a–U1f):
+
+- `TEDoTextUPP` is declared with the real `Register<D0(A3, D3, D4, D7)>`
+  convention, and `C_ROMlib_dotext` writes `A0 = thePort` on every return.
+- `SndModifierUPP` and the opaque `ModifierStub` exist; `snthfp` is gone.
+- `Executor.yaml` declares `ExecutorUnixMount` with `executor_marshaling: true`.
+- The MPW function-pointer types are spelled `int32_t` on both sides.
+- `ROMlib_filebox` is a `UserItemUPP`, and the four `Pr*Pic` helpers match
+  `QDGetPicUPP`/`QDPutPicUPP`.
+- `MenuDefUPP`, `MenuBarDefUPP`, `ListDefUPP`, `ControlDefUPP` and
+  `ResourceDecompressionUPP` exist; every hand-written `UPP<...>` alias except
+  `prinitprocp`/`cmpf` is gone.
+
+Validation per commit: 138/138 native tests, Mac suite 90 passed + the two known
+`FileTest` xfails, `--logtraps` structure identical, and only the expected
+CIncludes changes.
+
+Measurements (Debug, full clean builds): wall 41.9–42.6 s throughout; `executor`
+66,128,592 → 66,191,744; stripped 9,582,568 unchanged; `libromlib.a`
+119,811,898 → 119,967,390, almost all of it the two empty per-file TUs that
+`Executor.yaml` now generates.
+
 ## Signature identity (U2)
 
 The overloads are emitted once per distinct `(Ret(Args...), CC)` **C++ type**.
