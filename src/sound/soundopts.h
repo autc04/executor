@@ -46,11 +46,10 @@ typedef LONGINT TimeL;
 struct ModifierStub;
 typedef ModifierStub *ModifierStubPtr;
 
-using snthfp = UPP<Boolean(SndChannelPtr, SndCommand *, ModifierStubPtr)>;
 struct ModifierStub
 {
     GUEST<struct _ModifierStub *> nextStub;
-    GUEST<snthfp> code;
+    GUEST<SndModifierUPP> code;
     LONGINT userInfo;
     TimeL count;
     TimeL every;
