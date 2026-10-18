@@ -259,13 +259,13 @@ void Executor::ROMlib_listcall(INTEGER mess, Boolean sel, Rect *rp, Cell cell, I
     listdefhand = (*lhand)->listDefProc;
     if(listdefhand)
     {
-        listprocp lp;
+        ListDefUPP lp;
 
-        lp = *(GUEST<listprocp> *)listdefhand;
+        lp = *(GUEST<ListDefUPP> *)listdefhand;
         if(!lp)
         {
             LoadResource((*lhand)->listDefProc);
-            lp = *(GUEST<listprocp> *)(*lhand)->listDefProc;
+            lp = *(GUEST<ListDefUPP> *)(*lhand)->listDefProc;
         }
 
         ROMlib_hook(list_ldefnumber);

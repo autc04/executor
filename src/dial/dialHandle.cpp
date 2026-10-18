@@ -65,28 +65,23 @@ Boolean Executor::C_ROMlib_myfilt(DialogPtr dlg, EventRecord *evt,
 #define DIALOGEVTS \
     (mDownMask | mUpMask | keyDownMask | autoKeyMask | updateMask | activMask)
 
-using modalprocp = UPP<Boolean(DialogPtr dial, EventRecord *evtp,
-                               GUEST<INTEGER> *iht)>;
-
 #define CALLMODALPROC(dp, evtp, ip, fp2) \
-    ROMlib_CALLMODALPROC((dp), (evtp), (ip), (modalprocp)(fp2))
+    ROMlib_CALLMODALPROC((dp), (evtp), (ip), (ModalFilterUPP)(fp2))
 
 static inline Boolean
 ROMlib_CALLMODALPROC(DialogPtr dp,
-                     EventRecord *evtp, GUEST<INTEGER> *ip, modalprocp fp)
+                     EventRecord *evtp, GUEST<INTEGER> *ip, ModalFilterUPP fp)
 {
     ROMlib_hook(dial_modalnumber);
     return fp(dp, evtp, ip);
 }
 
-using useritemp = UPP<void(WindowPtr wp, INTEGER item)>;
-
 #define CALLUSERITEM(dp, inum, temph) \
-    ROMlib_CALLUSERITEM(dp, inum, (useritemp)(temph))
+    ROMlib_CALLUSERITEM(dp, inum, (UserItemUPP)(temph))
 
 static inline void
 ROMlib_CALLUSERITEM(DialogPtr dp,
-                    INTEGER inum, useritemp temph)
+                    INTEGER inum, UserItemUPP temph)
 {
     ROMlib_hook(dial_usernumber);
     temph(dp, inum);

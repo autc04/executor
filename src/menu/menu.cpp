@@ -1625,7 +1625,7 @@ void Executor::ROMlib_menucall(INTEGER mess, MenuHandle themenu, Rect *menrect, 
                                GUEST<INTEGER> *which)
 {
     Handle defproc;
-    menuprocp mp;
+    MenuDefUPP mp;
 
     defproc = (*themenu)->menuProc;
 
@@ -1634,7 +1634,7 @@ void Executor::ROMlib_menucall(INTEGER mess, MenuHandle themenu, Rect *menrect, 
         if(*defproc == nullptr)
             LoadResource(defproc);
 
-        mp = (menuprocp)*defproc;
+        mp = (MenuDefUPP)*defproc;
 
         ROMlib_hook(menu_mdefnumber);
         HLockGuard guard(defproc);
@@ -1647,14 +1647,14 @@ Executor::ROMlib_mbdfcall(INTEGER msg, INTEGER param1, LONGINT param2)
 {
     Handle defproc;
     LONGINT retval;
-    mbdfprocp mp;
+    MenuBarDefUPP mp;
 
     defproc = LM(MBDFHndl);
 
     if(*defproc == nullptr)
         LoadResource(defproc);
 
-    mp = (mbdfprocp)*defproc;
+    mp = (MenuBarDefUPP)*defproc;
 
     ROMlib_hook(menu_mbdfnumber);
     HLockGuard guard(defproc);

@@ -63,8 +63,6 @@ extern int32_t C_cdef1008(int16_t var, ControlHandle ctl, int16_t mess,
 
 extern void sb_ctl_init(void);
 
-using ctlfuncp = UPP<LONGINT (INTEGER var, ControlHandle ctl, INTEGER mess, LONGINT param)>;
-
 extern LONGINT ROMlib_ctlcall(ControlHandle c, INTEGER i, LONGINT l);
 #define CTLCALL(c, i, l) ROMlib_ctlcall((c), (i), (l))
 

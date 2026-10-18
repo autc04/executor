@@ -185,14 +185,14 @@ int32_t Executor::ROMlib_ctlcall(ControlHandle c, int16_t i, int32_t l)
 {
     Handle defproc;
     int32_t retval;
-    ctlfuncp cp;
+    ControlDefUPP cp;
 
     defproc = CTL_DEFPROC(c);
 
     if(*defproc == nullptr)
         LoadResource(defproc);
 
-    cp = (ctlfuncp)*defproc;
+    cp = (ControlDefUPP)*defproc;
 
     ROMlib_hook(ctl_cdefnumber);
     HLockGuard guard(defproc);

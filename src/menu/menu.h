@@ -182,11 +182,6 @@ struct mbdfentry
 
 #define SLOP 13
 
-using menuprocp = UPP<void(INTEGER mess, MenuHandle themenu,
-                                 Rect *menrect, Point hit, GUEST<INTEGER> *which)>;
-using mbdfprocp = UPP<LONGINT(INTEGER variant, INTEGER msg,
-                                    INTEGER param1, LONGINT param2)>;
-
 extern void ROMlib_menucall(INTEGER mess, MenuHandle themenu, Rect *menrect,
                             Point hit, GUEST<INTEGER> *which);
 extern LONGINT ROMlib_mbdfcall(INTEGER msg, INTEGER param1, LONGINT param2);
