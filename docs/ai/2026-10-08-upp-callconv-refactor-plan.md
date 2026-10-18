@@ -205,10 +205,10 @@ aliases already exist in Executor's own generated headers — `MenuRef` in
 - `MenuDefUPP`: `void(short message, MenuRef theMenu, Rect *menuRect, Point hitPt, short *whichItem)`
 - `MenuBarDefUPP`: `long(short selector, short message, short parameter1, long parameter2)`
 - `ListDefUPP`: `void(short lMessage, Boolean lSelect, Rect *lRect, Cell lCell, short lDataOffset, short lDataLen, ListHandle lHandle)`
-- `ControlDefUPP`: `SInt32(SInt16 varCode, ControlRef theControl, ControlDefProcMessage message, SInt32 param)`
+- `ControlDefUPP`: `SInt32(SInt16 varCode, ControlHandle theControl, ControlDefProcMessage message, SInt32 param)`
 
 These match the local `C_mdef0`/`C_mbdf0`/`C_ldef0`/`C_cdef0` argument lists
-exactly, modulo the numeric typedefs.
+exactly, modulo the numeric typedefs.  The ones is
 
 **The last 7 objects are resolved by signature updates or new declarations:**
 
@@ -331,13 +331,80 @@ the three places noted below).  Commit after each step.
 - **U5 — sweep and docs.**  Delete whatever is left of the invocation machinery;
   update `docs/subsystems/trap-dispatch.md`, `docs/architecture.md`, `AGENTS.md`.
 
+## Signature identity (U2)
+
+The overloads are emitted once per distinct `(Ret(Args...), CC)` **C++ type**.
+Names are only aliases, so the key ignores them, and it is computed on the
+spelling that will actually appear in the generated code — after `decl()`
+guestifies it — not on the YAML spelling.
+
+### What goes into the key
+
+A candidate is `(ret, [arg types], cc)`:
+
+- for a generated wrapper: `e[:ret]`, `e[:arg_types]`, `e[:cc]`;
+- for a `funptr:`: its `UPP<...>` arguments built exactly as `declare_funptr`
+  builds them (the return type as written, the arguments through `decl`);
+- for an `executor_marshaling: true` function: `arg_types` as
+  `declare_function` computes them.
+
+`cc` is normalised by stripping the `callconv::` prefix (`declare_funptr` emits
+`Register<...>`, wrappers emit `callconv::Register<...>`) and by normalising
+whitespace.  The convention is part of the key: the same `Sig` occurs with
+several of them (`void(Handle)` is Pascal for `DisposeHandle` and
+`Register<void(A0), ReturnMemErr<D0>>` for the trap).
+
+### Canonicalising a type
+
+1. Normalise whitespace and `const` placement (`T*`/`T *`,
+   `const T*`/`T const*`).
+2. Resolve every `typedef:` name recursively to its definition, including
+   inside `GUEST<...>` (`GUEST<INTEGER>` ≡ `GUEST<int16_t>`).  Typedefs are
+   transparent in C++, so this is exactly type identity.
+3. Stop at `struct`, `union` and `enum` names, and at names declared in
+   hand-written headers (`ProcPtr`, `OpaqueUntyped68KProc`).  An enum is a
+   distinct type even when its representation is `int16_t`; `ProcPtr` must not
+   collapse to `void*`.
+4. Preserve `const`, pointer depth and `GUEST<>` — each changes the type
+   (`QDGetPicUPP` and `QDPutPicUPP` differ only by `const`).
+5. In parameter position, an array type decays to a pointer (`FormatType`,
+   a typedef for `char[4]`, is the same parameter type as `char*`).  No current
+   signature needs this, but the rule belongs with the rest.
+
+Typedef resolution needs a generator-wide table, built once from the same view
+the Executor generator uses: `only-for`/`not-for` filtered with
+`filter_key = "executor"`, and `api: carbon` items skipped (Executor's
+`make_api_ifdef` drops them).  That picks the Executor definition of the few
+duplicated names (`IOMiscType` = `uint32_t`, `CGrafPtr` = `CGrafPort*`).
+Identical duplicates (`Boolean`, `UniversalProcPtr`) are harmless; a
+conflicting one is a generation-time error.  Memoise and detect cycles.
+
+The generator only canonicalises YAML spellings.  Whether a hand-written
+`decltype(C_NAME)` matches is decided by the C++ compiler at the call site: an
+`int` in source and an `int32_t` in the YAML are the same type on the supported
+ABIs.  U1d removes that particular mismatch by spelling the MPW signatures
+`int32_t` on both sides.
+
+### Failure modes
+
+Both mistakes are compile-time errors:
+
+- **Under-merge** (two spellings of one type kept apart) emits two identical
+  overloads → redefinition.
+- **Over-merge** (two different types collapsed) leaves one type without an
+  overload → `no matching function` at its use.
+
+As an extra guard against over-merging, emit a
+`static_assert(std::is_same_v<...>)` for every merged group, comparing the
+representative's emitted type with each other spelling.  That catches a bad
+merge even when the lost spelling is otherwise unused.
+
 ## Risks and open questions
 
-- **Deduplication is by type identity, so the `(Sig, CC)` key must canonicalise
-  exactly.**  `cdef1008` spells the same types as `cdef0` (`int16_t`/`int32_t` ≡
-  `INTEGER`/`LONGINT`), so the generator must not emit two overloads for what is
-  one `UPP<...>` type, and a textual-vs-type mismatch must be caught (a duplicate
-  overload is a redefinition error, which is at least diagnosed).
+- **Signature canonicalisation.**  The key is the emitted C++ type, not the YAML
+  spelling; the rules and failure modes are in "Signature identity (U2)".
+  `cdef1008` vs `cdef0` is the smallest example of two spellings that must
+  collapse.
 - **Overload visibility.**  The generated overload declarations must be visible
   (by ordinary lookup or ADL) at every instantiation of `UPP<>::operator()` and
   of `WrappedFunction<>::init()`; a miss is a hard `no matching function`, which
