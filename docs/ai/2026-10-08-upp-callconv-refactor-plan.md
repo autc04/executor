@@ -408,7 +408,10 @@ several of them (`void(Handle)` is Pascal for `DisposeHandle` and
    distinct type even when its representation is `int16_t`; `ProcPtr` must not
    collapse to `void*`.
 4. Preserve `const`, pointer depth and `GUEST<>` — each changes the type
-   (`QDGetPicUPP` and `QDPutPicUPP` differ only by `const`).
+   (`QDGetPicUPP` and `QDPutPicUPP` differ only by `const`).  The one exception
+   is `GUEST<T>` when `T` is a `GUEST_STRUCT`: `GuestType<T>::type` is `T`, so
+   `GUEST<AEDesc>` and `AEDesc` are the same type.  (The generator knows the
+   guest structs: they are the `struct`/`union` items.)
 5. In parameter position, an array type decays to a pointer (`FormatType`,
    a typedef for `char[4]`, is the same parameter type as `char*`).  No current
    signature needs this, but the rule belongs with the rest.
