@@ -26,7 +26,7 @@ syn68k_addr_t GeneratedEntrypoint::handle68K(syn68k_addr_t addr, void* ctx)
     if(auto ret = self->checkBreak68K(addr); ~ret)
         return ret;
 
-    return self->fn68k(addr);
+    return self->fn68k(addr, self);
 }
 
 void GeneratedEntrypoint::init()
@@ -53,7 +53,7 @@ void GeneratedEntrypoint::init()
                 if(auto ret = this->checkBreakPPC(cpu); ~ret)
                     return ret;
 
-                return fnppc(cpu);
+                return fnppc(cpu, this);
             });
     }
 
@@ -116,7 +116,7 @@ syn68k_addr_t GeneratedDispatcherTrap::invokeFrom68K(syn68k_addr_t addr, void* e
             return ret;
 
         self->commitSelector();
-        return it->second.invoke(addr);
+        return it->second.invoke(addr, it->second.entrypoint);
     }
     else
     {
@@ -146,7 +146,7 @@ void GeneratedDispatcherTrap::init()
 }
 
 void GeneratedDispatcherTrap::addSelector(uint32_t sel, Entrypoint* entrypoint,
-                                          std::function<syn68k_addr_t(syn68k_addr_t)> handler)
+                                          Entry68KFn handler)
 {
     selectors[sel & mask] = { entrypoint, handler };
 }

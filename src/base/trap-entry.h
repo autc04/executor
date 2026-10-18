@@ -12,17 +12,14 @@ namespace Executor
 namespace traps
 {
 
-// The straight-line entrypoints emitted by multiversal.
-using Entry68KFn = syn68k_addr_t (*)(syn68k_addr_t);
-using EntryPPCFn = uint32_t (*)(PowerCore&);
-
-// Non-template replacement for the old templated wrapper objects.  It holds plain
-// function pointers to generated marshalling code instead of instantiating the
-// callfrom68K/callfromPPC/Register<> templates.  The generated per-trap
-// callable object derives from this and adds the typed operator()/operator&.
+// The straight-line entrypoints emitted by multiversal are stored as plain
+// Entry68KFn / EntryPPCFn pointers.  The generated wrapper constructor passes
+// a non-capturing lambda that names the trap's implementation and calls the
+// signature's generated marshaller.
 //
-// This is the Phase-0 skeleton: it exists to pin down the runtime shape and is
-// not wired up by itself yet.
+// Non-template replacement for the old templated wrapper objects.  The
+// generated per-trap callable object derives from this and adds the typed
+// operator()/operator&.
 class GeneratedEntrypoint : public Entrypoint
 {
 public:
@@ -67,11 +64,12 @@ private:
     syn68k_addr_t originalFunction = 0;
 };
 
+}
+
 // Runs a raw 68K handler (RAW_<name>) with the untyped register/stack dump that
 // --logtraps produced for the old templated wrappers.
 syn68k_addr_t invokeFromRaw68K(syn68k_addr_t addr,
                                syn68k_addr_t (*f)(syn68k_addr_t),
                                traps::Entrypoint* ep);
 
-}
 }

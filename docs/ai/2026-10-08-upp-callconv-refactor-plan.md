@@ -1,7 +1,7 @@
 # UPP<> and calling-convention refactor (plan)
 
 > Date: 2026-10-08
-> Status: U1 and U2 are done.  U3–U5 remain.
+> Status: U1–U3 are done.  U4–U5 remain.
 
 The goal: make the *generator* the single source of truth for calling
 conventions by generating **one marshaller set per signature**, and using that
@@ -474,7 +474,7 @@ the two places noted above).  Commit after each step.
   while the entrypoints still use their own `entry_*` code, so the two paths
   can be compared.
 
-- **U3 — entrypoints use the marshallers.**  Change `GeneratedEntrypoint` to
+- **U3 — entrypoints use the marshallers (done).**  Change `GeneratedEntrypoint` to
   store `Entry68KFn`/`EntryPPCFn`; `handle68K`/`handlePPC` keep the breakpoint
   check and call them with `(addr, this)` / `(cpu, this)`.  Generate the wrapper
   constructors (in `trap_entries/<module>.cpp`) with the two non-capturing
@@ -647,6 +647,45 @@ per-trap `entry_*` functions still exist and `invokeUPP` still instantiates
 `callto68K`.  U3 removes the per-trap entries and U4 removes the invoker
 templates; the marshallers are what remains.
 
+## U3 — done
+
+`GeneratedEntrypoint` now stores only `Entry68KFn` and `EntryPPCFn`:
+
+```cpp
+using Entry68KFn = syn68k_addr_t (*)(syn68k_addr_t, Entrypoint*);
+using EntryPPCFn = uint32_t (*)(PowerCore&, Entrypoint*);
+```
+
+- Typed traps pass two non-capturing lambdas from their constructor.  The 68K
+  lambda names the implementation and the `const CC*` witness; the PPC lambda
+  names the implementation and calls `invokeFromPPC`.
+- Raw traps pass one lambda that calls `invokeFromRaw68K(addr, &RAW_<name>, ep)`;
+  the typed raw pointer means there is no cast.
+- PPC-only variants keep one generated `entry_<name>_ppc(PowerCore&,
+  traps::Entrypoint*)` adapter, because they forward to another wrapper object
+  rather than to a free function.
+- The dispatcher's `SelectorEntry` now stores an `Entrypoint*` and an
+  `Entry68KFn`, so `addSelector` no longer needs a `std::function`.
+- `ReferenceEntries_<module>` odr-uses the wrapper objects; the per-trap
+  `entry_*` functions are gone.
+
+Generated code: zero per-trap 68K entry functions (was ~1850), 192 variant PPC
+adapters, 33 raw lambdas and 1814 typed lambdas.  The per-trap logging printer
+arrays are gone too; only variants and marshallers use the shared printers.
+
+Validation: 138/138; Mac suite 90 passed + the two known `FileTest` xfails;
+`--logtraps` still produces the same 2880-name sequence (the run still ends at
+the pre-existing `PBSetEOF` abort, and raw register dumps and uninitialised
+stack fields differ as they did between the golden run and U2); `-G CIncludes`
+still adds no hunk beyond the five U1 ones.
+
+Measurements (Debug, `ninja clean && ninja`): wall 45.7 s → 44.1 s; `executor`
+71,188,752 → 71,338,176; stripped 11,208,680 → 10,672,104; `libromlib.a`
+125,484,870 → 124,782,884.  The debug binary is flat because the removed
+per-trap functions are replaced by per-trap lambdas (with debug info); the
+stripped binary and the library shrink.  U4 removes the `callto68K`
+instantiations and is where the remaining invoker template code goes.
+
 ## Risks and open questions
 
 - **Per-trap entry lambdas.**  Each wrapper gets one tiny non-capturing lambda
@@ -697,11 +736,10 @@ templates; the marshallers are what remains.
   `C_ROMlib_dotext` (U1a), not with a descriptor.  This relies on the generated
   marshaller leaving `A0` alone after the native call.
 - **Compile time / binary size.**  The generated marshallers are per signature
-  (817 68K keys, 800 PPC signatures) instead of per trap (~2000), and the
-  `callfrom68K`/`callfromPPC` and `LoggedFunction` instantiations are gone from
-  the callback path.  U2 is still additive because the per-trap `entry_*`
-  functions remain; the measured cost is +5.0 MB debug / +1.6 MB stripped.
-  U3 and U4 remove the per-trap entries and the `callto68K` instantiations.
+  (817 68K keys, 800 PPC signatures) instead of per trap (~2000).  U2 was
+  additive (+5.0 MB debug / +1.6 MB stripped); U3 is flat in debug and −0.5 MB
+  stripped because the removed per-trap entries are replaced by small lambdas.
+  U4 removes the `callto68K` instantiations and the remaining invoker code.
   Measure every sub-step; a modest net win is a legitimate stopping point.
 
 ## Not in scope

@@ -62,16 +62,22 @@ private:
     uint32_t breakPPC(PowerCore& cpu);
 };
 
+// The uniform entry shape stored by GeneratedEntrypoint.  The marshaller is
+// selected per signature; the Entrypoint* carries the name and the breakpoint
+// check.
+using Entry68KFn = syn68k_addr_t (*)(syn68k_addr_t, Entrypoint*);
+using EntryPPCFn = uint32_t (*)(PowerCore&, Entrypoint*);
+
 class GenericDispatcherTrap : public Entrypoint
 {
 public:
-    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, std::function<syn68k_addr_t(syn68k_addr_t)> handler) = 0;
+    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, Entry68KFn handler) = 0;
     GenericDispatcherTrap(const char* name, uint16_t trapno) : Entrypoint(name), trapno(trapno) {}
 protected:
     struct SelectorEntry
     {
         Entrypoint* entrypoint;
-        std::function<syn68k_addr_t(syn68k_addr_t)> invoke;
+        Entry68KFn invoke;
     };
     std::unordered_map<uint32_t, SelectorEntry> selectors;
     uint16_t trapno;
@@ -98,7 +104,7 @@ public:
         : GenericDispatcherTrap(name, trapno), kind(kind), mask(mask) {}
 
     virtual void init() override;
-    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, std::function<syn68k_addr_t(syn68k_addr_t)> handler) override;
+    virtual void addSelector(uint32_t sel, Entrypoint* entrypoint, Entry68KFn handler) override;
 
 private:
     static syn68k_addr_t invokeFrom68K(syn68k_addr_t addr, void* extra);
