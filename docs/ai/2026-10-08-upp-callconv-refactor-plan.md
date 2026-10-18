@@ -18,7 +18,8 @@ moves out, into **two overload sets emitted by multiversal**:
 Ret  invokeUPP(const UPP<Ret(Args...), CC>&, Args...);
 
 // native function -> guest callback (what WrappedFunction::init does today)
-void createCallbackUPP(Ret (*f)(Args...), UPP<Ret(Args...), CC>& out);
+void createCallbackUPP(Ret (*f)(Args...), UPP<Ret(Args...), CC>& out,
+                       traps::Entrypoint* ep);
 ```
 
 Both are keyed on the **UPP type**, which already carries both `Sig` and `CC`,
@@ -60,7 +61,10 @@ Then:
   carrying both.
 - **`createCallbackUPP` needs no witness argument.** Its output parameter is
   typed `UPP<...>&`, which already carries `CC`; a bare `Ret (*)(Args...)`
-  parameter could not, so a witness argument would otherwise be required.
+  parameter could not, so a witness argument would otherwise be required.  The
+  `Entrypoint*` is not part of the type key: it carries the per-object state
+  (`name` and the breakpoint check) that a keyed-on-`(Sig, CC)` function
+  otherwise loses.
 
 ## Background
 
@@ -306,19 +310,32 @@ the two places noted below).  Commit after each step.
     `UserItemUPP`/`UserItemUPP`/`ModalFilterUPP`.  Keep `prinitprocp`/`cmpf`
     (already covered by trap signatures).
 - **U2 — emit the two overload sets as a behaviour-preserving seam.**  Generate an
-  `invokeUPP` and a `createCallbackUPP` overload for every distinct `(Sig, CC)`
-  in the union of (a) the signatures the generator already emits wrappers for,
-  (b) every `funptr:` type, and (c) every `function:` marked
+  `invokeUPP` and a `createCallbackUPP` declaration for every distinct
+  `(Sig, CC)` in the union of (a) the signatures the generator already emits
+  wrappers for, (b) every `funptr:` type, and (c) every `function:` marked
   `executor_marshaling: true`.  The bodies **delegate to the existing
   `callto68K`/`callfrom68K`**.  (c) is the escape hatch for a declaration that
   produces no wrapper but still needs a marshaller; `ExecutorUnixMount` is the
   only user, and it provides `OSErr(CInfoPBRec *)` to the existing
-  `PASCAL_FUNCTION_PTR(unixmount)`.  Do not widen this to every declared
-  function: many `- function:` items are CIncludes-only prototypes with no
-  Executor implementation, and their signatures would only add dead overloads.
-  Switch `UPP<>::operator()` and `WrappedFunction<>::init()` to them.  Behaviour
-  byte-identical; this is the seam that lets U3 delete the invokers with no
-  other change.
+  `PASCAL_FUNCTION_PTR(unixmount)`.
+
+  Two restrictions keep the generated code proportional to what is used:
+
+  - `invokeUPP` is defined for (a), (b) and (c) except `callconv::CCall`.
+    `callto68K` has no CCall invoker and no CCall UPP is ever invoked, so a
+    call is a link error rather than dead code.
+  - `createCallbackUPP` is defined only for (b) and (c): those are the
+    signatures a `WrappedFunction` (a `*_FUNCTION_PTR` object) can use.  (a)'s
+    ~800 trap signatures are patched through `invokeUPP` but never installed as
+    native callbacks.
+
+  Generation is two-pass: all headers first, so the callback set is complete
+  before definitions are written.  Do not widen this to every declared function:
+  many `- function:` items are CIncludes-only prototypes with no Executor
+  implementation, and their signatures would only add dead overloads.  Switch
+  `UPP<>::operator()` and `WrappedFunction<>::init()` to the generated
+  functions.  Behaviour byte-identical; this is the seam that lets U3 delete
+  the invokers with no other change.
 - **U3 — move the marshalling bodies in and delete the invokers.**  Replace the
   delegating bodies with straight-line generated marshalling (using the
   descriptors, `callconv::stack`, `ParameterPasser`); delete `callto68K`,
@@ -419,10 +436,41 @@ Both mistakes are compile-time errors:
 - **Over-merge** (two different types collapsed) leaves one type without an
   overload → `no matching function` at its use.
 
-As an extra guard against over-merging, emit a
-`static_assert(std::is_same_v<...>)` for every merged group, comparing the
-representative's emitted type with each other spelling.  That catches a bad
-merge even when the lost spelling is otherwise unused.
+As an extra guard against over-merging, every spelling is checked against its
+canonical rendering in the module that mentions it:
+`static_assert(std::is_same_v<UPP<local>, UPP<canonical>>)`.  That spelling's
+names are all in scope there, so a wrong canonicalisation is a generation-time
+compile error even when the type is otherwise unused.
+
+## U2 — done
+
+The generator now emits, per distinct canonical signature:
+
+- an `invokeUPP` declaration in every module that mentions it, and one
+  definition in the module that first declares it;
+- a `createCallbackUPP` declaration in every mentioning module, and a definition
+  only where a `WrappedFunction` can use it (every `funptr:` signature and every
+  `executor_marshaling: true` function);
+- a `static_assert` in each mentioning module, comparing that module's spelling
+  with the generated canonical spelling.
+
+813 `invokeUPP` definitions (all distinct signatures except the four CCall
+ones), 56 `createCallbackUPP` definitions and 1070 `static_assert`s.  Emitting
+`createCallbackUPP` for all ~800 trap signatures instead added about 13 MB of
+binary; the restriction above is what keeps this step near the U1 footprint.
+
+`createCallbackUPP` takes the owning `Entrypoint*`, so the per-object breakpoint
+check and logged name survive; its body is otherwise the old
+`WrappedFunction::init` lambda.
+
+Validation: 138/138; Mac suite 90 passed + the two known `FileTest` xfails;
+`--logtraps` structure identical; `-G CIncludes` unchanged.
+
+Measurements (Debug, full clean build): wall 42.6 s → 44.0 s; `executor`
+66,191,744 → 67,620,216; stripped 9,582,568 → 9,836,520; `libromlib.a`
+119,967,390 → 122,232,512.  The increase is the 813 thin `invokeUPP` functions
+and the 56 callback definitions; U3 replaces their bodies and removes the
+invoker templates.
 
 ## Risks and open questions
 
@@ -434,14 +482,10 @@ merge even when the lost spelling is otherwise unused.
   (by ordinary lookup or ADL) at every instantiation of `UPP<>::operator()` and
   of `WrappedFunction<>::init()`; a miss is a hard `no matching function`, which
   is the point of choosing overloads.
-- **Breakpoints and `--logtraps` for `*_FUNCTION_PTR`.**  Today the per-object
-  lambda in `WrappedFunction::init()` captures `this` for `checkBreak68K` and the
-  logged name (the golden `--logtraps` output filters `ROMlib_vcatch`, so these
-  do appear in today's log).  A generated `createCallbackUPP` keyed only on
-  `(Sig, CC)` has no per-object state.  Decide whether to thread the
-  `Entrypoint*` through as `callback_install`'s `arbitrary_argument` (the thunk is
-  then `(Sig, CC)`-generated but calls back through the object for the breakpoint
-  check and the name), or to drop name/breakpoint support for these objects.
+- **Breakpoints and `--logtraps` for `*_FUNCTION_PTR`.**  Resolved in U2: the
+  generated `createCallbackUPP` takes the owning `Entrypoint*`, so the
+  breakpoint check and the logged name are preserved and `--logtraps` is
+  unchanged.
 - **`createCallbackUPP` naming/ergonomics.**  The `UPP<...>& out` parameter
   carries the convention; the two names (`invokeUPP`/`createCallbackUPP`) are
   provisional and exist mainly so the pair is greppable.

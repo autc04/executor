@@ -35,6 +35,7 @@
 #include <ADB.h>
 #include <ToolboxEvent.h>
 #include <AppleEvents.h>
+#include <Executor.h> /* ExecutorUnixMount's marshalling */
 
 #include <quickdraw/cquick.h> /* SET_HILITE_BIT */
 #include <prefs/prefs.h> /* system_version */

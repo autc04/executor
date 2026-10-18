@@ -564,7 +564,8 @@ namespace callfromPPC
 template<typename Ret, typename... Args, typename CallConv>
 Ret UPP<Ret(Args...), CallConv>::operator()(Args... args) const
 {
-    return callto68K::Invoker<Ret(Args...), CallConv>::invoke68K(ptr, args...);
+    // Found by ADL at instantiation: the generated per-signature overload.
+    return invokeUPP(*this, args...);
 }
 
 }
