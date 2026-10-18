@@ -14,8 +14,6 @@
 
 #include <mman/mman.h>
 
-#define MODULE_NAME wind_wind
-#include <base/api-module.h>
 
 namespace Executor
 {

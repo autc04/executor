@@ -13,16 +13,11 @@
 #include <ResourceMgr.h>
 #include <mman/mman.h>
 
-#define MODULE_NAME list_list
-#include <base/api-module.h>
 
 namespace Executor
 {
 extern void
 C_ldef0(INTEGER, Boolean, Rect *, Cell, INTEGER, INTEGER, ListHandle);
-
-using listprocp = UPP<void (INTEGER mess, Boolean sel, Rect *rectp,
-                                 Cell cell, INTEGER off, INTEGER len, ListHandle lhand)>;
 
 extern void ROMlib_listcall(INTEGER mess, Boolean sel, Rect *rp, Cell cell,
                             INTEGER off, INTEGER len, ListHandle lhand);

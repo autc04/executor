@@ -1,8 +1,6 @@
 /* Copyright 1994, 1995, 1996 by Abacus Research and
  * Development, Inc.  All rights reserved.
  */
-#define INSTANTIATE_TRAPS_base_emustubs
-
 #include <base/common.h>
 #include <ResourceMgr.h>
 #include <SANE.h>
@@ -14,6 +12,12 @@
 #include <OSEvent.h>
 #include <ProcessMgr.h>
 #include <CommTool.h>
+#include <StartMgr.h>
+#include <DeviceMgr.h>
+#include <ToolboxUtil.h>
+#include <PPC.h>
+#include <QuickDraw.h>
+#include <TimeMgr.h>
 #include <rsys/segment.h>
 #include <res/resource.h>
 #include <rsys/toolutil.h>

@@ -13,8 +13,6 @@
 #include <ResourceMgr.h>
 #include <mman/mman.h>
 
-#define MODULE_NAME menu_menu
-#include <base/api-module.h>
 
 namespace Executor
 {
@@ -183,11 +181,6 @@ struct mbdfentry
 #define MBSAVELOC ((mbdfheaderhand)LM(MBSaveLoc))
 
 #define SLOP 13
-
-using menuprocp = UPP<void(INTEGER mess, MenuHandle themenu,
-                                 Rect *menrect, Point hit, GUEST<INTEGER> *which)>;
-using mbdfprocp = UPP<LONGINT(INTEGER variant, INTEGER msg,
-                                    INTEGER param1, LONGINT param2)>;
 
 extern void ROMlib_menucall(INTEGER mess, MenuHandle themenu, Rect *menrect,
                             Point hit, GUEST<INTEGER> *which);

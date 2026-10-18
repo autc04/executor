@@ -23,7 +23,7 @@ The project originated commercially at ARDI in the 1990s, was open-sourced in 20
                             │ A-line trap instruction
 ┌───────────────────────────▼──────────────────────────────┐
 │                    Trap Dispatch Layer                    │
-│  alinehandler → trap table → TrapFunction<> / DispatcherTrap │
+│  alinehandler → trap table → GeneratedEntrypoint / DispatcherTrap │
 └────────────┬──────────────────────────────┬──────────────┘
              │ calls                        │ calls
 ┌────────────▼──────────────┐  ┌────────────▼──────────────┐
@@ -121,58 +121,60 @@ LM(ROMBase)   // returns GUEST<uint32_t>&
 
 The 68K instruction set reserves A-line opcodes (`0xAxxx`) for OS traps. When syn68k encounters an A-line opcode it calls `alinehandler(pc, …)` (`src/base/dispatcher.h` / `.cpp`). The handler decodes the trap number from the opcode, looks it up in `tooltraptable` or `ostraptable`, and transfers control to the corresponding stub.
 
-Trap tables are filled at startup by `traps::init()` (`src/base/traps.cpp`), which calls `DeferredInit::initAll()` to let every `TrapFunction<>` object register itself.
+Trap tables are filled at startup by `traps::init()` (`src/base/traps.cpp`), which calls `DeferredInit::initAll()` to let every `Entrypoint` object register itself.
 
-### `Entrypoint` and `TrapFunction<>`
+### `Entrypoint` and `GeneratedEntrypoint`
 
-Every Mac API entry point is represented by a statically-allocated `TrapFunction<>` object (`src/base/traps.h`). It inherits from `Entrypoint`, which inherits from `DeferredInit`. The `DeferredInit` linked list guarantees that every trap installs itself before the emulator starts, without requiring manual registration calls.
+Every Mac API entry point is represented by a statically-allocated object derived from `Entrypoint` (`src/base/traps.h`), which inherits from `DeferredInit`. The `DeferredInit` linked list guarantees that every trap installs itself before the emulator starts, without requiring manual registration calls.
 
-A simplified view of the class hierarchy:
+Generated traps derive from `GeneratedEntrypoint` (`src/base/trap-entry.h`). It stores two uniform entry pointers — `Entry68KFn` (`syn68k_addr_t (*)(syn68k_addr_t, Entrypoint*)`) and `EntryPPCFn` (`uint32_t (*)(PowerCore&, Entrypoint*)`) — plus the trap number and, for dispatcher sub-traps, the dispatcher and selector. The generated wrapper constructor passes non-capturing lambdas that name the trap implementation and call the signature's generated marshaller, so there is no erased implementation pointer. `init()` installs the 68K callback, fills the trap-table slot, registers the PPC entry and adds the selector.
 
-```
-DeferredInit
-  └── Entrypoint           (name, breakpoint support, debugger hook)
-        └── WrappedFunction<F*, CallConv>   (owns the 68K stub)
-              └── TrapFunction<F*, trapno, CallConv>   (owns trap table slot)
-              └── SubTrapFunction<F*, trapno, selector, CallConv>
-```
+Hand-written `*_FUNCTION_PTR` callback objects are `WrappedFunction<...>` instances. Their `init()` calls `createCallbackUPP`, which installs a callback that checks breakpoints and calls the same `invokeFrom68K` marshaller.
 
-`WrappedFunction::init()` synthesises a small 68K thunk ("stub") in guest memory that, when called by guest code, marshals arguments according to `CallConv`, calls the C++ implementation, and returns.
-
-`TrapFunction::operator()` checks whether the trap has been patched (via `GetTrapAddress`/`SetTrapAddress`) and, if so, calls through the trap table; otherwise it calls the C++ function directly. This is how Mac applications can patch OS traps — a common technique.
+The generated wrapper's `operator()` checks whether the trap has been patched (via `GetTrapAddress`/`SetTrapAddress`) and, if so, calls through the trap table; otherwise it calls the C++ function directly. This is how Mac applications can patch OS traps — a common technique.
 
 ### Calling conventions
 
-The `callconv` namespace (`src/base/functions.h`) models the three conventions used by the original Mac OS:
+The `callconv` namespace (`src/base/functions.h`) models the conventions used by the original Mac OS:
 
 | Tag | Description |
 |-----|-------------|
 | `callconv::Pascal` | Parameters pushed right-to-left on the 68K stack; return value on stack |
 | `callconv::Register<Ret(Args...), locs...>` | Parameters and return value in specified 68K registers (`A0`–`A7`, `D0`–`D7`) |
 | `callconv::CCall` | Standard C calling convention |
-| `callconv::Raw` | Direct `syn68k_addr_t(syn68k_addr_t, void*)` handler — use only when you must access CPU state directly |
+| `callconv::Raw` | Legacy tag; raw traps are `RAW_<name>(syn68k_addr_t)` functions run through `invokeFromRaw68K` |
+
+For each signature the generator emits one marshaller per direction: `invokeFrom68K` (guest 68K → native, with a `const CC*` witness so conventions sharing a signature stay distinct), `invokeFromPPC` (guest PowerPC → native), `invokeUPP` (native → guest 68K, used by `UPP<>::operator()`) and `createCallbackUPP` (the `*_FUNCTION_PTR` adapter). The bodies are generated from the shared primitives (`callconv::stack`, `D<n>`/`A<n>`, `Out<>`/`InOut<>`, `TrapBit<>`, the extras and `callfromPPC::ParameterPasser`); the old `callfrom68K`/`callto68K` invokers are gone. See `docs/subsystems/trap-dispatch.md`.
 
 ### Selector-dispatched traps
 
-Some Mac traps (e.g., `_OSDispatch`, file manager traps) multiplex many functions under a single trap number, dispatching on a selector value. These use `DispatcherTrap<SelectorConvention>`, which reads the selector from D0, D1, a stack word, or the trap bits, then forwards to the matching `SubTrapFunction<>`.
+Some Mac traps (e.g., `_OSDispatch`, file manager traps) multiplex many functions under a single trap number, dispatching on a selector value. These use `GeneratedDispatcherTrap`, whose selector convention (D0, D1, a stack word, or the trap bits) is plain data passed to the constructor, then forwards to the matching generated sub-trap entrypoint.
 
-### Declaration macros
+### Generated declarations
 
-Traps are declared (with macros from `src/base/traps.h`) in the **generated**
-API headers under `build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), produced by
-`make-multiverse.rb` from `multiversal/defs/*.yaml` (see §12); do not hand-edit
-them. Representative generated declarations:
+Every trap is declared by the **generated** API headers under `build/src/api/`
+(`MemoryMgr.h`, `FileMgr.h`, …), produced by `make-multiverse.rb` from
+`multiversal/defs/*.yaml` (see §12); do not hand-edit them. For each trap the header
+declares the implementation function and a small callable object; the wrapper's
+entry lambdas and the per-signature marshallers are emitted into
+`build/src/trap_entries/<Module>.cpp`:
 
 ```cpp
-REGISTER_TRAP2(DisposeHandle, 0xA023, void(A0), ReturnMemErr<D0>);
-REGISTER_2FLAG_TRAP(_NewHandle_flags, NewHandle, NewHandleClear, NewHandleSys,
-                    NewHandleSysClear, 0xA122, Handle(Size), …);
-PASCAL_SUBTRAP(TempDisposeHandle, 0xA88F, 0x0020, OSDispatch);
+// build/src/api/MemoryMgr.h (generated):
+Handle C_NewHandle(Size logicalSize);
+namespace trapentries { struct Wrapper_stub_NewHandle : traps::GeneratedEntrypoint {
+    using Sig = Handle(Size);
+    Wrapper_stub_NewHandle();
+    Handle operator()(Size logicalSize) const;
+    UPP<Sig, callconv::Register<...>> operator&() const;
+}; }
+extern trapentries::Wrapper_stub_NewHandle stub_NewHandle;
 ```
 
-The `TRAPNAME` of a sub-trap is an identifier, not a string. The macros expand
-differently depending on whether `INSTANTIATE_TRAPS_<MODULE_NAME>` is defined in
-the current translation unit (see §6).
+No trap is declared with a macro any more. The generator `raise`s if it meets a trap
+shape it cannot express rather than falling back to one. The only macro surface left in
+`src/base/traps.h` is `RAW_68K_IMPLEMENTATION` (for defining a raw 68K handler) and the
+hand-written `*_FUNCTION_PTR` family for callbacks the emulator publishes itself.
 
 ---
 
@@ -180,24 +182,16 @@ the current translation unit (see §6).
 
 ### Module pattern
 
-Each subsystem follows the same convention (`src/base/api-module.h`):
-
-1. The **header** defines `MODULE_NAME` then `#include`s `<base/api-module.h>`. This puts the `TrapFunction<>` objects in `extern` declarations and expands trap macros as `extern` variable declarations.
-
-2. The **`.cpp`** defines `INSTANTIATE_TRAPS_<MODULE_NAME> 1` before including the header. `api-module.h` switches to `DEFINE` mode, causing the macros to produce actual variable definitions with explicit template instantiations. This makes every trap self-registering with zero manual glue code.
-
-Implementation functions are named `C_TrapName` by convention. The module
-pattern is emitted by the header generator rather than written out by hand:
+Every trap is a generated wrapper. The generated header declares the
+implementation function and the `Wrapper_<Trap>` object; the generated
+`trap_entries/<Module>.cpp` defines the wrapper methods, the per-signature
+marshallers and the objects, which self-register at static-construction time.
+There is no module macro and no per-module instantiation translation unit.
 
 ```cpp
 // build/src/api/MemoryMgr.h (generated):
-#define MODULE_NAME MemoryMgr
-#include <base/api-module.h>
-// ... generated trap declarations ...
-
-// build/src/trap_instances/MemoryMgr.cpp (generated):
-#define INSTANTIATE_TRAPS_MemoryMgr 1
-#include <MemoryMgr.h>
+Handle C_NewHandle(Size logicalSize);
+// ... the Wrapper_stub_NewHandle class + extern object ...
 
 // Hand-written implementation (src/mman/...):
 Handle Executor::C_NewHandle(Size logicalSize)
@@ -205,6 +199,11 @@ Handle Executor::C_NewHandle(Size logicalSize)
     // ... implementation ...
 }
 ```
+
+`traps::init()` calls `trapentries::ReferenceAllEntries()`, which references every
+module's generated objects so the linker keeps them in the static library.
+Raw 68K handlers are declared in the generated header (via `executor_raw: true` in the
+YAML) and defined by hand with `RAW_68K_IMPLEMENTATION`.
 
 ### Subsystems
 
@@ -388,6 +387,5 @@ The VS Code task `test-executor` builds both the emulator and the test binary, r
 
 | Flag | Effect |
 |------|--------|
-| `-DEXECUTOR_ENABLE_LOGGING=ON` | Enables the `--logtraps` runtime option for trap call logging |
 | `-DTWENTYFOUR=YES` | Compile-time 24-bit addressing mode |
 | `-DNO_STATIC_BOOST=ON` | Force dynamic Boost linkage |

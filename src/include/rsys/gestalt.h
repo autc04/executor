@@ -7,8 +7,6 @@
 
 #include <ExMacTypes.h>
 
-#define MODULE_NAME rsys_gestalt
-#include <base/api-module.h>
 
 namespace Executor
 {

@@ -775,8 +775,9 @@ static void flfill(fltype *f)
  * dotted line (whopee!)
  */
 
-static void C_ROMlib_filebox(DialogPeek dp, INTEGER which)
+static void C_ROMlib_filebox(DialogPtr dlg, INTEGER which)
 {
+    DialogPeek dp = (DialogPeek)dlg;
     GUEST<Handle> h;
     Rect r, r2;
     GUEST<INTEGER> i;
@@ -849,12 +850,12 @@ static void realcd(DialogPeek dp, LONGINT dir)
     fp->flcurdirrect.bottom = fp->flcurdirrect.bottom - 1;
     /* don't need to do right; getcurname does */
     drawjobberattop(dp);
-    C_ROMlib_filebox(dp, getDiskName);
+    C_ROMlib_filebox((DialogPtr)dp, getDiskName);
     EraseRect(&fp->flrect);
     if(fp->flgraynondirs)
-        C_ROMlib_filebox(dp, putNmList);
+        C_ROMlib_filebox((DialogPtr)dp, putNmList);
     else
-        C_ROMlib_filebox(dp, getNmList);
+        C_ROMlib_filebox((DialogPtr)dp, getNmList);
 }
 
 static LONGINT getparent(LONGINT dirid)

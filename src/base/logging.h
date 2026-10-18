@@ -26,7 +26,28 @@ void resetNestingLevel();
 bool loggingActive();
 void indent();
 
+// Data-driven trap logging: the generated entrypoints pass an array of
+// per-type printers (one generated function per distinct argument/return
+// type, shared by every trap that uses it) plus an array of pointers to the
+// values.  Keeping the per-trap part to data means --logtraps instantiates no
+// template per trap.
+using LogArgFn = void (*)(const void*);
+void logTrapCallData(const char* name, const LogArgFn* printers, const void* const* values, unsigned count);
+void logTrapValReturnData(const char* name, LogArgFn printer, const void* value,
+                          const LogArgFn* printers, const void* const* values, unsigned count);
+void logTrapVoidReturnData(const char* name, const LogArgFn* printers, const void* const* values, unsigned count);
+
 extern int nestingLevel;
+
+// RAII nesting guard used by the generated trap entrypoints and marshallers so
+// that --logtraps indentation and the "suppress nested traps" rule stay
+// consistent.
+struct LogNestingScope
+{
+    bool active;
+    LogNestingScope() : active(enabled()) { if(active) nestingLevel++; }
+    ~LogNestingScope() { if(active) nestingLevel--; }
+};
 
 void logUntypedArgs(const char *name);
 void logUntypedReturn(const char *name);
@@ -36,6 +57,9 @@ void logEscapedCharTo(std::ostream& os, unsigned char c);
 bool canConvertBack(const void* p);
 bool validAddress(const void* p);
 bool validAddress(syn68k_addr_t p);
+// True if [p, p+n) lies inside one mapped guest-memory block.  Logging uses
+// this before dereferencing anything; it never calls an aborting conversion.
+bool validRange(const void* p, std::size_t n);
 void dumpRegsAndStack();
 
 // ostream-parameterised value formatting; logValue() below is the std::clog
@@ -144,6 +168,15 @@ void logField(std::ostream& os, const char* name, const T& value)
     os << " ";
 }
 
+namespace detail
+{
+    // Incomplete types (e.g. opaque handles) are printed without dereferencing.
+    template<typename T, typename = void>
+    struct IsComplete : std::false_type {};
+    template<typename T>
+    struct IsComplete<T, std::void_t<decltype(sizeof(T))>> : std::true_type {};
+}
+
 template<typename T>
 void logValue(const T& arg)
 {
@@ -161,10 +194,18 @@ void logValue(T* p)
         std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
     else
         std::clog << "?";
-    if(validAddress(p))
+    if constexpr(!std::is_void_v<T>)
     {
-        std::clog << " => ";
-        logValue(*p);
+        if constexpr(detail::IsComplete<T>::value)
+        {
+            if(validRange(p, sizeof(T)))
+            {
+                std::clog << " => ";
+                logValue(*p);
+            }
+        }
+        else if(validAddress(p))
+            std::clog << " => ?";
     }
 }
 template<class T>
@@ -173,30 +214,20 @@ void logValue(guestvalues::GuestWrapper<T*> p)
     std::clog << "0x" << std::hex << p.raw() << std::dec;
     if constexpr(!std::is_same_v<T, void>)
     {
-        if(validAddress(p.raw_host_order()))
+        if constexpr(detail::IsComplete<T>::value)
         {
-            std::clog << " => ";
-            logValue(*(p.get()));
+            if(validRange(p.get(), sizeof(T)))
+            {
+                std::clog << " => ";
+                logValue(*(p.get()));
+            }
         }
+        else if(validAddress(p.raw_host_order()))
+            std::clog << " => ?";
     }
 }
 
 
-template<typename Arg>
-inline void logList(Arg a)
-{
-    logValue(a);
-}
-inline void logList()
-{
-}
-template<typename Arg1, typename Arg2, typename... Args>
-void logList(Arg1 a, Arg2 b, Args... args)
-{
-    logValue(a);
-    std::clog << ", ";
-    logList(b,args...);
-}
 
 template<class T>
 bool validAddress(GUEST<T*> p)
@@ -204,121 +235,6 @@ bool validAddress(GUEST<T*> p)
     return validAddress(p.raw_host_order());
 }
 
-template<typename... Args>
-void logTrapCall(const char* trapname, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    std::clog.clear();
-    indent();
-    std::clog << trapname << "(";
-    logList(args...);
-    std::clog << ")\n" << std::flush;
-}
-
-template<typename Ret, typename... Args>
-void logTrapValReturn(const char* trapname, Ret ret, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    indent();
-    std::clog << "returning: " << trapname << "(";
-    logList(args...);
-    std::clog << ") => ";
-    logValue(ret);
-    std::clog << std::endl << std::flush;
-}
-template<typename... Args>
-void logTrapVoidReturn(const char* trapname, Args... args)
-{
-    if(!loggingActive() || !trapLogEnabled(trapname))
-        return;
-    indent();
-    std::clog << "returning: " << trapname << "(";
-    logList(args...);
-    std::clog << ")\n" << std::flush;
-}
-
-template<typename T>
-struct FunctionTypeForFunctor : FunctionTypeForFunctor<decltype(&T::operator())>
-{ };
-
-template<typename Cls, typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (Cls::*)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (*)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (&)(Args...)> : FunctionTypeForFunctor<Ret (Args...)>
-{ };
-template<typename Ret, typename... Args>
-struct FunctionTypeForFunctor<Ret (Args...)>
-{
-    using type = Ret (Args...);
-};
-
-
-template<typename CallConv, typename F,
-         typename FunType = typename FunctionTypeForFunctor<F>::type>
-class LoggedFunction;
-
-template<typename CallConv, typename F, typename Ret, typename... Args>
-class LoggedFunction<CallConv, F, Ret(Args...)>
-{
-    const char *name;
-    F fun;
-
-    struct LogLevelAdjuster
-    {
-        LogLevelAdjuster() { nestingLevel++; }
-        ~LogLevelAdjuster() { nestingLevel--; }
-    };
-public:
-    LoggedFunction(const char *name, const F& fun)
-        : name(name), fun(fun)
-    {
-    }
-
-    Ret operator() (Args... args) const
-    {
-        LogLevelAdjuster adj;
-
-        if constexpr(std::is_same_v<CallConv, callconv::Raw>)
-            logUntypedArgs(name);
-        else
-            logTrapCall(name, args...);
-
-        if constexpr(std::is_same_v<Ret, void>)
-        {
-            fun(args...);
-            logTrapVoidReturn(name, args...);
-        }
-        else
-        {
-            Ret ret = fun(args...);
-
-            if constexpr(std::is_same_v<CallConv, callconv::Raw>)
-                logUntypedReturn(name);
-            else 
-                logTrapValReturn(name, ret, args...);
-
-            return ret;
-        }
-    }
-};
-
-template<class CallConv = callconv::Pascal, class F>
-LoggedFunction<CallConv, F> makeLoggedFunction(const char *name, const F& f)
-{
-    return LoggedFunction<CallConv, F>(name, f);
-}
-template<class F1, class F>
-LoggedFunction<callconv::Pascal, F, F1> makeLoggedFunction1(const char *name, const F& f)
-{
-    return LoggedFunction<callconv::Pascal, F, F1>(name, f);
-}
 
 }
 }

@@ -88,13 +88,13 @@ PASCAL_FUNCTION_PTR(PrOval);
 static void C_textasPS(INTEGER n, Ptr textbufp,
                                    Point num, Point den);
 PASCAL_FUNCTION_PTR(textasPS);
-static void C_donotPrGetPic(Ptr dp, INTEGER bc);
+static void C_donotPrGetPic(void *dp, INTEGER bc);
 PASCAL_FUNCTION_PTR(donotPrGetPic);
-static void C_PrGetPic(Ptr dp, INTEGER bc);
+static void C_PrGetPic(void *dp, INTEGER bc);
 PASCAL_FUNCTION_PTR(PrGetPic);
-static void C_donotPrPutPic(Ptr sp, INTEGER bc);
+static void C_donotPrPutPic(const void *sp, INTEGER bc);
 PASCAL_FUNCTION_PTR(donotPrPutPic);
-static void C_PrPutPic(Ptr sp, INTEGER bc);
+static void C_PrPutPic(const void *sp, INTEGER bc);
 PASCAL_FUNCTION_PTR(PrPutPic);
 static void C_donotPrPoly(GrafVerb verb, PolyHandle ph);
 PASCAL_FUNCTION_PTR(donotPrPoly);
@@ -192,26 +192,26 @@ static void C_textasPS(INTEGER n, Ptr textbufp, Point num, Point den)
 #endif
 }
 
-static void C_donotPrGetPic(Ptr dp, INTEGER bc)
+static void C_donotPrGetPic(void *dp, INTEGER bc)
 {
     gui_abort();
 }
 
-static void C_PrGetPic(Ptr dp, INTEGER bc)
+static void C_PrGetPic(void *dp, INTEGER bc)
 {
     gui_abort();
     if(pageno >= pagewanted && pageno <= lastpagewanted)
-        NeXTPrGetPic(dp, bc, qdGlobals().thePort);
+        NeXTPrGetPic((Ptr)dp, bc, qdGlobals().thePort);
 }
 
-static void C_donotPrPutPic(Ptr sp, INTEGER bc)
+static void C_donotPrPutPic(const void *sp, INTEGER bc)
 {
 }
 
-static void C_PrPutPic(Ptr sp, INTEGER bc)
+static void C_PrPutPic(const void *sp, INTEGER bc)
 {
     if(pageno >= pagewanted && pageno <= lastpagewanted)
-        NeXTPrPutPic(sp, bc, qdGlobals().thePort);
+        NeXTPrPutPic((Ptr)sp, bc, qdGlobals().thePort);
 }
 
 static void C_donotPrPoly(GrafVerb verb, PolyHandle ph)

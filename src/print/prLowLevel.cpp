@@ -486,8 +486,6 @@ static void C_ROMlib_mystlproc(DialogPtr dp, INTEGER itemno)
 
 using prinitprocp = UPP<TPPrDlg(THPrint hPrint)>;
 
-using pritemprocp = UPP<void(DialogPtr prrecptr, INTEGER item)>;
-
 
 #define CALLPRINITPROC(hPrint, fp) \
     ROMlib_CALLPRINITPROC((hPrint), (prinitprocp)(fp))
@@ -495,7 +493,7 @@ using pritemprocp = UPP<void(DialogPtr prrecptr, INTEGER item)>;
 namespace Executor
 {
 static inline TPPrDlg ROMlib_CALLPRINITPROC(THPrint, prinitprocp);
-static inline void ROMlib_CALLPRITEMPROC(TPPrDlg, INTEGER, pritemprocp);
+static inline void ROMlib_CALLPRITEMPROC(TPPrDlg, INTEGER, UserItemUPP);
 }
 
 static inline TPPrDlg Executor::ROMlib_CALLPRINITPROC(THPrint hPrint, prinitprocp fp)
@@ -514,9 +512,9 @@ static inline TPPrDlg Executor::ROMlib_CALLPRINITPROC(THPrint hPrint, prinitproc
 }
 
 #define CALLPRITEMPROC(prrecptr, item, fp) \
-    ROMlib_CALLPRITEMPROC((prrecptr), (item), (pritemprocp)(fp))
+    ROMlib_CALLPRITEMPROC((prrecptr), (item), (UserItemUPP)(fp))
 
-static inline void Executor::ROMlib_CALLPRITEMPROC(TPPrDlg prrecptr, INTEGER item, pritemprocp fp)
+static inline void Executor::ROMlib_CALLPRITEMPROC(TPPrDlg prrecptr, INTEGER item, UserItemUPP fp)
 {
     ROMlib_hook(pr_itemnumber);
     if(fp == &ROMlib_myjobproc)

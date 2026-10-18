@@ -156,13 +156,6 @@ When this is active, Executor will use 24-bit addressing. This limits the amount
 usable memory to about 4MB, and disables PowerPC support, but might allow some older
 applications to run.
 
-### EXECUTOR_ENABLE_LOGGING - Enable per-trap logging
-
-    cmake . -DEXECUTOR_ENABLE_LOGGING=TRUE
-
-When this is active, you can start executor with the `--logtraps` option to get logging
-output for every MacOS function (trap) called by the running program.
-
 
 Overview
 --------

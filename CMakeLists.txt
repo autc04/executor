@@ -16,11 +16,6 @@ if( NOT EXISTS "${CMAKE_SOURCE_DIR}/syn68k/CMakeLists.txt" )
 endif()
 
 
-option(EXECUTOR_ENABLE_LOGGING "enable support for the -logtraps option")
-if(EXECUTOR_ENABLE_LOGGING)
-    add_compile_definitions(EXECUTOR_ENABLE_LOGGING)
-endif()
-
 set(CMAKE_CXX_STANDARD 17)
 
 if(WIN32)

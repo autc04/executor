@@ -110,8 +110,6 @@ Handle Executor::ROMlib_mgetres(resmaphand map, resref *rr)
     return retval;
 }
 
-using dcmpProcPtr = UPP<void(Ptr source, Ptr dest, Ptr working, Size len)>;
-
 /* TODO: decompress_setup also has to pass back the decompressed size
    we need to adjust down the size of "dlen" down below where we read
    the compressed info. */
@@ -277,11 +275,11 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
         {
             if(dcmp_handle)
             {
-                dcmpProcPtr dcmp;
+                ResourceDecompressionUPP dcmp;
                 SignedByte state;
 
                 state = hlock_return_orig_state(dcmp_handle);
-                dcmp = (dcmpProcPtr)*dcmp_handle;
+                dcmp = (ResourceDecompressionUPP)*dcmp_handle;
                 HLock(retval);
                 dcmp(xxx, *retval, dcmp_workspace, dlen);
                 HUnlock(retval);

@@ -82,7 +82,6 @@ mixing guest and host types is a compile error) do **not** need Retro68.
   one built is renamed to plain `executor` (on macOS it is named
   `Executor 2000`); the others are `executor-<name>`, e.g. `executor-wayland`.
   `-DFRONT_ENDS=headless` builds only the headless front-end.
-- `-DEXECUTOR_ENABLE_LOGGING=ON` — enable the `--logtraps` runtime option.
 - `-DTWENTYFOUR=YES` — 24-bit addressing (≈4 MB RAM, no PPC support).
 - `-DNO_STATIC_BOOST=ON` — force dynamic Boost linkage.
 
@@ -93,7 +92,7 @@ build/executor path/to/disk-image.dsk
 ```
 
 The application is a **positional argument after the options**; `--help` lists
-them. Useful options: `--logtraps` (requires the logging build), `--debug`,
+them. Useful options: `--logtraps`, `--debug`,
 `--debug-cmd`, `--break`, `--keyboards`, `--headless`.
 
 - The GUI front-ends need a real window server, so a GUI run blocks and cannot
@@ -141,23 +140,33 @@ usually little-endian.
 Guest code calls Mac APIs through 68K A-line traps. `alinehandler`
 (`src/base/dispatcher.cpp`) decodes the trap number and dispatches through
 `tooltraptable`/`ostraptable`, which `traps::init()` fills at startup by calling
-`DeferredInit::initAll()` so that every `TrapFunction<>` registers itself. Do not
+`DeferredInit::initAll()` so that every `GeneratedEntrypoint` registers itself. Do not
 manipulate the trap tables at runtime.
 
 Trap declarations are **generated**, not hand-written. `multiversal/defs/*.yaml`
 is turned by `multiversal/make-multiverse.rb` into the headers under
-`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), which use the macros in
-`src/base/traps.h` (`REGISTER_TRAP2`, `PASCAL_TRAP`, `PASCAL_SUBTRAP`, …). Do not
-hand-edit generated headers — edit the YAML definitions instead. A module header
-defines `MODULE_NAME <name>` and includes `<base/api-module.h>`; the matching
-translation unit defines `INSTANTIATE_TRAPS_<name> 1` before including the
-header, which turns the `extern` trap declarations into definitions. Do not break
-this pattern. Implementation functions are named `C_TrapName`; raw 68K handlers
-are `RAW_TrapName` with `RAW_68K_IMPLEMENTATION(Name)`.
+`build/src/api/` (`MemoryMgr.h`, `FileMgr.h`, …), the wrapper/marshaller sources
+under `build/src/trap_entries/`, and the struct descriptions under
+`build/src/structdump/`. Do not hand-edit generated headers — edit the YAML
+definitions instead. Every trap is a generated `GeneratedEntrypoint`; there is no module
+instanciation macro (the old `MODULE_NAME` / `api-module.h` / `INSTANTIATE_TRAPS_<name>`
+mechanism is gone). Implementation functions are named `C_TrapName`; raw 68K handlers
+are `RAW_TrapName` with `RAW_68K_IMPLEMENTATION(Name)`, declared in the YAML with
+`executor_raw: true`.
 
 Calling conventions (`callconv`, `src/base/functions.h`): `Pascal` (most Toolbox
-traps), `Register<...>` (most OS traps), `CCall`, and `Raw` (direct CPU state —
-avoid). Pick the convention of the original Mac API.
+traps), `Register<...>` (most OS traps), and `CCall`. Pick the convention of the
+original Mac API. `Raw` is only a legacy tag; raw handlers are declared with
+`executor_raw: true` and run through `invokeFromRaw68K`.
+
+The marshalling itself is generated. For every signature in the set (generated
+traps, `funptr:` types, and `executor_marshaling: true` declarations)
+multiversal emits `invokeFrom68K`, `invokeFromPPC`, `invokeUPP` and
+`createCallbackUPP`; generated wrapper constructors and `*_FUNCTION_PTR` objects
+use those. Do not reintroduce the old `callfrom68K`/`callto68K`/
+`callfromPPC::Invoker` templates. `invokeFrom68K`'s `const CC*` parameter is a
+witness (always `nullptr`): two conventions can share one signature
+(`DisposeHandle`), so the convention must be part of the parameter list.
 
 ## Coding conventions
 

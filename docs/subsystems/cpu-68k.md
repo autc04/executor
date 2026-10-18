@@ -80,5 +80,6 @@ byte-swapping transparently on little-endian hosts.
 - `SYNCHRONOUS_INTERRUPTS` means the host must not call syn68k re-entrantly. All
   interrupt delivery goes through the emulator's own polling mechanism.
 - The `callback_install` mechanism is how Executor installs native C++ functions as
-  68K-callable addresses. Every `TrapFunction` init path calls this to create the
-  in-guest stub that eventually reaches the C++ implementation.
+  68K-callable addresses. Every generated trap entrypoint and `*_FUNCTION_PTR`
+  callback calls this to install the in-guest callback that reaches the C++
+  implementation.

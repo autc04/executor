@@ -8,8 +8,6 @@
  */
 #include <ExMacTypes.h>
 
-#define MODULE_NAME rsys_osutil
-#include <base/api-module.h>
 
 namespace Executor
 {

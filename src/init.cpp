@@ -35,9 +35,9 @@
 #include <ADB.h>
 #include <ToolboxEvent.h>
 #include <AppleEvents.h>
+#include <Executor.h> /* ExecutorUnixMount's marshalling */
 
 #include <quickdraw/cquick.h> /* SET_HILITE_BIT */
-#include <base/emustubs.h>  /* Key1Trans, Key2Trans */
 #include <prefs/prefs.h> /* system_version */
 #include <textedit/tesave.h> /* ROMlib_dotext */
 

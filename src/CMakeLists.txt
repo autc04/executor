@@ -39,9 +39,9 @@ file(GLOB multiversal_ruby_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/../multiversal/*.rb)
 
 
-set(trap_instance_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_instances/ReferenceAllTraps.cpp)
 set(api_headers)
 set(structdump_sources ${CMAKE_CURRENT_BINARY_DIR}/structdump/ReferenceAllStructDumps.cpp)
+set(trap_entry_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_entries/ReferenceAllEntries.cpp)
 foreach(interfaceModule ${api_yaml_files})
     get_filename_component(base ${interfaceModule} NAME_WE)
 
@@ -50,13 +50,13 @@ foreach(interfaceModule ${api_yaml_files})
     if(${base} STREQUAL MacTypes)
         set(base ExMacTypes)
     endif()
-    list(APPEND trap_instance_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_instances/${base}.cpp)
     list(APPEND api_headers ${CMAKE_CURRENT_BINARY_DIR}/api/${base}.h)
     list(APPEND structdump_sources ${CMAKE_CURRENT_BINARY_DIR}/structdump/${base}.cpp)
+    list(APPEND trap_entry_sources ${CMAKE_CURRENT_BINARY_DIR}/trap_entries/${base}.cpp)
 endforeach()
 
 add_custom_command(
-    OUTPUT ${api_headers} ${trap_instance_sources} ${structdump_sources}
+    OUTPUT ${api_headers} ${structdump_sources} ${trap_entry_sources}
     DEPENDS
         ${api_yaml_files}
         ${multiversal_ruby_sources}
@@ -372,11 +372,12 @@ set(base_sources
 
         base/traps.h
         base/traps.impl.h
+        base/trap-entry.h
+        base/trap-entry.cpp
         base/trapname.h
         base/dispatcher.h
         base/trapglue.h
         base/logging.h
-        base/api-module.h
         base/emustubs.h
     
         base/trapname.cpp
@@ -575,8 +576,8 @@ set(include_sources
                   mkvol/mkvol_internal.h)
 
 source_group(APIHeaders FILES ${api_headers})
-source_group(TrapInstances FILES ${trap_instance_sources})
 source_group(StructDump FILES ${structdump_sources})
+source_group(TrapEntries FILES ${trap_entry_sources})
 
 set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${ctl_sources} ${dial_sources} 
@@ -588,9 +589,14 @@ set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
     ${error_sources} ${commandline_sources} ${prefs_sources}
     ${mactcp_sources}
     ${util_sources} ${debug_sources}
-    ${api_headers} ${trap_instance_sources} ${structdump_sources} ${host_os_sources}
+    ${api_headers} ${structdump_sources} ${host_os_sources}
     ${mpw_sources}
     ${include_sources})
+
+# Generator-emitted straight-line entrypoints and wrapper objects; they are the
+# production path for the Pascal-convention traps (see
+# docs/ai/2026-10-07-generated-trap-entrypoints-plan.md).
+list(APPEND sources ${trap_entry_sources})
 
 add_library(romlib ${sources}
         ${GENERATED_FILES}

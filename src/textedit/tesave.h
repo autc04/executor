@@ -10,9 +10,8 @@
 #include <ExMacTypes.h>
 #include <QuickDraw.h>
 #include <TextEdit.h>
+#include <base/traps.h>
 
-#define MODULE_NAME textedit_tesave
-#include <base/api-module.h>
 
 namespace Executor
 {
@@ -94,7 +93,7 @@ extern void ROMlib_teremovestyleinfo(TEStyleHandle sth, INTEGER start,
                                      INTEGER stop);
 extern INTEGER C_ROMlib_dotext(TEPtr tep, INTEGER first, INTEGER last,
                                INTEGER what);
-EXTERN_PASCAL_FUNCTION_PTR(ROMlib_dotext);
+EXTERN_REGISTER_FUNCTION_PTR(ROMlib_dotext, D0(A3, D3, D4, D7));
 
 extern int16_t te_char_to_run_index(TEStyleHandle te_style, int16_t sel);
 extern int16_t te_char_to_lineno(TEPtr te, int16_t sel);

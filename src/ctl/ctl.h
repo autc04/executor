@@ -16,8 +16,6 @@
 #include <mman/mman.h>
 #include <quickdraw/cquick.h>
 
-#define MODULE_NAME ctl_ctl
-#include <base/api-module.h>
 
 namespace Executor
 {
@@ -64,8 +62,6 @@ extern int32_t C_cdef1008(int16_t var, ControlHandle ctl, int16_t mess,
 #define VAR(w) (GetControlVariant((w)))
 
 extern void sb_ctl_init(void);
-
-using ctlfuncp = UPP<LONGINT (INTEGER var, ControlHandle ctl, INTEGER mess, LONGINT param)>;
 
 extern LONGINT ROMlib_ctlcall(ControlHandle c, INTEGER i, LONGINT l);
 #define CTLCALL(c, i, l) ROMlib_ctlcall((c), (i), (l))

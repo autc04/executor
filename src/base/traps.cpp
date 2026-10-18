@@ -7,6 +7,7 @@
 #include <base/logging.h>
 #include <base/dispatcher.h>
 #include <base/debugger.h>
+#include <OSUtil.h> /* stub_Unimplemented */
 
 #include <assert.h>
 
@@ -17,8 +18,7 @@ syn68k_addr_t Executor::ostraptable[NOSENTRIES]; /* Gets filled in at run time *
 
 namespace Executor
 {
-RAW_68K_TRAP(Unimplemented, 0xA89F);
-void ReferenceAllTraps();
+namespace trapentries { void ReferenceAllEntries(); }
 }
 
 Executor::traps::internal::DeferredInit *Executor::traps::internal::DeferredInit::first = nullptr;
@@ -70,7 +70,7 @@ void traps::init(bool log, const std::string& trapFilter)
 {
     logging::setEnabled(log);
     logging::setTrapFilter(trapFilter);
-    ReferenceAllTraps();
+    trapentries::ReferenceAllEntries();
     internal::DeferredInit::initAll();
     for(int i = 0; i < NTOOLENTRIES; i++)
     {

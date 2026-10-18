@@ -9,8 +9,6 @@
 
 #include <base/traps.h>
 
-#define MODULE_NAME rsys_adb
-#include <base/api-module.h>
 
 namespace Executor
 {

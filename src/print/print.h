@@ -20,8 +20,6 @@
 extern win_printp_t ROMlib_wp;
 #endif
 
-#define MODULE_NAME print_print
-#include <base/api-module.h>
 
 namespace Executor
 {
