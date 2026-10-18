@@ -745,6 +745,17 @@ Measurements (Debug, `ninja clean && ninja`): wall 43.6 s; `executor`
 binary is unchanged and the debug/library figures move by ~15 KB: the deleted
 templates were already uninstantiated.
 
+### Post-plan fix: `--logtraps` robustness
+
+The `PBSetEOF` crash noted in the U2–U4 validation runs was in the logging path,
+not in the marshalling: `logPascalString` called `US_TO_SYN68K` on an arbitrary
+pointer before checking it, and `US_TO_SYN68K_FUN` aborts for addresses outside
+the mapped guest blocks.  Logging now never calls an aborting conversion and
+validates the whole object span with `logging::validRange()` before
+dereferencing; incomplete types are printed without dereferencing.
+`--logtraps` on the Mac suite now runs to completion (exit 0), and the first
+2880 logged names still match the golden log.
+
 ## Risks and open questions
 
 - **Per-trap entry lambdas.**  Each wrapper gets one tiny non-capturing lambda

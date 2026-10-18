@@ -57,6 +57,9 @@ void logEscapedCharTo(std::ostream& os, unsigned char c);
 bool canConvertBack(const void* p);
 bool validAddress(const void* p);
 bool validAddress(syn68k_addr_t p);
+// True if [p, p+n) lies inside one mapped guest-memory block.  Logging uses
+// this before dereferencing anything; it never calls an aborting conversion.
+bool validRange(const void* p, std::size_t n);
 void dumpRegsAndStack();
 
 // ostream-parameterised value formatting; logValue() below is the std::clog
@@ -165,6 +168,15 @@ void logField(std::ostream& os, const char* name, const T& value)
     os << " ";
 }
 
+namespace detail
+{
+    // Incomplete types (e.g. opaque handles) are printed without dereferencing.
+    template<typename T, typename = void>
+    struct IsComplete : std::false_type {};
+    template<typename T>
+    struct IsComplete<T, std::void_t<decltype(sizeof(T))>> : std::true_type {};
+}
+
 template<typename T>
 void logValue(const T& arg)
 {
@@ -182,10 +194,18 @@ void logValue(T* p)
         std::clog << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
     else
         std::clog << "?";
-    if(validAddress(p))
+    if constexpr(!std::is_void_v<T>)
     {
-        std::clog << " => ";
-        logValue(*p);
+        if constexpr(detail::IsComplete<T>::value)
+        {
+            if(validRange(p, sizeof(T)))
+            {
+                std::clog << " => ";
+                logValue(*p);
+            }
+        }
+        else if(validAddress(p))
+            std::clog << " => ?";
     }
 }
 template<class T>
@@ -194,11 +214,16 @@ void logValue(guestvalues::GuestWrapper<T*> p)
     std::clog << "0x" << std::hex << p.raw() << std::dec;
     if constexpr(!std::is_same_v<T, void>)
     {
-        if(validAddress(p.raw_host_order()))
+        if constexpr(detail::IsComplete<T>::value)
         {
-            std::clog << " => ";
-            logValue(*(p.get()));
+            if(validRange(p.get(), sizeof(T)))
+            {
+                std::clog << " => ";
+                logValue(*(p.get()));
+            }
         }
+        else if(validAddress(p.raw_host_order()))
+            std::clog << " => ?";
     }
 }
 

@@ -118,27 +118,36 @@ bool logging::canConvertBack(const void* p)
     return valid;
 }
 
-bool logging::validAddress(const void* p)
+bool logging::validRange(const void* p, std::size_t n)
 {
+    if(n == 0)
+        return true;
     if(!p)
         return false;
-    if( (uintptr_t)p & 1 )
-        return false;
-#if SIZEOF_CHAR_P == 4 && !defined(TWENTYFOUR_BIT_ADDRESSING)
-    bool valid = true;
-#else
-    bool valid = false;
-    for(int i = 0; i < OFFSET_TABLE_SIZE; i++)
-    {
-        if((uintptr_t)p >= ROMlib_offsets[i] &&
-            (uintptr_t)p < ROMlib_offsets[i] + ROMlib_sizes[i])
-            valid = true;
-    }
-#endif
-    if(!valid)
+
+    uintptr_t start = (uintptr_t)p;
+    if(start & 1)
         return false;
 
+#if SIZEOF_CHAR_P == 4 && !defined(TWENTYFOUR_BIT_ADDRESSING)
+    // A 32-bit host maps guest memory at ROMlib_offset; there is no size table
+    // to check the end of the block against.
     return true;
+#else
+    for(int i = 0; i < OFFSET_TABLE_SIZE; i++)
+    {
+        uintptr_t base = ROMlib_offsets[i];
+        uintptr_t size = ROMlib_sizes[i];
+        if(start >= base && start - base < size)
+            return n <= size - (start - base);
+    }
+    return false;
+#endif
+}
+
+bool logging::validAddress(const void* p)
+{
+    return validRange(p, 1);
 }
 
 bool logging::validAddress(syn68k_addr_t p)
@@ -200,14 +209,24 @@ namespace
 {
 void logPascalString(std::ostream& os, const unsigned char* p)
 {
-    os << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
-    if(logging::validAddress(p) && logging::validAddress(p + 256))
-    {
-        os << " = \"\\p";
-        for(int i = 1; i <= p[0]; i++)
-            logging::logEscapedCharTo(os, p[i]);
-        os << '"';
-    }
+    // Every byte below is untrusted.  Never call an aborting address
+    // conversion and never read outside a mapped guest block.
+    if(logging::canConvertBack(p))
+        os << "0x" << std::hex << US_TO_SYN68K_CHECK0_CHECKNEG1(p) << std::dec;
+    else
+        os << "?";
+
+    if(!logging::validRange(p, 1))
+        return;
+
+    unsigned len = p[0];
+    if(!logging::validRange(p, len + 1))
+        return;
+
+    os << " = \"\\p";
+    for(unsigned i = 1; i <= len; i++)
+        logging::logEscapedCharTo(os, p[i]);
+    os << '"';
 }
 }
 void logging::logValueTo(std::ostream& os, unsigned char* p) { logPascalString(os, p); }

@@ -130,7 +130,7 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 | `src/base/traps.impl.h` | `WrappedFunction::init()` and `traps::callback_install` (included by translation units) |
 | `src/base/functions.h` | `callconv` namespace, descriptor types (`Out`, `TrapBit`, …), `UPP<>`, `ProcPtr` |
 | `src/base/functions.impl.h` | Shared marshalling primitives (`callconv::stack`, `readCArg`, `callfromPPC::ParameterPasser`); `UPP<>::operator()` forwarder |
-| `src/base/logging.{h,cpp}` | `--logtraps`: runtime gate, filter, value formatting, data-driven trap call/return |
+| `src/base/logging.{h,cpp}` | `--logtraps`: runtime gate, filter, guarded value formatting, data-driven trap call/return |
 | `src/base/structdump.h` | `TypeDesc` + type registry used by `describeStruct` |
 | `src/base/emustubs.cpp` | Low-level 68K stubs and glue |
 | `src/base/patches.cpp` | Support for `GetTrapAddress` / `SetTrapAddress` patching |
@@ -173,6 +173,12 @@ non-template `logging::logTrapCallData` / `logTrapValReturnData` /
 `logTrapVoidReturnData`, using `Entrypoint::name` as the logged name. Logged
 output is therefore identical to the historical `logTrapCall(name, args...)`
 format, and `--logtraps-filter` still applies.
+
+Logging treats all argument and struct data as untrusted.  It never calls an
+aborting host→guest address conversion, and it validates the whole object span
+with `logging::validRange()` before dereferencing a pointer.  Invalid pointers,
+opaque handles and truncated Pascal strings are printed as `?` / address-only;
+`--logtraps` must not be able to crash or abort the emulator.
 
 ## Design Notes / Gotchas
 
