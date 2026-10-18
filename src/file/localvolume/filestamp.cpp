@@ -9,6 +9,8 @@
 
 using namespace Executor;
 
+bool Executor::dontUseInodes = false;
+
 bool Executor::operator==(const FileStamp& a, const FileStamp& b)
 {
     return a.valid && b.valid && a.mtime == b.mtime && a.size == b.size;
@@ -55,7 +57,8 @@ PathStat Executor::statPath(const fs::path& path)
         s.identity.device = (std::uint64_t)st.st_dev;
         s.identity.inode = (std::uint64_t)st.st_ino;
         // Some filesystems report inode 0; treat that as "no usable inode".
-        s.identity.valid = st.st_ino != 0;
+        // --dont-use-inodes forces the same state for every file.
+        s.identity.valid = !dontUseInodes && st.st_ino != 0;
     }
 #endif
 

@@ -1144,15 +1144,15 @@ and names are lost. Document that limitation and do not mitigate it; this is the
 default. The LMDB backend is enabled and validates `(dev, ino)` exactly as
 `SimpleCNIDMapper` does.
 
-### Phase 11b — Global switch to disable identity validation
+### Phase 11b — Global switch to disable identity validation — DONE
 
-Add a global flag / command-line option that makes validation behave as it already
-does when the host exposes no inode (`FileIdentity::valid == false`:
-`sameIdentity` returns true, `filestamp.h:41-48`). The diff then matches by
+`--dont-use-inodes` sets `Executor::dontUseInodes`, which makes `statPath()`
+report no usable identity — exactly the inode-0 path (`FileIdentity::valid ==
+false`: `sameIdentity` returns true, `filestamp.h:41-48`). The diff then matches by
 `(posixName, kind)` only, the `byInode` rename pairing is off, and the binding
-check degrades to existence, kind and name. The flag changes *comparison* only:
-records are still re-stamped from the live stat whenever a name+kind match
-reconciles them, so re-enabling validation does not resurrect a stale epoch.
+check degrades to existence, kind and name. Records written while the flag is on
+store `identity.valid = false`; removing the flag does not retroactively
+re-stamp them.
 
 Consequences: no rename recovery (a same-directory rename reads as delete +
 create), and a same-name replacement is not detected. CNIDs and names survive

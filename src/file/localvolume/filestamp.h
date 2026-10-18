@@ -38,6 +38,12 @@ struct FileIdentity
     bool valid = false;
 };
 
+// Set once at startup by --dont-use-inodes. When true, statPath() reports no
+// usable host identity, so comparisons fall back to the name+kind behavior
+// already used for inode-less filesystems: sameIdentity() reports "same" and
+// the diff's inode pairing is skipped.
+extern bool dontUseInodes;
+
 // True when two identities denote the same host file. If either is unusable we
 // cannot tell, and report "same" so the caller falls back to the path.
 inline bool sameIdentity(const FileIdentity& a, const FileIdentity& b)

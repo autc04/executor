@@ -87,6 +87,28 @@ TEST(CNIDMapNaming, ReadableVolumeDirectories)
         "path-C-Users-Alice");
 }
 
+TEST_F(CNIDMapFixture, DontUseInodesDisablesIdentity)
+{
+    struct Restore
+    {
+        bool saved = dontUseInodes;
+        ~Restore() { dontUseInodes = saved; }
+    } restore;
+
+    PathStat withInodes = statPath(root_);
+    ASSERT_TRUE(withInodes.exists);
+    EXPECT_TRUE(withInodes.identity.valid);
+
+    dontUseInodes = true;
+
+    PathStat withoutInodes = statPath(root_);
+    ASSERT_TRUE(withoutInodes.exists);
+    EXPECT_FALSE(withoutInodes.identity.valid);
+    // An unusable identity is treated as "same", so the diff falls back to
+    // name+kind matching and skips the inode pairing.
+    EXPECT_TRUE(sameIdentity(withInodes.identity, withoutInodes.identity));
+}
+
 TEST_F(CNIDMapFixture, RecordsAndNamesSurviveReopen)
 {
     CNID dir = 0;

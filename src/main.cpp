@@ -35,6 +35,7 @@
 #include <quickdraw/image.h>
 #include <rsys/dump.h>
 #include <file/file.h>
+#include <file/localvolume/filestamp.h>
 #include <ctl/ctl.h>
 #include <print/print.h>
 #include <mman/memsize.h>
@@ -328,6 +329,8 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
         )
 #endif
         ("nobrowser", po::bool_switch(&ROMlib_nobrowser), "don't run Browser")
+        ("dont-use-inodes", po::bool_switch(&dontUseInodes),
+            "identify files by host name and kind instead of inode")
         ("sticky", po::bool_switch(&ROMlib_sticky_menus_p), "sticky menus")
         ;
     desc.add(misc);
