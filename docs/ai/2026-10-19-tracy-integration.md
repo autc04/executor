@@ -37,6 +37,9 @@ startup can be profiled.
 - `GeneratedDispatcherTrap::invokeFrom68K` names the dispatcher and the
   selected sub-trap.
 - `VideoDriver::updateBuffer` has a single `ZoneScoped`.
+- Thread names: `emulator` for the executor thread, `vdriver-worker-N` for the
+  video worker pool, and `timer` for the syncint timer thread (where that
+  thread exists).
 
 No generated code is changed: all trap zones go through the existing
 `GeneratedEntrypoint` funnels.
@@ -45,8 +48,9 @@ No generated code is changed: all trap zones go through the existing
 
 `src/base/profiling.h` is the only file that includes `<tracy/Tracy.hpp>`.
 When `EXECUTOR_TRACY` is off it defines `ZoneScoped` and `ZoneTransientN` as
-empty macros. Using a different Tracy macro in a non-Tracy build therefore
-fails at the use site, which is the intended signal to add a stub.
+empty macros and `tracy::SetThreadName` as a no-op. Using a different Tracy
+macro in a non-Tracy build therefore fails at the use site, which is the
+intended signal to add a stub.
 
 ## Why the client is compiled from source
 

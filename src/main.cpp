@@ -54,6 +54,7 @@
 #include <base/cpu.h>
 #include <base/debugger.h>
 #include <base/fault_handler.h>
+#include <base/profiling.h>
 #include <error/error.h>
 #include <debug/mon_debugger.h>
 #include <PowerCore.h>
@@ -445,6 +446,7 @@ int main(int argc, char **argv)
     argsHack = remainingArgs;
 
     auto executorThread = std::thread([&] {
+        tracy::SetThreadName("emulator");
         try
         {
             if(ERROR_ENABLED_P(ERROR_SEGFAULT))

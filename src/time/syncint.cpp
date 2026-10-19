@@ -3,6 +3,7 @@
 #include <base/cpu.h>
 #include <PowerCore.h>
 #include <base/debugger.h>
+#include <base/profiling.h>
 
 #include <chrono>
 #include <array>
@@ -195,6 +196,7 @@ void SyncintTimer::start()
 {
 #if USE_TIMER_THREAD
     thread = std::thread([this] {
+        tracy::SetThreadName("timer");
         std::unique_lock<std::mutex> lock(mutex);
         while(!terminate)
         {

@@ -42,7 +42,8 @@ public:
         int nThreads = std::thread::hardware_concurrency() ? std::max(0, (int)std::thread::hardware_concurrency() - 2) : 4;
         
         for(int i = 0; i < nThreads; i++)
-            threads_.emplace_back([this]() {
+            threads_.emplace_back([this, i]() {
+                tracy::SetThreadName(("vdriver-worker-" + std::to_string(i)).c_str());
                 std::unique_lock lk(mutex_);
                 for(int round = 1;;round++)
                 {
