@@ -4,7 +4,7 @@
 #include <base/functions.h>
 #include <base/mactype.h>
 
-#include <string.h>
+#include <cstring>
 #include <tuple>
 
 #include <base/cpu.h>
@@ -183,6 +183,54 @@ void readCArg(Arg& arg, syn68k_addr_t& ptr)
 
 namespace callfromPPC
 {
+    namespace detail
+    {
+        // True for types whose in-memory representation already is the guest
+        // (big-endian) representation, i.e. GUEST_STRUCT types and GUEST<>
+        // wrappers.  Those can be copied to and from the parameter area
+        // verbatim.
+        template<typename T, typename = void>
+        struct IsGuestStruct : std::false_type {};
+
+        template<typename T>
+        struct IsGuestStruct<T, std::void_t<typename T::is_guest_struct>>
+            : std::true_type {};
+
+        template<typename T>
+        inline constexpr bool isGuestStruct = IsGuestStruct<T>::value;
+
+        template<typename T>
+        inline constexpr bool isFloatingParameter =
+            std::is_same_v<T, float> || std::is_same_v<T, double>;
+
+        // Number of 4-byte words a parameter occupies in the PowerPC
+        // parameter area.  Composite parameters are padded to a multiple of
+        // 4 bytes (Mac OS Runtime Architectures, "Routine Calling
+        // Conventions").
+        template<typename T>
+        constexpr int wordsFor()
+        {
+            return (int)((sizeof(GUEST<T>) + 3) / 4);
+        }
+
+        // A parameter-area word holds guest (big-endian) bytes.  Composite
+        // parameters start at the most significant byte of their first word
+        // and are followed by padding, so a partially used last word has its
+        // bytes at the top.
+        inline uint32_t wordFromBytes(const uint8_t *bytes, size_t len)
+        {
+            uint32_t word = 0;
+            for(size_t i = 0; i < len; i++)
+                word |= uint32_t(bytes[i]) << (24 - 8 * i);
+            return word;
+        }
+
+        inline void bytesFromWord(uint8_t *bytes, size_t len, uint32_t word)
+        {
+            for(size_t i = 0; i < len; i++)
+                bytes[i] = uint8_t(word >> (24 - 8 * i));
+        }
+    }
 
     struct ParameterPasser
     {
@@ -223,48 +271,109 @@ namespace callfromPPC
     template<typename T>
     constexpr ParameterPasser ParameterPasser::operator+(const T&)
     {
-        static_assert(sizeof(GUEST<T>) <= 4, "parameter too large");
-        return ParameterPasser { cpu, paramPtr + 4, gprIndex + 1, fprIndex };
-    }
-    template<>
-    constexpr ParameterPasser ParameterPasser::operator+ <float>(const float&)
-    {
-        static_assert(sizeof(float) == 4, "unexpected sizeof(float)");
-        return ParameterPasser { cpu, paramPtr + 4, gprIndex + 1, fprIndex + 1 };
-    }
-    template<>
-    constexpr ParameterPasser ParameterPasser::operator+ <double>(const double&)
-    {
-        static_assert(sizeof(double) == 8, "unexpected sizeof(double)");
-        return ParameterPasser { cpu, paramPtr + 1, gprIndex + 2, fprIndex + 1 };
+        // The parameter area contains every argument, whether or not it is
+        // passed in a register, so both cursors advance by its full size.
+        constexpr int words = detail::wordsFor<T>();
+        return ParameterPasser { cpu, paramPtr + 4 * words,
+                                  gprIndex + words,
+                                  fprIndex + (detail::isFloatingParameter<T> ? 1 : 0) };
     }
  
     template<typename T>
     T ParameterPasser::get()
     {
-        static_assert(sizeof(GUEST<T>) <= 4, "parameter too large");
-        if(gprIndex <= 10)
-            return guestvalues::GuestTypeTraits<T>::reg_to_host(cpu.r[gprIndex]);
+        if constexpr(detail::isFloatingParameter<T>)
+        {
+            if(fprIndex <= 13)
+                return T(cpu.f[fprIndex]);
+            else
+            {
+                using Traits = guestvalues::GuestTypeTraits<T>;
+                using GuestType = typename Traits::GuestType;
+                GuestType raw;
+                std::memcpy(&raw, paramPtr, sizeof raw);
+                return Traits::guest_to_host(raw);
+            }
+        }
+        else if constexpr(detail::isGuestStruct<T>)
+        {
+            static_assert(std::is_trivially_copyable_v<T>,
+                          "guest structures must be trivially copyable");
+            T result;
+            auto *bytes = reinterpret_cast<uint8_t *>(&result);
+            for(int i = 0; i < detail::wordsFor<T>(); i++)
+            {
+                size_t offset = 4 * i;
+                size_t len = sizeof(T) - offset;
+                if(len > 4)
+                    len = 4;
+                if(gprIndex + i <= 10)
+                    detail::bytesFromWord(bytes + offset, len, cpu.r[gprIndex + i]);
+                else
+                    std::memcpy(bytes + offset, paramPtr + offset, len);
+            }
+            return result;
+        }
         else
         {
-            using GuestType = typename guestvalues::GuestTypeTraits<T>::GuestType;
-            auto p = reinterpret_cast<GuestType *>
-                (paramPtr + 4-sizeof(GuestType));
-            return guestvalues::GuestTypeTraits<T>::guest_to_host(*p);
+            using Traits = guestvalues::GuestTypeTraits<T>;
+            using GuestType = typename Traits::GuestType;
+            static_assert(sizeof(GuestType) <= 4,
+                          "parameter does not fit in a PowerPC parameter word");
+            if(gprIndex <= 10)
+                return Traits::reg_to_host(cpu.r[gprIndex]);
+            else
+            {
+                GuestType raw;
+                std::memcpy(&raw, paramPtr + 4 - sizeof(GuestType), sizeof raw);
+                return Traits::guest_to_host(raw);
+            }
         }
     }
     template<typename T>
     void ParameterPasser::set(const T& arg)
     {
-        static_assert(sizeof(GUEST<T>) <= 4, "parameter too large");
-        if(gprIndex <= 10)
-            cpu.r[gprIndex] = guestvalues::GuestTypeTraits<T>::host_to_reg(arg);
+        if constexpr(detail::isFloatingParameter<T>)
+        {
+            if(fprIndex <= 13)
+                cpu.f[fprIndex] = arg;
+            else
+            {
+                using Traits = guestvalues::GuestTypeTraits<T>;
+                auto raw = Traits::host_to_guest(arg);
+                std::memcpy(paramPtr, &raw, sizeof raw);
+            }
+        }
+        else if constexpr(detail::isGuestStruct<T>)
+        {
+            static_assert(std::is_trivially_copyable_v<T>,
+                          "guest structures must be trivially copyable");
+            const auto *bytes = reinterpret_cast<const uint8_t *>(&arg);
+            for(int i = 0; i < detail::wordsFor<T>(); i++)
+            {
+                size_t offset = 4 * i;
+                size_t len = sizeof(T) - offset;
+                if(len > 4)
+                    len = 4;
+                if(gprIndex + i <= 10)
+                    cpu.r[gprIndex + i] = detail::wordFromBytes(bytes + offset, len);
+                else
+                    std::memcpy(paramPtr + offset, bytes + offset, len);
+            }
+        }
         else
         {
-            using GuestType = typename guestvalues::GuestTypeTraits<T>::GuestType;
-            auto p = reinterpret_cast<GuestType *>
-                (paramPtr + 4-sizeof(GuestType));
-            *p = guestvalues::GuestTypeTraits<T>::host_to_guest(arg);
+            using Traits = guestvalues::GuestTypeTraits<T>;
+            using GuestType = typename Traits::GuestType;
+            static_assert(sizeof(GuestType) <= 4,
+                          "parameter does not fit in a PowerPC parameter word");
+            if(gprIndex <= 10)
+                cpu.r[gprIndex] = Traits::host_to_reg(arg);
+            else
+            {
+                auto raw = Traits::host_to_guest(arg);
+                std::memcpy(paramPtr + 4 - sizeof(GuestType), &raw, sizeof raw);
+            }
         }
     }
 }

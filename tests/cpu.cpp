@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include <base/cpu.h>
+#include <base/functions.impl.h>
 #include <base/mactype.h>
 #include <PowerCore.h>
 
@@ -253,4 +254,135 @@ TEST_F(CPUSingleStep, fib68K)
     });
 
     EXPECT_EQ(13, EM_D1);
+}
+
+namespace
+{
+struct TwoWordStruct
+{
+    GUEST_STRUCT;
+    GUEST<uint32_t> first;
+    GUEST<uint32_t> second;
+};
+
+struct PartialWordStruct
+{
+    GUEST_STRUCT;
+    GUEST<uint16_t> value;
+};
+}
+
+TEST_F(CPU, ppcArgumentsStructInRegisters)
+{
+    auto& cpu = getPowerCore();
+    cpu.r[3] = 0x11223344;
+    cpu.r[4] = 0xaabbccdd;
+
+    uint8_t params[8] = {};
+    callfromPPC::ParameterPasser args{cpu, params};
+    TwoWordStruct value;
+    (void)(args >> value);
+
+    EXPECT_EQ(0x11223344u, value.first.get());
+    EXPECT_EQ(0xaabbccddu, value.second.get());
+}
+
+TEST_F(CPU, ppcArgumentsStructStraddlingRegistersAndStack)
+{
+    auto& cpu = getPowerCore();
+    cpu.r[10] = 0x11223344;
+
+    uint8_t params[64] = {};
+    params[32] = 0xaa;
+    params[33] = 0xbb;
+    params[34] = 0xcc;
+    params[35] = 0xdd;
+
+    callfromPPC::ParameterPasser args{cpu, params};
+    uint32_t ignored;
+    TwoWordStruct value;
+    (void)(args >> ignored >> ignored >> ignored >> ignored >> ignored
+                >> ignored >> ignored >> value);
+
+    EXPECT_EQ(0x11223344u, value.first.get());
+    EXPECT_EQ(0xaabbccddu, value.second.get());
+}
+
+TEST_F(CPU, ppcArgumentsStructOnStack)
+{
+    auto& cpu = getPowerCore();
+
+    uint8_t params[64] = {};
+    params[32] = 0x11;
+    params[33] = 0x22;
+    params[34] = 0x33;
+    params[35] = 0x44;
+    params[36] = 0xaa;
+    params[37] = 0xbb;
+    params[38] = 0xcc;
+    params[39] = 0xdd;
+
+    callfromPPC::ParameterPasser args{cpu, params};
+    uint32_t ignored;
+    TwoWordStruct value;
+    (void)(args >> ignored >> ignored >> ignored >> ignored >> ignored
+                >> ignored >> ignored >> ignored >> value);
+
+    EXPECT_EQ(0x11223344u, value.first.get());
+    EXPECT_EQ(0xaabbccddu, value.second.get());
+}
+
+TEST_F(CPU, ppcArgumentsPartialWordStruct)
+{
+    auto& cpu = getPowerCore();
+    // A composite shorter than a word starts at the most significant byte.
+    cpu.r[3] = 0x12340000;
+
+    uint8_t params[4] = {};
+    callfromPPC::ParameterPasser args{cpu, params};
+    PartialWordStruct value;
+    (void)(args >> value);
+
+    EXPECT_EQ(0x1234, value.value.get());
+}
+
+TEST_F(CPU, ppcArgumentsStructWrittenToRegisters)
+{
+    auto& cpu = getPowerCore();
+    cpu.r[3] = cpu.r[4] = 0;
+
+    TwoWordStruct value;
+    value.first = 0x11223344;
+    value.second = 0xaabbccdd;
+
+    uint8_t params[8] = {};
+    callfromPPC::ParameterPasser args{cpu, params};
+    (void)(args << value);
+
+    EXPECT_EQ(0x11223344u, cpu.r[3]);
+    EXPECT_EQ(0xaabbccddu, cpu.r[4]);
+}
+
+TEST_F(CPU, ppcArgumentsStructWrittenToStack)
+{
+    auto& cpu = getPowerCore();
+
+    TwoWordStruct value;
+    value.first = 0x11223344;
+    value.second = 0xaabbccdd;
+
+    uint8_t params[64] = {};
+    callfromPPC::ParameterPasser args{cpu, params};
+    uint32_t ignored = 0;
+    (void)(args << ignored << ignored << ignored << ignored << ignored
+                << ignored << ignored << ignored << value);
+
+    EXPECT_EQ(0x11, params[32]);
+    EXPECT_EQ(0x22, params[33]);
+    EXPECT_EQ(0x33, params[34]);
+    EXPECT_EQ(0x44, params[35]);
+    EXPECT_EQ(0xaa, params[36]);
+    EXPECT_EQ(0xbb, params[37]);
+    EXPECT_EQ(0xcc, params[38]);
+    EXPECT_EQ(0xdd, params[39]);
 }

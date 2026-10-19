@@ -94,6 +94,15 @@ code built from the shared primitives (`callconv::stack`, `D<n>`/`A<n>`,
 `callfromPPC::ParameterPasser`).  The hand-written `callfrom68K`/`callto68K`/
 `callfromPPC::Invoker` templates no longer exist.
 
+`callfromPPC::ParameterPasser` follows the PowerPC runtime conventions from
+*Mac OS Runtime Architectures* ("Routine Calling Conventions"): parameters are
+laid out in the parameter area as 4-byte words, the first eight words travel
+in GPR3–GPR10 and the remainder at `r1+24`; `float`/`double` use FPR1–FPR13 and
+skip the corresponding GPR slots.  Composite parameters are copied as their
+guest memory image and are padded to a whole number of words, so a structure
+may span registers and the stack.  Structures larger than four bytes are fully
+supported.
+
 ## Generated vs. hand-written
 
 The Executor generator (`multiversal/executor.rb` plus the `executor_types.rb`,
