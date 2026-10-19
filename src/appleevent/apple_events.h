@@ -6,6 +6,29 @@ namespace Executor
 extern void AE_init(void);
 extern void AE_reinit(void);
 
+/* Look up a handler for dispatching, applying the wildcard specificity rules
+ * of AEProcessAppleEvent.  Returns false when no entry matches. */
+extern bool ae_lookup_event_handler(AEEventClass event_class,
+                                    AEEventID event_id, bool system_p,
+                                    GUEST<AEEventHandlerUPP> *handler_out,
+                                    GUEST<int32_t> *refcon_out);
+
+/* Look up a special (pre-dispatch) handler. */
+extern bool ae_lookup_special_handler(AEKeyword function_class, bool system_p,
+                                      GUEST<AEEventHandlerUPP> *handler_out,
+                                      GUEST<int32_t> *refcon_out);
+
+/* Default coercions performed when no installed handler matches (IM-IAC,
+ * table 4-1). */
+extern OSErr AE_default_coerce(DescType from_type, const void *data,
+                               Size data_size, DescType to_type,
+                               AEDesc *result);
+extern OSErr AE_default_coerce_desc(const AEDesc *desc, DescType to_type,
+                                    AEDesc *result);
+
+/* Allocate a session-unique non-zero return ID (kAutoGenerateReturnID). */
+extern int16_t AE_generate_return_id(void);
+
 struct inline_desc_t
 {
     GUEST_STRUCT;

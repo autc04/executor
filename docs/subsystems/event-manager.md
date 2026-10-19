@@ -68,11 +68,11 @@ clears handlers registered by the previous application.
 | `src/osevent/hle.cpp` | HLE queue: `hle_get_event`, keyboard auto-repeat |
 | `src/osevent/osevent.h` | Event Manager internal API |
 | `src/osevent/ibm_keycodes.cpp` | PC→Mac virtual key code mapping |
-| `src/appleevent/AE.cpp` | `AESend`, `AEProcessAppleEvent`, `AEInstallEventHandler` |
-| `src/appleevent/AE_desc.cpp` | `AECreateDesc`, `AEGetDescData`, `AEDisposeDesc` |
-| `src/appleevent/AE_coercion.cpp` | Apple Event type coercion |
-| `src/appleevent/AE_hdlr.cpp` | Apple Event handler dispatch table |
-| `src/appleevent/apple_events.h` | Internal types: `inline_desc_t`, `ae_header_t` |
+| `src/appleevent/AE.cpp` | `AESend`, `AEProcessAppleEvent`, dispatch, coercion entry points |
+| `src/appleevent/AE_desc.cpp` | `AECreateDesc`, `AEDisposeDesc`, list/AE-record accessors, `AEGetArray`/`AEPutArray`, `AECreateAppleEvent` |
+| `src/appleevent/AE_coercion.cpp` | Apple Event default type coercion |
+| `src/appleevent/AE_hdlr.cpp` | Apple Event handler, coercion and special-handler tables |
+| `src/appleevent/apple_events.h` | Internal types: `inline_desc_t`, `ae_header_t`, table helpers |
 
 ## Important Data Structures
 
@@ -98,6 +98,12 @@ clears handlers registered by the previous application.
 
 ## Design Notes / Gotchas
 
+- **Apple Event Manager**: all routines are selectors of the single `_Pack8`
+  (`0xA816`) trap.  The selector's low byte is the table index and its high
+  byte is half the argument frame size.  Dispatch order and the handler-table
+  ABI are documented in `docs/api-specs/apple-event-mgr-spec.md`; the
+  audit/implementation notes are in
+  `docs/ai/2026-10-19-apple-event-manager-audit.md`.
 - **Thread safety**: events are delivered from the GUI thread via `EventSink`. They
   must be consumed on the emulator thread via `pumpEvents()`. Never post directly to
   the OS queue from the GUI thread.

@@ -49,6 +49,7 @@ set(NATIVE_TEST_SOURCES
 
 set(TEST_SOURCES
         files.cpp quickdraw.cpp listmgr.cpp resources.cpp events.cpp
+        appleevents.cpp
         # Dual-mode on purpose: natively this checks the generated
         # headers against defs/MacTCP.yaml, and under Retro68 -- built
         # against Apple's Universal Interfaces rather than generated
