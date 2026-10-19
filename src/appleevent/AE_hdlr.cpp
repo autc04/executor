@@ -14,6 +14,20 @@
 
 using namespace Executor;
 
+/*
+ * The handler tables are internal to the Apple Event Manager.  The pack uses
+ * an open-addressed hash table (see appendix A of the spec); nothing outside
+ * the manager inspects one, so this implementation uses a simple sorted-by-
+ * insertion array instead.  Only the ABI arguments (the four zone tables and
+ * the private selectors) are observable.
+ */
+
+#define AE_TABLE_SIZE_INFO(table) ((*table)->pad_1)
+#define AE_TABLE_ELT_FLAGS(elt) ((elt).pad_1)
+#define AE_TABLE_ELT_PAD2(elt) ((elt).pad_2)
+
+#define AE_HDLRTABLE_ELT_FLAG_FROM_TYPE_IS_DESC 0x00000001
+
 inline AE_zone_tables_h get_zone_tables(bool system_p)
 {
     auto info = LM(AE_info);
@@ -21,32 +35,263 @@ inline AE_zone_tables_h get_zone_tables(bool system_p)
 }
 #define hdlr_table(system_p, class) (*get_zone_tables(system_p))->class##_hdlr_table
 
+static OSErr alloc_hdlr_table(GUEST<AE_hdlr_table_h> *table_return,
+                             int32_t capacity)
+{
+    AE_hdlr_table_h table;
+    int initial_size;
+
+    /* The hint is an expected size, not a limit.  Keep a little headroom. */
+    initial_size = capacity > 0 ? capacity : 8;
+    if(initial_size > 1024)
+        initial_size = 1024;
+
+    table = (AE_hdlr_table_h)NewHandleClear(
+        sizeof(AE_hdlr_table_t) + initial_size * sizeof(AE_hdlr_table_elt_t));
+    if(LM(MemErr) != noErr)
+        return LM(MemErr);
+
+    (*table)->n_allocated_bytes
+        = sizeof(AE_hdlr_table_t) + initial_size * sizeof(AE_hdlr_table_elt_t);
+    (*table)->n_elts = 0;
+
+    *table_return = table;
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_table_alloc(GUEST<AE_hdlr_table_h> *table_return,
+                                       uint8_t system_zone,
+                                       const void *imports, int32_t sizes,
+                                       int32_t capacity_hint)
+{
+    OSErr err;
+
+    (void)imports;
+
+    if(sizes != 0x00080008)
+        return paramErr; /* every observed caller uses 8-byte keys and values */
+
+    if(system_zone)
+    {
+        TheZoneGuard guard(LM(SysZone));
+        err = alloc_hdlr_table(table_return, capacity_hint);
+    }
+    else
+        err = alloc_hdlr_table(table_return, capacity_hint);
+
+    return err;
+}
+
+OSErr Executor::C__AE_hdlr_table_free(const void *imports,
+                                      GUEST<AE_hdlr_table_h> *table)
+{
+    (void)imports;
+
+    if(table && *table)
+    {
+        DisposeHandle((Handle)*table);
+        *table = nullptr;
+    }
+    return noErr;
+}
+
+static int32_t hdlr_table_n_elts(AE_hdlr_table_h table)
+{
+    if(!table)
+        return 0;
+    return (*table)->n_elts;
+}
+
+static AE_hdlr_table_elt_t *hdlr_table_elt_ptr(AE_hdlr_table_h table, int index)
+{
+    return &(*table)->elts[index];
+}
+
+static OSErr hdlr_table_find(AE_hdlr_table_h table,
+                             const AE_hdlr_selector_t *key,
+                             AE_hdlr_table_elt_t **elt_out)
+{
+    int i, n;
+
+    if(!table)
+        return paramErr;
+
+    n = hdlr_table_n_elts(table);
+    for(i = 0; i < n; i++)
+    {
+        AE_hdlr_table_elt_t *elt = hdlr_table_elt_ptr(table, i);
+
+        if(elt->selector.sel0 == key->sel0
+           && elt->selector.sel1 == key->sel1)
+        {
+            *elt_out = elt;
+            return noErr;
+        }
+    }
+    return errAEKeyNotFound;
+}
+
+static OSErr hdlr_table_append(AE_hdlr_table_h table,
+                               const AE_hdlr_selector_t *key,
+                               AE_hdlr_table_elt_t **elt_out)
+{
+    AE_hdlr_table_elt_t *elt;
+    int n;
+
+    if(!table)
+        return paramErr;
+
+    n = hdlr_table_n_elts(table);
+    SetHandleSize((Handle)table,
+                  sizeof(AE_hdlr_table_t)
+                      + (n + 1) * sizeof(AE_hdlr_table_elt_t));
+    if(LM(MemErr) != noErr)
+        return LM(MemErr);
+
+    (*table)->n_allocated_bytes
+        = sizeof(AE_hdlr_table_t)
+          + (n + 1) * sizeof(AE_hdlr_table_elt_t);
+    (*table)->n_elts = n + 1;
+
+    elt = hdlr_table_elt_ptr(table, n);
+    memset(elt, 0, sizeof *elt);
+    elt->selector = *key;
+    *elt_out = elt;
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_install(AE_hdlr_t *hdlr,
+                                   AE_hdlr_selector_t *key,
+                                   const void *imports,
+                                   AE_hdlr_table_h table)
+{
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
+
+    (void)imports;
+
+    if(!hdlr || !key)
+        return paramErr;
+
+    err = hdlr_table_find(table, key, &elt);
+    if(err == noErr)
+        elt->hdlr = *hdlr;
+    else
+    {
+        err = hdlr_table_append(table, key, &elt);
+        if(err != noErr)
+            return err;
+        elt->hdlr = *hdlr;
+    }
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_install_unique(AE_hdlr_t *hdlr,
+                                          AE_hdlr_selector_t *key,
+                                          const void *imports,
+                                          AE_hdlr_table_h table)
+{
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
+
+    (void)imports;
+
+    if(!hdlr || !key)
+        return paramErr;
+
+    err = hdlr_table_find(table, key, &elt);
+    if(err == noErr)
+        return errAEDuplicateKey;
+
+    err = hdlr_table_append(table, key, &elt);
+    if(err != noErr)
+        return err;
+    elt->hdlr = *hdlr;
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_delete(AE_hdlr_selector_t *key,
+                                  const void *imports,
+                                  AE_hdlr_table_h table)
+{
+    AE_hdlr_table_elt_t *elt;
+    int i, n;
+    OSErr err;
+
+    (void)imports;
+
+    if(!key)
+        return paramErr;
+
+    err = hdlr_table_find(table, key, &elt);
+    if(err != noErr)
+        return noErr; /* deleting an absent key succeeds */
+
+    i = elt - hdlr_table_elt_ptr(table, 0);
+    n = hdlr_table_n_elts(table);
+    if(i + 1 < n)
+        memmove(elt, elt + 1, (n - i - 1) * sizeof *elt);
+    (*table)->n_elts = n - 1;
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_lookup(AE_hdlr_t *result,
+                                  AE_hdlr_selector_t *key,
+                                  const void *imports,
+                                  AE_hdlr_table_h table)
+{
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
+
+    (void)imports;
+
+    if(!result || !key)
+        return paramErr;
+
+    err = hdlr_table_find(table, key, &elt);
+    if(err != noErr)
+        return err;
+    *result = elt->hdlr;
+    return noErr;
+}
+
+OSErr Executor::C__AE_hdlr_get_key(AE_hdlr_selector_t *key, int32_t index,
+                                   const void *imports,
+                                   AE_hdlr_table_h table)
+{
+    (void)imports;
+
+    if(!key)
+        return paramErr;
+
+    if(index < 1 || index > hdlr_table_n_elts(table))
+        return errAEIndexOutOfRange;
+
+    *key = hdlr_table_elt_ptr(table, index - 1)->selector;
+    return noErr;
+}
+
+/* -------------------------- zone initialisation -------------------------- */
+
 void Executor::AE_init(void)
 {
     AE_info_t *info;
-    OSErr err;
+    AE_zone_tables_h zone_tables;
 
     info = (AE_info_t *)NewPtrSysClear(sizeof *info);
+    if(info == nullptr)
+        return;
 
     TheZoneGuard guard(LM(SysZone));
 
-    AE_zone_tables_h zone_tables;
+    zone_tables = (AE_zone_tables_h)NewHandleClear(sizeof(AE_zone_tables_t));
 
-    zone_tables
-        = (AE_zone_tables_h)NewHandleClear(sizeof(AE_zone_tables_t));
-
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->event_hdlr_table);
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->coercion_hdlr_table);
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->special_hdlr_table);
+    _AE_hdlr_table_alloc(&(*zone_tables)->event_hdlr_table, 1, nullptr,
+                         0x00080008, 8);
+    _AE_hdlr_table_alloc(&(*zone_tables)->coercion_hdlr_table, 1, nullptr,
+                         0x00080008, 8);
+    _AE_hdlr_table_alloc(&(*zone_tables)->special_hdlr_table, 1, nullptr,
+                         0x00080008, 8);
     info->system_zone_tables = zone_tables;
 
     LM(AE_info) = info;
@@ -55,170 +300,93 @@ void Executor::AE_init(void)
 void Executor::AE_reinit(void)
 {
     AE_info_t *info;
-    OSErr err;
+    AE_zone_tables_h zone_tables;
 
     info = LM(AE_info);
+    if(info == nullptr)
+    {
+        AE_init();
+        return;
+    }
 
     TheZoneGuard guard(LM(ApplZone));
 
-    AE_zone_tables_h zone_tables;
+    zone_tables = (AE_zone_tables_h)NewHandleClear(sizeof(AE_zone_tables_t));
 
-    zone_tables
-        = (AE_zone_tables_h)NewHandleClear(sizeof(AE_zone_tables_t));
-
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->event_hdlr_table);
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->coercion_hdlr_table);
-    err = _AE_hdlr_table_alloc(16, 0x80008, 0,
-                               /* #### */
-                               false,
-                               &(*zone_tables)->special_hdlr_table);
+    _AE_hdlr_table_alloc(&(*zone_tables)->event_hdlr_table, 0, nullptr,
+                         0x00080008, 8);
+    _AE_hdlr_table_alloc(&(*zone_tables)->coercion_hdlr_table, 0, nullptr,
+                         0x00080008, 8);
+    _AE_hdlr_table_alloc(&(*zone_tables)->special_hdlr_table, 0, nullptr,
+                         0x00080008, 8);
     info->appl_zone_tables = zone_tables;
 }
 
-static OSErr
-hdlr_table_elt(AE_hdlr_table_h table,
-               AE_hdlr_selector_t *selector, AE_hdlr_t *hdlr,
-               bool create_p,
-               AE_hdlr_table_elt_t **retval)
+/* ----------------------------- event handlers ---------------------------- */
+
+bool Executor::application_accepts_open_app_aevt_p;
+
+static bool key_matches(int32_t installed, int32_t wanted)
 {
-    AE_hdlr_table_elt_t *elts, *elt;
-    int32_t n_elts, elt_index;
+    return installed == wanted || installed == typeWildCard;
+}
 
-    elts = AE_TABLE_ELTS(table);
-    n_elts = AE_TABLE_N_ELTS(table);
+static int key_specificity(int32_t installed_class, int32_t installed_id)
+{
+    return (installed_class == typeWildCard ? 0 : 2)
+           + (installed_id == typeWildCard ? 0 : 1);
+}
 
-    for(elt_index = 0; elt_index < n_elts; elt_index++)
+/* Find the most specific entry matching class/id.  Exact entries win over
+ * class-wildcard entries, which win over id-wildcard entries, which win over
+ * the both-wildcard entry. */
+static bool lookup_event_handler(AEEventClass event_class, AEEventID event_id,
+                                 Boolean system_p,
+                                 GUEST<AEEventHandlerUPP> *handler_out,
+                                 GUEST<int32_t> *refcon_out)
+{
+    AE_hdlr_table_h table = hdlr_table(system_p, event);
+    AE_hdlr_table_elt_t *best = nullptr;
+    int best_score = -1;
+    int i, n;
+
+    if(!table)
+        return false;
+
+    n = hdlr_table_n_elts(table);
+    for(i = 0; i < n; i++)
     {
-        elt = &elts[elt_index];
+        AE_hdlr_table_elt_t *elt = hdlr_table_elt_ptr(table, i);
+        int score;
 
-        if((hdlr == nullptr
-            || hdlr->fn == elt->hdlr.fn)
-           && elt->selector.sel0 == selector->sel0
-           && elt->selector.sel1 == selector->sel1)
+        if(!key_matches(elt->selector.sel0, event_class)
+           || !key_matches(elt->selector.sel1, event_id))
+            continue;
+
+        score = key_specificity(elt->selector.sel0, elt->selector.sel1);
+        if(score > best_score)
         {
-            *retval = elt;
-            AE_RETURN_ERROR(noErr);
+            best_score = score;
+            best = elt;
         }
     }
 
-    if(create_p)
-    {
-        n_elts++;
+    if(best == nullptr)
+        return false;
 
-        AE_TABLE_N_ELTS(table) = n_elts;
-
-        SetHandleSize((Handle)table,
-                      (sizeof(AE_hdlr_table_t)
-                       + n_elts * sizeof(AE_hdlr_table_elt_t)));
-
-        if(LM(MemErr) != noErr)
-            AE_RETURN_ERROR(LM(MemErr));
-
-        elts = AE_TABLE_ELTS(table);
-        elt = &elts[n_elts - 1];
-
-        elt->pad_1 = -1;
-        elt->selector = *selector;
-        elt->pad_2 = -1;
-
-        *retval = elt;
-        AE_RETURN_ERROR(noErr);
-    }
-
-    AE_RETURN_ERROR(errAEHandlerNotFound);
+    *handler_out = guest_cast<AEEventHandlerUPP>(best->hdlr.fn);
+    *refcon_out = best->hdlr.refcon;
+    return true;
 }
 
-OSErr Executor::C__AE_hdlr_table_alloc(int32_t unknown_1, int32_t unknown_2,
-                                       int32_t unknown_3, int8_t unknown_p,
-                                       GUEST<AE_hdlr_table_h> *table_return)
+bool Executor::ae_lookup_event_handler(AEEventClass event_class,
+                                       AEEventID event_id, bool system_p,
+                                       GUEST<AEEventHandlerUPP> *handler_out,
+                                       GUEST<int32_t> *refcon_out)
 {
-    AE_hdlr_table_h table;
-
-    gui_assert(unknown_1 == 16);
-    gui_assert(unknown_2 == 0x80008);
-    gui_assert(unknown_3 == 0);
-
-    /* #### unknown_p is currently ignored */
-
-    /* #### actual initial allocation size is probably a function of the
-     first argument */
-    table = (AE_hdlr_table_h)NewHandleClear(52);
-    if(LM(MemErr) != noErr)
-        AE_RETURN_ERROR(LM(MemErr));
-
-    AE_TABLE_N_ALLOCATED_BYTES(table) = 52;
-    AE_TABLE_N_ELTS(table) = 0;
-
-    *table_return = table;
-    AE_RETURN_ERROR(noErr);
+    return lookup_event_handler(event_class, event_id, system_p,
+                                handler_out, refcon_out);
 }
-
-OSErr Executor::C__AE_hdlr_delete(AE_hdlr_table_h table, int32_t unknown_1,
-                                  AE_hdlr_selector_t *selector)
-{
-    AE_hdlr_table_elt_t *elt, *elts;
-    int n_elts, elt_offset;
-    OSErr err;
-
-    gui_assert(unknown_1 == 0);
-
-    err = hdlr_table_elt(table, selector, nullptr, false, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
-
-    elts = AE_TABLE_ELTS(table);
-    n_elts = AE_TABLE_N_ELTS(table);
-    elt_offset = elt - elts;
-
-    memmove(&elts[elt_offset + 1], &elts[elt_offset],
-            (n_elts - elt_offset - 1) * sizeof *elts);
-
-    AE_TABLE_N_ELTS(table) = n_elts - 1;
-
-    AE_RETURN_ERROR(noErr);
-}
-
-OSErr Executor::C__AE_hdlr_lookup(AE_hdlr_table_h table, int32_t unknown_1,
-                                  AE_hdlr_selector_t *selector,
-                                  AE_hdlr_t *hdlr_return)
-{
-    AE_hdlr_table_elt_t *elt;
-    OSErr err;
-
-    gui_assert(unknown_1 == 0);
-
-    err = hdlr_table_elt(table, selector, nullptr, false, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
-
-    *hdlr_return = elt->hdlr;
-    AE_RETURN_ERROR(noErr);
-}
-
-OSErr Executor::C__AE_hdlr_install(AE_hdlr_table_h table, int32_t unknown_1,
-                                   AE_hdlr_selector_t *selector,
-                                   AE_hdlr_t *hdlr)
-{
-    AE_hdlr_table_elt_t *elt;
-    OSErr err;
-
-    gui_assert(unknown_1 == 0);
-
-    err = hdlr_table_elt(table, selector, hdlr, true, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
-
-    elt->hdlr = *hdlr;
-    AE_RETURN_ERROR(noErr);
-}
-
-bool Executor::application_accepts_open_app_aevt_p;
 
 OSErr Executor::C_AEInstallEventHandler(AEEventClass event_class,
                                         AEEventID event_id,
@@ -227,13 +395,13 @@ OSErr Executor::C_AEInstallEventHandler(AEEventClass event_class,
                                         Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
     AE_hdlr_t hdlr;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
 
-    if(!hdlr_fn)
-        AE_RETURN_ERROR(paramErr);
+    if(!hdlr_fn || (ptr_to_longint(hdlr_fn) & 1))
+        return paramErr;
 
     table = hdlr_table(system_handler_p, event);
 
@@ -243,24 +411,26 @@ OSErr Executor::C_AEInstallEventHandler(AEEventClass event_class,
     hdlr.fn = (void *)hdlr_fn;
     hdlr.refcon = refcon;
 
-    err = hdlr_table_elt(table, &selector, &hdlr, true, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err == noErr)
+        elt->hdlr = hdlr;
+    else
+    {
+        err = hdlr_table_append(table, &selector, &elt);
+        if(err != noErr)
+            return err;
+        elt->hdlr = hdlr;
+    }
+    AE_TABLE_ELT_FLAGS(*elt) = 0;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
-    elt->hdlr = hdlr;
-
-    /* hack because various applications complain if they get sent
-     an open application event and don't have a handler for it */
+    /* Some applications complain if they are sent an open-application event
+     * but have not installed a handler for it. */
     application_accepts_open_app_aevt_p = true;
 
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
-/* event handler functions */
-
-static void
-dummy(void)
+static void dummy(void)
 {
 }
 
@@ -271,8 +441,8 @@ OSErr Executor::C_AEGetEventHandler(AEEventClass event_class,
                                     Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
 
 #if 1
@@ -290,19 +460,18 @@ OSErr Executor::C_AEGetEventHandler(AEEventClass event_class,
     selector.sel0 = event_class;
     selector.sel1 = event_id;
 
-    err = hdlr_table_elt(table, &selector, nullptr, false, &elt);
+    /* AEGetEventHandler requires an entry with exactly these values: unlike
+     * dispatching, it does not fall back to wildcard entries. */
+    err = hdlr_table_find(table, &selector, &elt);
     if(err != noErr)
-        AE_RETURN_ERROR(err);
+        return errAEHandlerNotFound;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
     *hdlr = guest_cast<AEEventHandlerUPP>(elt->hdlr.fn);
     *refcon = elt->hdlr.refcon;
 
-    /* hack because various applications complain if they get sent
-     an open application event and don't have a handler for it */
     application_accepts_open_app_aevt_p = true;
 
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
 OSErr Executor::C_AERemoveEventHandler(AEEventClass event_class,
@@ -312,30 +481,38 @@ OSErr Executor::C_AERemoveEventHandler(AEEventClass event_class,
 {
     AE_hdlr_table_h table;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
 
     table = hdlr_table(system_handler_p, event);
 
     selector.sel0 = event_class;
     selector.sel1 = event_id;
 
-    /* #### fail if `hdlr' is not the currently installed handler? */
-    AE_RETURN_ERROR(_AE_hdlr_delete(table, 0, &selector));
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err != noErr)
+        return errAEHandlerNotFound;
+
+    if((void *)hdlr != elt->hdlr.fn)
+        return errAEHandlerNotFound;
+
+    return _AE_hdlr_delete(&selector, nullptr, table);
 }
 
-/* coercion handler functions */
+/* --------------------------- coercion handlers --------------------------- */
 
 OSErr Executor::C_AEInstallCoercionHandler(
     DescType from_type, DescType to_type, AECoerceDescUPP hdlr_fn,
     int32_t refcon, Boolean from_type_is_desc_p, Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
     AE_hdlr_t hdlr;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
 
-    if(hdlr_fn == nullptr)
-        AE_RETURN_ERROR(paramErr);
+    if(hdlr_fn == nullptr || (ptr_to_longint(hdlr_fn) & 1))
+        return paramErr;
 
     table = hdlr_table(system_handler_p, coercion);
 
@@ -345,16 +522,20 @@ OSErr Executor::C_AEInstallCoercionHandler(
     hdlr.fn = (void *)hdlr_fn;
     hdlr.refcon = refcon;
 
-    err = hdlr_table_elt(table, &selector, &hdlr, true, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err == noErr)
+        elt->hdlr = hdlr;
+    else
+    {
+        err = hdlr_table_append(table, &selector, &elt);
+        if(err != noErr)
+            return err;
+        elt->hdlr = hdlr;
+    }
+    AE_TABLE_ELT_FLAGS(*elt)
+        = from_type_is_desc_p ? AE_HDLRTABLE_ELT_FLAG_FROM_TYPE_IS_DESC : 0;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
-    elt->hdlr = hdlr;
-
-    /* #### elt->flag = from_type_is_desc_p */
-
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
 OSErr Executor::C_AEGetCoercionHandler(DescType from_type, DescType to_type,
@@ -364,8 +545,8 @@ OSErr Executor::C_AEGetCoercionHandler(DescType from_type, DescType to_type,
                                        Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
 
     table = hdlr_table(system_handler_p, coercion);
@@ -373,17 +554,20 @@ OSErr Executor::C_AEGetCoercionHandler(DescType from_type, DescType to_type,
     selector.sel0 = from_type;
     selector.sel1 = to_type;
 
-    err = hdlr_table_elt(table, &selector, nullptr, false, &elt);
+    err = hdlr_table_find(table, &selector, &elt);
     if(err != noErr)
-        AE_RETURN_ERROR(err);
+        return err;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
     *hdlr_out = guest_cast<AECoerceDescUPP>(elt->hdlr.fn);
     *refcon_out = elt->hdlr.refcon;
+    if(from_type_is_desc_p_out)
+        *from_type_is_desc_p_out
+            = (AE_TABLE_ELT_FLAGS(*elt)
+               & AE_HDLRTABLE_ELT_FLAG_FROM_TYPE_IS_DESC)
+                  ? true
+                  : false;
 
-    /* #### *from_type_is_desc_p_out = elt->flag; */
-
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
 OSErr Executor::C_AERemoveCoercionHandler(
@@ -392,32 +576,65 @@ OSErr Executor::C_AERemoveCoercionHandler(
 {
     AE_hdlr_table_h table;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
 
     table = hdlr_table(system_handler_p, coercion);
 
     selector.sel0 = from_type;
     selector.sel1 = to_type;
 
-    /* #### fail if `hdlr' is not the currently installed handler? */
-    AE_RETURN_ERROR(_AE_hdlr_delete(table, 0, &selector));
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err != noErr)
+        return errAEHandlerNotFound;
+
+    if((void *)hdlr != elt->hdlr.fn)
+        return errAEHandlerNotFound;
+
+    return _AE_hdlr_delete(&selector, nullptr, table);
 }
 
-/* special handler functions */
+/* ---------------------------- special handlers --------------------------- */
 
 #define k_special_sel1 ("\000\000\000\000"_4)
 
-OSErr Executor::C_AEInstallSpecialHandler(
-    AEKeyword function_class, AEEventHandlerUPP hdlr_fn,
-    Boolean system_handler_p)
+static bool valid_special_keyword(AEKeyword function_class)
+{
+    switch(function_class)
+    {
+        case keyPreDispatch:
+        case keySelectProc:
+        case keyAECompareProc:
+        case keyAECountProc:
+        case keyDisposeTokenProc:
+        case keyAEMarkTokenProc:
+        case keyAEMarkProc:
+        case keyAEAdjustMarksProc:
+        case keyAEGetErrDescProc:
+        case keyAEBlock:
+        case keyAEUnblock:
+        case keyAENavigate:
+            return true;
+        default:
+            return false;
+    }
+}
+
+OSErr Executor::C_AEInstallSpecialHandler(AEKeyword function_class,
+                                          AEEventHandlerUPP hdlr_fn,
+                                          Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
     AE_hdlr_t hdlr;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
 
-    if(hdlr_fn == nullptr)
-        AE_RETURN_ERROR(paramErr);
+    if(!hdlr_fn || (ptr_to_longint(hdlr_fn) & 1))
+        return paramErr;
+
+    if(!valid_special_keyword(function_class))
+        return errAENotASpecialFunction;
 
     table = hdlr_table(system_handler_p, special);
 
@@ -425,16 +642,21 @@ OSErr Executor::C_AEInstallSpecialHandler(
     selector.sel1 = k_special_sel1;
 
     hdlr.fn = (void *)hdlr_fn;
-    hdlr.refcon = -1;
+    hdlr.refcon = 0;
 
-    err = hdlr_table_elt(table, &selector, &hdlr, true, &elt);
-    if(err != noErr)
-        AE_RETURN_ERROR(err);
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err == noErr)
+        elt->hdlr = hdlr;
+    else
+    {
+        err = hdlr_table_append(table, &selector, &elt);
+        if(err != noErr)
+            return err;
+        elt->hdlr = hdlr;
+    }
+    AE_TABLE_ELT_FLAGS(*elt) = 0;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
-    elt->hdlr = hdlr;
-
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
 OSErr Executor::C_AEGetSpecialHandler(AEKeyword function_class,
@@ -442,37 +664,72 @@ OSErr Executor::C_AEGetSpecialHandler(AEKeyword function_class,
                                       Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
-    AE_hdlr_table_elt_t *elt;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
     OSErr err;
+
+    if(!valid_special_keyword(function_class))
+        return errAENotASpecialFunction;
 
     table = hdlr_table(system_handler_p, special);
 
     selector.sel0 = function_class;
     selector.sel1 = k_special_sel1;
 
-    err = hdlr_table_elt(table, &selector, nullptr, false, &elt);
+    err = hdlr_table_find(table, &selector, &elt);
     if(err != noErr)
-        AE_RETURN_ERROR(err);
+        return errAEHandlerNotFound;
 
-    /* warning: `elt' is a pointer into an unlocked handle */
     *hdlr_out = guest_cast<AEEventHandlerUPP>(elt->hdlr.fn);
-
-    AE_RETURN_ERROR(noErr);
+    return noErr;
 }
 
-OSErr Executor::C_AERemoveSpecialHandler(
-    AEKeyword function_class, AEEventHandlerUPP hdlr,
-    Boolean system_handler_p)
+OSErr Executor::C_AERemoveSpecialHandler(AEKeyword function_class,
+                                         AEEventHandlerUPP hdlr,
+                                         Boolean system_handler_p)
 {
     AE_hdlr_table_h table;
     AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
+    OSErr err;
+
+    if(!valid_special_keyword(function_class))
+        return errAENotASpecialFunction;
 
     table = hdlr_table(system_handler_p, special);
 
     selector.sel0 = function_class;
     selector.sel1 = k_special_sel1;
 
-    /* #### fail if `hdlr' is not the currently installed handler? */
-    AE_RETURN_ERROR(_AE_hdlr_delete(table, 0, &selector));
+    err = hdlr_table_find(table, &selector, &elt);
+    if(err != noErr)
+        return errAEHandlerNotFound;
+
+    if((void *)hdlr != elt->hdlr.fn)
+        return errAEHandlerNotFound;
+
+    return _AE_hdlr_delete(&selector, nullptr, table);
+}
+
+bool Executor::ae_lookup_special_handler(AEKeyword function_class,
+                                         bool system_p,
+                                         GUEST<AEEventHandlerUPP> *handler_out,
+                                         GUEST<int32_t> *refcon_out)
+{
+    AE_hdlr_table_h table = hdlr_table(system_p, special);
+    AE_hdlr_selector_t selector;
+    AE_hdlr_table_elt_t *elt;
+
+    if(!table)
+        return false;
+
+    selector.sel0 = function_class;
+    selector.sel1 = k_special_sel1;
+
+    if(hdlr_table_find(table, &selector, &elt) != noErr)
+        return false;
+
+    *handler_out = guest_cast<AEEventHandlerUPP>(elt->hdlr.fn);
+    *refcon_out = elt->hdlr.refcon;
+    return true;
 }
