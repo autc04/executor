@@ -10,6 +10,7 @@
 using namespace Executor;
 
 std::unique_ptr<VideoDriver> Executor::vdriver;
+double Executor::screen_scale = 1.0;
 
 /* How opaque the desktop dim becomes while the guest is captured, and how long
  * the fade takes. */

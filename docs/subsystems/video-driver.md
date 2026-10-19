@@ -107,5 +107,15 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
   `QTimer` (window mask set to the whole window); the Qt rootless window renders
   with per-pixel alpha. Other front-ends no-op. See
   `docs/ai/2026-10-07-unresponsive-app-detection-plan.md`.
+- **Display scaling / `--scale`**: `Executor::screen_scale` (`src/vdriver/vdriver.h`) is
+  set from the `--scale` command-line option. Front-ends choose the guest
+  framebuffer resolution so that one emulated pixel covers
+  `max(1, floor(devicePixelRatio * screen_scale))` physical host pixels. The
+  default (`1`) therefore gives 1x on a standard display and 2x on a display
+  with device pixel ratio 2; `1.5` gives 1x/3x, and `2` gives 2x/4x. Qt scales
+  the guest image when painting and maps pointer and rootless-region
+  coordinates accordingly. Wayland uses `wp_viewporter` to scale the smaller
+  guest buffer up to the surface's logical size; if the compositor does not
+  advertise `wp_viewporter`, the option has no effect there.
 - Adding a new front-end requires: subclassing `VideoDriver`, implementing all pure
   virtual methods, and adding a CMake option in `src/config/front-ends/`.
