@@ -2,6 +2,7 @@
 #include <vdriver/responsiveness.h>
 #include <error/error.h>
 #include <quickdraw/region.h>
+#include <base/profiling.h>
 
 #include <thread>
 #include <condition_variable>
@@ -41,7 +42,8 @@ public:
         int nThreads = std::thread::hardware_concurrency() ? std::max(0, (int)std::thread::hardware_concurrency() - 2) : 4;
         
         for(int i = 0; i < nThreads; i++)
-            threads_.emplace_back([this]() {
+            threads_.emplace_back([this, i]() {
+                tracy::SetThreadName(("vdriver-worker-" + std::to_string(i)).c_str());
                 std::unique_lock lk(mutex_);
                 for(int round = 1;;round++)
                 {
@@ -56,9 +58,11 @@ public:
                         lk.lock();
                     }
                     
-                    work_ = {};
                     if(--workingThreads_ == 0)
+                    {
+                        work_ = {};
                         doneCond_.notify_one();
+                    }
                 }
             });
     }
@@ -81,13 +85,18 @@ public:
             work();
             return;
         }
-        std::unique_lock lk(mutex_);
-        work_ = work;
-        workingThreads_ = threads_.size();
-        ++workNumber_;
-        workCond_.notify_all();
+        {
+            std::unique_lock lk(mutex_);
+            work_ = work;
+            workingThreads_ = threads_.size();
+            ++workNumber_;
+            workCond_.notify_all();
+        }
         work();
-        doneCond_.wait(lk, [this] { return workingThreads_ == 0; });
+        {
+            std::unique_lock lk(mutex_);
+            doneCond_.wait(lk, [this] { return workingThreads_ == 0; });
+        }
     }
 };
 
@@ -329,6 +338,7 @@ struct IndexedPixelGetter
 void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
                                 const Executor::DirtyRects::Rects& rects)
 {
+    ZoneScoped;
     auto before = std::chrono::high_resolution_clock::now();
     
     if(!threadpool_)
@@ -361,6 +371,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
     std::mutex mut;
     
     threadpool_->run([=, &rectList, &nextRect, &mut] {
+        ZoneScopedN("VideoDriver::updateBuffer work");
         for(;;)
         {
             Executor::DirtyRects::Rect r;
@@ -379,6 +390,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 else
                     ++nextRect;
             }
+            ZoneScopedN("VideoDriver::updateBuffer rect");
             
             assert(r.left >= 0 && r.right >= 0 && r.left <= width && r.bottom <= height);
             

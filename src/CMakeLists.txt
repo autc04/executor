@@ -19,6 +19,40 @@ find_package(Boost REQUIRED CONFIG COMPONENTS filesystem program_options)
 
 find_package(Threads REQUIRED)
 
+option(ENABLE_TRACY "Build with the Tracy profiler client" OFF)
+if(NOT TRACY_SOURCE_DIR AND DEFINED ENV{TRACY_SOURCE_DIR})
+    set(TRACY_SOURCE_DIR "$ENV{TRACY_SOURCE_DIR}")
+endif()
+
+add_library(executor-tracy INTERFACE)
+if(ENABLE_TRACY)
+    if(NOT TRACY_SOURCE_DIR)
+        message(FATAL_ERROR "ENABLE_TRACY requires -DTRACY_SOURCE_DIR=/path/to/tracy (or $TRACY_SOURCE_DIR)")
+    endif()
+
+    set(TRACY_DEFINITIONS
+        TRACY_ENABLE
+        TRACY_NO_CRASH_HANDLER
+        TRACY_NO_BROADCAST
+        TRACY_ONLY_LOCALHOST
+    )
+
+    add_library(tracy-client STATIC ${TRACY_SOURCE_DIR}/public/TracyClient.cpp)
+    target_include_directories(tracy-client PUBLIC ${TRACY_SOURCE_DIR}/public)
+    target_compile_definitions(tracy-client PUBLIC ${TRACY_DEFINITIONS})
+    target_link_libraries(tracy-client PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_link_libraries(tracy-client PUBLIC ws2_32 dbghelp)
+    endif()
+
+    target_link_libraries(executor-tracy INTERFACE tracy-client)
+    target_compile_definitions(executor-tracy INTERFACE
+        EXECUTOR_TRACY=1
+        ${TRACY_DEFINITIONS}
+    )
+else()
+    target_compile_definitions(executor-tracy INTERFACE EXECUTOR_TRACY=0)
+endif()
 
 if(WIN32 AND MSVC)
     # compiler uses msvc-style command line
@@ -385,6 +419,7 @@ set(base_sources
         base/dispatcher.cpp
         base/emustubs.cpp
         base/logging.cpp
+        base/profiling.h
         base/structdump.h
         base/structdump.cpp
     
@@ -607,6 +642,8 @@ target_include_directories(romlib PUBLIC config/os/${HOST_OS})
 
 
 target_link_libraries(romlib lmdb)
+
+target_link_libraries(romlib executor-tracy)
 
 target_link_libraries(romlib Threads::Threads syn68k PowerCore mon)
 

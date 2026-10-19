@@ -45,6 +45,12 @@
           cmakeFlags = [ "-DFRONT_ENDS=headless" "-DNO_STATIC_BOOST=YES" ];
           hardeningDisable = [ "all" ];
         };
+
+        devShells.default = pkgs.mkShell {
+          inputsFrom = [ self'.packages.default ];
+          packages = [ pkgs.tracy ];
+          TRACY_SOURCE_DIR = "${pkgs.tracy.src}";
+        };
       };
     };
 }

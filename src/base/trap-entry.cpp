@@ -4,6 +4,7 @@
 #include <base/cpu.h>
 #include <base/debugger.h>
 #include <base/logging.h>
+#include <base/profiling.h>
 
 #include <cassert>
 #include <cstdlib>
@@ -22,6 +23,7 @@ syn68k_addr_t GeneratedEntrypoint::handle68K(syn68k_addr_t addr, void* ctx)
     currentM68KPC = *ptr_from_longint<GUEST<uint32>*>(EM_A7);
 
     auto* self = static_cast<GeneratedEntrypoint*>(ctx);
+    ZoneTransientN(tracyZone, self->name, true);
 
     if(auto ret = self->checkBreak68K(addr); ~ret)
         return ret;
@@ -50,6 +52,7 @@ void GeneratedEntrypoint::init()
         builtinlibs::addPPCEntrypoint(libname, name,
             [this](PowerCore& cpu)
             {
+                ZoneTransientN(tracyZone, this->name, true);
                 if(auto ret = this->checkBreakPPC(cpu); ~ret)
                     return ret;
 
@@ -104,6 +107,7 @@ void GeneratedDispatcherTrap::commitSelector() const
 syn68k_addr_t GeneratedDispatcherTrap::invokeFrom68K(syn68k_addr_t addr, void* extra)
 {
     auto* self = static_cast<GeneratedDispatcherTrap*>(extra);
+    ZoneTransientN(tracyDispatchZone, self->name, true);
 
     if(auto ret = self->checkBreak68K(addr); ~ret)
         return ret;
@@ -116,6 +120,7 @@ syn68k_addr_t GeneratedDispatcherTrap::invokeFrom68K(syn68k_addr_t addr, void* e
             return ret;
 
         self->commitSelector();
+        ZoneTransientN(tracySubZone, it->second.entrypoint->name, true);
         return it->second.invoke(addr, it->second.entrypoint);
     }
     else
