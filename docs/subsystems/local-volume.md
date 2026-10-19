@@ -107,6 +107,10 @@ reference number.
   identity validation for the whole process: `statPath()` reports no usable
   identity, so matching falls back to host name and kind (and rename recovery is
   off); records written while it was on re-adopt inodes on the next reconcile.
+  Identity validation is chosen per filesystem instance (`st_dev`), classified
+  lazily from the host filesystem type: block-backed local filesystems use it,
+  while tmpfs, overlayfs, NFS, FUSE and unknown types fall back to name+kind. A
+  volume can span several devices (nested or bind mounts).
 - **Hidden files**: `ItemFactory::isHidden()` suppresses sidecar files (like `._foo`)
   from appearing as Mac files. Always override this in new `ItemFactory` subclasses.
 - **Factory order matters**: `itemFactories` is tried in order and the first match

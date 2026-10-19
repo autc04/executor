@@ -1163,19 +1163,25 @@ validating instance still deletes and recreates on a namespace change. Tests tha
 pin rename recovery or identity invalidation must be skipped or constrained under
 the flag.
 
-### Phase 11c — Per-filesystem heuristic
+### Phase 11c — Per-filesystem heuristic — DONE
 
-Choose the policy per volume at mount from the filesystem type reported by
-`statfs`/`fstatfs` on the root (`f_type` on Linux): validate identity on
-block-backed local filesystems (ext4, xfs, btrfs, f2fs, …); disable it on
-synthetic or network filesystems whose `(dev, ino)` is per-mount or synthesized
-(tmpfs, overlayfs, NFS, FUSE) and on unknown types. Precedence: explicit switch
-(11b) > filesystem heuristic > default (identity validation).
+A `LocalVolume` is a path subtree, not a filesystem: it can span several
+`st_dev` values (nested mounts, bind mounts, a bind-mounted tree under a
+container's overlay root). The policy is therefore per filesystem instance, not
+per volume. `statPath()` classifies a device once, on first sight, using
+`statfs` on the path that produced the stat, and caches the verdict per thread.
+On Linux it trusts the block-backed local types (ext2/3/4, xfs, btrfs, f2fs,
+reiserfs, nilfs, ocfs2, bcachefs) and treats everything else — tmpfs, overlayfs,
+NFS, FUSE, unknown types, and a failed `statfs` — as name+kind only.
+`--dont-use-inodes` overrides the classification. Windows already reports no
+identity; other non-Linux platforms default to validation on. Tests whose subject
+needs inode identity call `requireInodeIdentity()`, which asks `statPath` about
+the test tree's own device, so a bind-mounted ext4 test tree runs even when the
+container root is overlayfs.
 
 A heuristic, not a proof: it says nothing about device renumbering, btrfs
-subvolume id quirks, or "same path, different volume." Keep the manual switch for
-exceptions. Detection is platform-specific — `f_type` is Linux; other platforms
-need their own mapping or the default.
+subvolume id quirks, "same path, different volume," or a device number reused
+after a remount within one process. Keep the manual switch for exceptions.
 
 ### Phase 11d — Identity epochs (preliminary; not agreed)
 
@@ -1315,6 +1321,10 @@ operations. Helpers in
   reopening the mapper; the CNID allocator continues rather than reusing an old
   CNID; a re-open diff preserves CNIDs for unchanged entries and recovers a
   same-directory rename by inode; move and recursive delete persist.
+- **Identity policy (Phase 11b/11c)**: `--dont-use-inodes` clears
+  `PathStat::identity.valid` and makes `sameIdentity()` fall back. Tests whose
+  subject requires inode identity call `requireInodeIdentity()` and skip when
+  the test tree's filesystem is classified as non-identity.
 - **Forward-looking** (`DISABLED_`): the large-directory benchmark (run with
   `--gtest_also_run_disabled_tests`). The validation, naming and Phase 10
   rename/hard-link tests above are enabled.

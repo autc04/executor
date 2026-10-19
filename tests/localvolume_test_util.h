@@ -20,6 +20,7 @@
 #include "compat.h"
 
 #include <FileMgr.h>
+#include <file/localvolume/filestamp.h>
 #include <rsys/filesystem.h>
 
 #include <gtest/gtest.h>
@@ -75,6 +76,14 @@ protected:
     long rootDirID_ = 0;
     std::string rootName_;
     fs::path rootPath_;
+
+    // Skip a test whose subject depends on host-inode identity when this
+    // volume's filesystem is classified as not providing it (Phase 11c).
+    static void requireInodeIdentity()
+    {
+        if(!statPath(ExecutorTestTempDir).identity.valid)
+            GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
+    }
 
     void SetUp() override
     {

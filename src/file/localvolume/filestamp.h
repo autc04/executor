@@ -66,7 +66,10 @@ struct PathStat
 };
 
 // stat the path (following symlinks); `stamp.valid` and `identity.valid` are
-// false, and `exists` is false, if it could not be stat'd.
+// false, and `exists` is false, if it could not be stat'd. Identity is reported
+// only when the path's own filesystem provides stable (dev, ino) values (Phase
+// 11c) and --dont-use-inodes is not set. One LocalVolume may span several
+// devices, so the decision is per filesystem instance, not per volume.
 PathStat statPath(const fs::path& path);
 
 // The change stamp alone (a convenience wrapper around statPath).
