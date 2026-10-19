@@ -2,6 +2,7 @@
 #include <vdriver/responsiveness.h>
 #include <error/error.h>
 #include <quickdraw/region.h>
+#include <base/profiling.h>
 
 #include <thread>
 #include <condition_variable>
@@ -329,6 +330,7 @@ struct IndexedPixelGetter
 void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
                                 const Executor::DirtyRects::Rects& rects)
 {
+    ZoneScoped;
     auto before = std::chrono::high_resolution_clock::now();
     
     if(!threadpool_)
