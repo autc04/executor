@@ -58,9 +58,11 @@ public:
                         lk.lock();
                     }
                     
-                    work_ = {};
                     if(--workingThreads_ == 0)
+                    {
+                        work_ = {};
                         doneCond_.notify_one();
+                    }
                 }
             });
     }
@@ -83,13 +85,18 @@ public:
             work();
             return;
         }
-        std::unique_lock lk(mutex_);
-        work_ = work;
-        workingThreads_ = threads_.size();
-        ++workNumber_;
-        workCond_.notify_all();
+        {
+            std::unique_lock lk(mutex_);
+            work_ = work;
+            workingThreads_ = threads_.size();
+            ++workNumber_;
+            workCond_.notify_all();
+        }
         work();
-        doneCond_.wait(lk, [this] { return workingThreads_ == 0; });
+        {
+            std::unique_lock lk(mutex_);
+            doneCond_.wait(lk, [this] { return workingThreads_ == 0; });
+        }
     }
 };
 
@@ -364,6 +371,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
     std::mutex mut;
     
     threadpool_->run([=, &rectList, &nextRect, &mut] {
+        ZoneScopedN("VideoDriver::updateBuffer work");
         for(;;)
         {
             Executor::DirtyRects::Rect r;
@@ -382,6 +390,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 else
                     ++nextRect;
             }
+            ZoneScopedN("VideoDriver::updateBuffer rect");
             
             assert(r.left >= 0 && r.right >= 0 && r.left <= width && r.bottom <= height);
             
