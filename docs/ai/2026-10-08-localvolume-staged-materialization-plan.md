@@ -5,7 +5,7 @@
 > implemented behaviour.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–10 reach it and are DONE. Phases 11–13 are not yet implemented.
+- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–10 reach it and are DONE. Phase 11 is implemented through 11c (the LMDB backend is the default); Phase 11d is preliminary and not agreed, and Phases 12–13 are not implemented.
 - **Area:** `src/file/localvolume/`
 - **Related:** `docs/subsystems/local-volume.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
@@ -34,13 +34,14 @@ object**, not a pipeline:
 
 The model is **link-free**: an `Item` owns no other `Item`; a `DirectoryItem`
 holds a descriptor list rather than child `Item`s, identity lives in the
-`CNIDMapper`, and realized `Item`s are kept alive only by an LRU while in use.
+`CNIDMapper`, and realized `Item`s are kept alive only by the realization LRU
+or an external reference.
 The file-format concern is **split out of `Item`** (into a `FileRep`), so an
-`Item` can exist without knowing its format, and **a `CNID` is keyed by the host
-file's inode**, not by name. The headline fixes are that **path resolution must
-not list any ancestor** (at most the target's immediate parent, to name it) and
-that **reporting a count must not enumerate or materialize the directory's
-contents**.
+`Item` can exist without knowing its format, and **a `CNID`'s identity is the
+host file's inode**, not its name. The headline fixes are that **path
+resolution must not list any ancestor** (at most the target's immediate parent,
+to name it) and that **reporting a count must not enumerate or materialize the
+directory's contents**.
 
 ## Findings (motivation)
 
@@ -157,7 +158,7 @@ model; those marked **[revisit]** may need a further decision before their phase
 2. **Sidecars are always hidden by name**, independent of whether they are
    valid. `._`/`%` (AppleDouble) and `.rsrc`/`.finf` (Basilisk) are filtered
    purely from `readdir` output; no validity check is involved.
-3. **[revised] Identity is keyed by the host inode, not by name.** A `CNID`
+3. **[revised] Identity follows the host file, not the host name.** A `CNID`
    follows the *file*: a **same-directory external rename** keeps it, and a
    delete-and-recreate at the same name gets a new one. (A cross-directory host
    move is seen as delete + create, so it does not; a FileManager-initiated move
@@ -207,7 +208,8 @@ model; those marked **[revisit]** may need a further decision before their phase
     changes are reconciled at access, not on a timer.
 15. **Items are link-free.** No `Item` owns another; a `DirectoryItem` stores a
     descriptor list, not child `Item`s. Identity lives in the `CNIDMapper`, and
-    realized `Item`s are retained only by an LRU (see *Object model*).
+    realized `Item`s are retained only by the LRU or an external reference (see
+    *Object model*).
 
 ## Names
 
@@ -314,8 +316,9 @@ Count. No child `Item` is created or retained.
 ### CNIDResolve (Item)
 
 Give an entry a `CNID` (and its `parID`) by looking it up in the mapper — keyed by
-`(dev, ino)` — or creating a record on a miss. List performs it for every visible
-child as part of its reconciliation diff. The same per-entry primitive
+its binding `(parID, posixName)`, with the record's `(dev, ino)` identity
+validating it — or creating a record on a miss. List performs it for every
+visible child as part of its reconciliation diff. The same per-entry primitive
 (`ItemCache::resolveChildCNID`) is what path resolution uses, component by
 component, so a walk needs only the entry's parent and its host identity, not the
 parent's listing, and can descend without enumerating.
@@ -494,10 +497,11 @@ Identity is stored **in the record**, not in a separate index: a record is
 `{ parID, posixName, macName?, identity, kind }`, and a staleness check
 always starts from a CNID, so it already has the identity in hand. The record's
 `identity` is written when the binding is created (and when a rename re-points
-it), never re-stamped by a match: the stored value *is* the reference the
-comparison is against, and re-stamping it could only ever turn an unusable
-identity into a usable one, which cannot happen while every identity comes from
-the same `stat`. The mapper keeps only two parent-keyed maps:
+it). A match does not re-stamp it, with one exception: a record whose stored
+identity is unusable is re-stamped from a name+kind match once the host supplies
+a usable one (Phase 11b's re-adoption). A usable identity is never replaced by
+an unusable one, and every identity comes from the same `stat`. The mapper keeps
+only two parent-keyed maps:
 
 - `parID -> { posixName -> cnid }` — the directory's **child set** *and* the
   `(parID, posixName) -> cnid` lookup (this replaces a separate child list);
@@ -544,8 +548,8 @@ affected directory, with no FileManager operation. For each stored child `c` of
 the directory being re-listed, let `occ(c)` be the scanned entries whose identity
 matches `c`:
 
-- some occurrence matches `posixName` **and** kind → unchanged: keep the CNID and
-  the decided `macName`;
+- some occurrence in `occ(c)` matches `posixName` **and** kind → unchanged: keep
+  the CNID and the decided `macName`;
 - else exactly one occurrence → same-directory **rename**: keep the CNID, adopt the
   new `posixName`, clear the `macName` (it is re-derived), update the binding;
 - else no occurrence → gone: `deleteCNID(c)`, recursively;
@@ -697,8 +701,9 @@ affect the open handle (the OS keeps the fd on the inode). This removes the
 
 ### `CNIDMapper` (`cnidmapper.h`)
 
-Backing store, per volume (a **dumb value store**; resolving and staleness policy
-live in `ItemCache`):
+Backing store, per volume. The mapper owns the store and the atomic
+read-modify-write operations (the diff, `nameGroup`, `deleteCNID`, `moveCNID`);
+realization and staleness policy live in `ItemCache`/`DirectoryItem`:
 
 - **record** per CNID: `{ parID, posixName, macName?, identity, kind }`. The
   host **path is derived** from the `parID` chain and `posixName`, never stored, so
@@ -785,8 +790,10 @@ changes (see *Listing staleness*).
 *(Realization-only validation is deliberately provisional: good enough for the
 next stages, to be revisited.)*
 
-Every reference resolves through **`realizeByCNID(cnid)`**, which fuses the
-binding check of *Caching* with `ItemCache`'s realization:
+Every reference **by CNID** resolves through **`realizeByCNID(cnid)`**, which
+fuses the binding check of *Caching* with `ItemCache`'s realization. A listing
+realizes from its stamp-validated descriptors via `realizeDescriptor` (see *By
+parID + index*) and so does not repeat the binding check:
 
 ```
 rec  = mapper.lookupCNID(cnid)
@@ -856,8 +863,11 @@ caller reads `Item::name()`.
 ```
 1. dir = realizeByCNID(parID) as DirectoryItem
 2. ensureListed(dir)
-3. realizeByCNID(descriptors_[index].cnid)   # files-only: filter by kind first;
-                                                # its name is decided lazily on read
+3. realizeDescriptor(dir, descriptors_[index])
+                                             # files-only: filter by kind first;
+                                             # the listing stamp validated the
+                                             # descriptor's binding; its name is
+                                             # decided lazily on read
 ```
 
 ### The directory-side funnels
@@ -866,9 +876,10 @@ Two directory-side entry points each own their stage's state change, so no calle
 drives the stages itself:
 
 - **Lookup** — `DirectoryItem::child(name)` / `child(index, …)`: ensure the
-  directory is `Listed`, NameResolve the target's `macNamePrefix` group, then
-  select and realize the entry. This is how `resolve`, `resolveRelative` and
-  `resolveForInfo` reach a child.
+  directory is `Listed`, then select and realize the entry. A name lookup also
+  NameResolves the target's `macNamePrefix` group; an index lookup leaves the
+  name undecided until it is read (see *By parID + index*). This is how
+  `resolve`, `resolveRelative` and `resolveForInfo` reach a child.
 - **Naming** — `Item::name()` → `ItemCache::ensureNamed` → `DirectoryItem::resolveName(item)`
   (NameResolve the group holding `item`) and `DirectoryItem::resolveGroup(prefix)`
   (the batch itself): every read of an `Item`'s `macName` goes through here, so a
@@ -890,12 +901,16 @@ realize seams (`cacheItem`, `findRealizedItem`, `realizeDescriptor`).
 ### Responsibility summary
 
 - **Identity** (CNID/inode lookup, realize, validate, flush): `ItemCache` + mapper.
-- **Listing staleness & naming** (`ensureListed`, `listDirectory`/the diff,
-  `resolveGroup`/`resolveName`): `DirectoryItem`, reaching the mapper and factory
-  through `ItemCache`.
+- **Listing staleness & naming** (`ensureListed`, `resolveGroup`/`resolveName`):
+  `DirectoryItem`, reaching the mapper and factory through `ItemCache`. The
+  per-directory reconciliation diff is the mapper's batch operation
+  (`mapDirectoryContents`); `DirectoryItem::listDirectory` builds the scan and
+  installs the result.
 - **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing
   (`realizeDescriptor`).
-- The mapper stays a dumb value store throughout.
+- The mapper owns the store and the atomic read-modify-write operations (the
+  diff, `nameGroup`, `deleteCNID`, `moveCNID`); realization and staleness policy
+  stay in `ItemCache`/`DirectoryItem`.
 
 ### Filesystem contracts
 
@@ -995,7 +1010,8 @@ LRU (see *Caching*). Sub-steps:
 1. **DONE — directory stamps + `ensureEnumerated`.** `(mtime, size)` from a raw
    `stat`; L0 validate / L1 re-enumerate; the TTL is gone.
    `HostChangeVisibleWithoutInvalidation` is enabled.
-2. **DONE — memory-bound LRU** by total items (default 500 K, root pinned);
+2. **DONE — memory-bound LRU** by total items (default 500 K; the root was
+   still pinned at this stage — Phase 7 removes the pinning);
    `EvictionPreservesIdentity`.
 3. **DONE — Count caching** (`count_` + stamp); `CountScansOnceWhileValid`.
 4. **DONE — per-item rep revalidation** by re-testing the gauntlet's probe trace
@@ -1033,8 +1049,9 @@ every listing/metadata call site and the `dynamic_cast` sites.
 
 ### Phase 8 — Identity keyed by CNID — DONE
 
-- The mapper record gains an explicit `(dev, ino)` and `mtime`; children are the
-  CNID set `parID -> {cnid}` (the name key goes away).
+- The mapper record gains an explicit `(dev, ino)`; children are the CNID set
+  `parID -> {cnid}` (the name key goes away). (The per-entry `mtime` proposed
+  here was later dropped; per-entry metadata is not cached.)
 - Identity is looked up by inode — `(dev, ino) -> cnid` — and `realizeByHostPath(path)`
   stats each component instead of `lookupChild` / `getOrCreateChild` (which go
   away). The identity-or-create step is one mapper call (`resolveChildCNID`), so it can
@@ -1094,14 +1111,14 @@ requested name.
 a rename, and inode reuse at the same name still reads as unchanged (see *Binding
 staleness*).
 
-### Phase 11 — CNID persistence, transactions, multi-instance sharing
+### Phase 11 — CNID persistence, transactions, multi-instance sharing — DONE through 11c
 
 Rewrite `LMDBCNIDMapper` against the current interface. The dormant implementation
-predates the link-free, identity-keyed design and cannot be re-enabled as is: it
-stores a path rather than an identity, drops kind, matches by sorted path, names
-every new entry eagerly, and has `deleteMapping` stubbed. LMDB's single writer
-then lets two Executor instances share CNID and naming decisions for the same
-volume.
+predates the link-free, identity-validated design and cannot be re-enabled as
+is: it stores a path rather than an identity, drops kind, matches by sorted
+path, names every new entry eagerly, and has `deleteMapping` stubbed. LMDB's
+single writer then lets two Executor instances share CNID and naming decisions
+for the same volume.
 
 - **Record and indexes.** Persist `{parID, posixName, macName?, identity, isDir}`
   with no stored path, plus the `(parID, posixName) -> cnid` and

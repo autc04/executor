@@ -24,7 +24,8 @@ struct LocalVolumeStats
     std::atomic<uint64_t> entriesSeen { 0 };
     // Item objects constructed by the item factory.
     std::atomic<uint64_t> itemsConstructed { 0 };
-    // Per-entry factory probes (the format gauntlet in createItemForDirEntry).
+    // Per-entry factory probes (the format gauntlet in
+    // ItemFactory::createRepForFile, run from FileItem::ensureMaterialized).
     std::atomic<uint64_t> factoryProbes { 0 };
     // Count-stage directory scans (readdir tally; no items constructed).
     std::atomic<uint64_t> countScans { 0 };
