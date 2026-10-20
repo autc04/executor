@@ -1024,6 +1024,258 @@ TEST_F(LocalVolumeFixture, HostRenameRecoveredWhileFileIsOpen)
 }
 
 // --------------------------------------------------------------------------
+// Defect-pinning tests (written first)
+//
+// These pin the straightforward defects from the 2026-10-08 plan review, plus
+// the previously untested access-by-CNID binding-retry path. Tests that fail
+// today are DISABLED_ so the default suite stays green until the defect is
+// fixed; run them with, for example,
+//   build/tests --gtest_also_run_disabled_tests \
+//               --gtest_filter='*MoveUpdatesParID*'
+// --------------------------------------------------------------------------
+
+// A FileManager move must update the live Item's parent (ioFlParID and the
+// FSSpec's parID), not just its host path and mapper record.
+TEST_F(LocalVolumeFixture, DISABLED_MoveUpdatesParID)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostFile("src/f", "x");
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+    auto f = fmGet(src->cnid, "f");
+    ASSERT_TRUE(f.has_value());
+
+    ASSERT_EQ(noErr, fmMove(src->cnid, "f", dst->cnid));
+
+    auto moved = fmGet(dst->cnid, "f");
+    ASSERT_TRUE(moved.has_value());
+    EXPECT_EQ(f->cnid, moved->cnid);
+
+    auto parID = fmParID(dst->cnid, "f");
+    ASSERT_TRUE(parID.has_value());
+    EXPECT_EQ(dst->cnid, *parID);
+
+    auto spec = nativePathToFSSpec(host("dst/f"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ(dst->cnid, spec->parID);
+}
+
+// PBCatMove must keep an open FCB's cached name and parent current, as
+// PBHRename does.
+TEST_F(LocalVolumeFixture, DISABLED_CatMoveUpdatesOpenFCB)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostFile("src/f", "hello");
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+    auto f = fmGet(src->cnid, "f");
+    ASSERT_TRUE(f.has_value());
+
+    short refNum = fmOpen(src->cnid, "f");
+    ASSERT_GE(refNum, 0);
+
+    ASSERT_EQ(noErr, fmMove(src->cnid, "f", dst->cnid, "g"));
+
+    auto fcb = fmFCBInfo(refNum);
+    fmClose(refNum);
+    ASSERT_TRUE(fcb.has_value());
+    EXPECT_EQ(f->cnid, fcb->fileID);
+    EXPECT_EQ("g", fcb->name);
+    EXPECT_EQ(dst->cnid, fcb->parID);
+}
+
+// The guest sees a directory containing only hidden sidecars as empty, so it
+// must be deletable; the invisible entries must not produce fBsyErr.
+TEST_F(LocalVolumeFixture, DISABLED_DeleteDirectoryWithOnlyHiddenSidecars)
+{
+    hostDir("d");
+    hostFile("d/._foo", "sidecar");
+
+    auto d = fmGet(rootDirID_, "d");
+    ASSERT_TRUE(d.has_value());
+    auto count = fmChildCount(d->cnid);
+    ASSERT_TRUE(count.has_value());
+    EXPECT_EQ(0, *count);
+    EXPECT_TRUE(fmList(d->cnid).empty());
+
+    EXPECT_EQ(noErr, fmDelete(rootDirID_, "d"));
+    EXPECT_FALSE(fs::exists(host("d")));
+}
+
+// A directory's own AppleDouble companion must be removed with it.
+TEST_F(LocalVolumeFixture, DISABLED_DirectoryDeleteRemovesItsOwnSidecar)
+{
+    hostDir("d");
+    hostFile("._d", "sidecar");
+
+    ASSERT_EQ(noErr, fmDelete(rootDirID_, "d"));
+    EXPECT_FALSE(fs::exists(host("d")));
+    EXPECT_FALSE(fs::exists(host("._d")));
+}
+
+// A directory's own AppleDouble companion must follow a rename.
+TEST_F(LocalVolumeFixture, DISABLED_DirectoryRenameMovesItsOwnSidecar)
+{
+    hostDir("d");
+    hostFile("._d", "sidecar");
+
+    ASSERT_EQ(noErr, fmRename(rootDirID_, "d", "e"));
+    EXPECT_TRUE(fs::exists(host("e")));
+    EXPECT_FALSE(fs::exists(host("._d")));
+}
+
+// Deleting a file must remove every AppleDouble companion, not just the
+// scheme that won classification.
+TEST_F(LocalVolumeFixture, DISABLED_DeleteRemovesBothAppleDoubleSchemes)
+{
+    hostFile("foo", "data");
+    hostFile("%foo", "percent sidecar");
+    hostFile("._foo", "dot-underscore sidecar");
+
+    ASSERT_EQ(noErr, fmDelete(rootDirID_, "foo"));
+    EXPECT_FALSE(fs::exists(host("foo")));
+    EXPECT_FALSE(fs::exists(host("%foo")));
+    EXPECT_FALSE(fs::exists(host("._foo")));
+}
+
+// A realized item whose name cannot be decided must not yield an FSSpec with
+// a zero-length name. A hidden sidecar is not in the parent's listing, so it
+// has no name to resolve.
+TEST_F(LocalVolumeFixture, DISABLED_HiddenSidecarPathHasNoEmptyFSSpecName)
+{
+    hostFile("._foo", "sidecar");
+
+    auto spec = nativePathToFSSpec(host("._foo"));
+    if(spec)
+        EXPECT_GT(spec->name[0], 0) << "an FSSpec must not carry an undecided name";
+}
+
+// If the parent cannot be listed, NameResolve cannot decide the child's name;
+// that must surface as "no FSSpec", not an FSSpec with a zero-length name.
+TEST_F(LocalVolumeFixture, DISABLED_UnreadableParentHasNoEmptyFSSpecName)
+{
+    hostDir("d");
+    hostFile("d/f", "x");
+
+    // Drop read, keep write and execute: stat'ing d/f still works, but listing
+    // d fails.
+    const auto unreadable = fs::perms::owner_write | fs::perms::owner_exe;
+    fs::permissions(host("d"), unreadable);
+
+    bool enforced = false;
+    try
+    {
+        for(auto& entry : fs::directory_iterator(host("d")))
+            (void)entry;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        enforced = true;
+    }
+
+    if(!enforced)
+    {
+        fs::permissions(host("d"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce directory permissions";
+    }
+
+    auto spec = nativePathToFSSpec(host("d/f"));
+    fs::permissions(host("d"), fs::perms::owner_all);
+
+    if(spec)
+        EXPECT_GT(spec->name[0], 0) << "an FSSpec must not carry an undecided name";
+}
+
+// A per-entry stat failure must not delete the entry's CNID: the file is still
+// there, and a transient stat error must not be read as "gone".
+TEST_F(LocalVolumeFixture, DISABLED_StatFailureDoesNotRenumberChild)
+{
+    hostDir("d");
+    hostFile("d/f", "x");
+
+    auto d = fmGet(rootDirID_, "d");
+    ASSERT_TRUE(d.has_value());
+    auto before = fmGet(d->cnid, "f");
+    ASSERT_TRUE(before.has_value());
+
+    // Read but no execute: readdir succeeds, stat("d/f") fails with EACCES.
+    fs::permissions(host("d"), fs::perms::owner_read);
+
+    bool enforced = false;
+    boost::system::error_code ec;
+    if(!fs::is_regular_file(host("d/f"), ec) && ec)
+        enforced = true;
+
+    bool canList = true;
+    try
+    {
+        for(auto& entry : fs::directory_iterator(host("d")))
+            (void)entry;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        canList = false;
+    }
+
+    if(!enforced || !canList)
+    {
+        fs::permissions(host("d"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce directory search permissions";
+    }
+
+    // A readdir that succeeds while a child cannot be stat'ed must not be
+    // committed as a listing that omits the child.
+    bumpMtime("d");
+    auto listed = fmList(d->cnid);
+    fs::permissions(host("d"), fs::perms::owner_all);
+
+    if(!listed.empty())
+        GTEST_SKIP() << "stat of a child succeeded without directory search permission";
+
+    bumpMtime("d");
+    auto after = fmGet(d->cnid, "f");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+}
+
+// A directory renamed on the host is recovered by an access by CNID alone: the
+// binding check flushes the parent, the diff recovers the rename, and the
+// access retries. (This path had no direct test; it passes today.)
+TEST_F(LocalVolumeFixture, DirectoryRenameRecoveredByCnidAccess)
+{
+    requireInodeIdentity();
+    hostDir("d");
+    hostFile("d/f/inner", "x");
+
+    auto d = fmGet(rootDirID_, "d");
+    ASSERT_TRUE(d.has_value());
+    auto f = fmGet(d->cnid, "f");
+    ASSERT_TRUE(f.has_value());
+    ASSERT_TRUE(f->isDir);
+
+    fs::rename(host("d/f"), host("d/g"));
+    bumpMtime("d");
+
+    // No name lookup first: go straight to the CNID.
+    auto count = fmChildCount(f->cnid);
+    ASSERT_TRUE(count.has_value());
+    EXPECT_EQ(1, *count);
+
+    auto g = fmGet(d->cnid, "g");
+    ASSERT_TRUE(g.has_value());
+    EXPECT_EQ(f->cnid, g->cnid);
+    EXPECT_FALSE(fmGet(d->cnid, "f").has_value());
+}
+
+// --------------------------------------------------------------------------
 // Benchmark (not CTest-gated; run explicitly)
 //   build/tests --gtest_also_run_disabled_tests \
 //               --gtest_filter='*BenchmarkLargeDirectory*'

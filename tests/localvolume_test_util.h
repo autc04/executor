@@ -208,6 +208,23 @@ protected:
         return e;
     }
 
+    // The parent CNID (`ioFlParID`) the FileManager reports for an entry.
+    std::optional<long> fmParID(long parentDirID, std::string_view name)
+    {
+        CInfoPBRec ipb;
+        std::memset(&ipb, 42, sizeof(ipb));
+        ipb.hFileInfo.ioCompletion = nullptr;
+        ipb.hFileInfo.ioVRefNum = vRefNum_;
+        ipb.hFileInfo.ioDirID = parentDirID;
+        auto n = str255(name);
+        ipb.hFileInfo.ioNamePtr = n.data();
+        ipb.hFileInfo.ioFDirIndex = 0;
+        PBGetCatInfoSync(&ipb);
+        if(ipb.hFileInfo.ioResult != noErr)
+            return std::nullopt;
+        return (long)ipb.hFileInfo.ioFlParID;
+    }
+
     OSErr fmMakeDir(long parentDirID, std::string_view name, long* outDirID = nullptr)
     {
         HParamBlockRec pb;
@@ -464,6 +481,29 @@ protected:
         pb.ioParam.ioCompletion = nullptr;
         pb.ioParam.ioRefNum = refNum;
         PBCloseSync(&pb);
+    }
+
+    struct FCBState
+    {
+        long parID = 0;
+        long fileID = 0;   // the item's CNID
+        std::string name;
+    };
+
+    std::optional<FCBState> fmFCBInfo(short refNum)
+    {
+        FCBPBRec pb;
+        std::memset(&pb, 42, sizeof(pb));
+        pb.ioCompletion = nullptr;
+        pb.ioFCBIndx = 0;   // 0: look the FCB up by ioRefNum
+        pb.ioRefNum = refNum;
+        Str255 name;
+        name[0] = 0;
+        pb.ioNamePtr = name;
+        PBGetFCBInfoSync(&pb);
+        if(pb.ioResult != noErr)
+            return std::nullopt;
+        return FCBState { (long)pb.ioFCBParID, (long)pb.ioFCBFlNm, pstring(name) };
     }
 };
 
