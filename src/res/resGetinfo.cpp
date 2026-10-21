@@ -167,5 +167,9 @@ LONGINT Executor::ROMlib_SizeResource(Handle res, Boolean usehandle)
 
 LONGINT Executor::C_GetResourceSizeOnDisk(Handle res)
 {
-    return ROMlib_SizeResource(res, true);
+    /* the length stored on disk (for a compressed resource, its
+       compressed size), not the loaded handle's size. Finder 7.5 compares
+       this with the uncompressed size to decide whether to decompress the
+       code it reads straight from its resource fork. */
+    return ROMlib_SizeResource(res, false);
 }
