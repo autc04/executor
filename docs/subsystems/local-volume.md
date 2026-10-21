@@ -42,8 +42,10 @@ implements the same backend interface in memory; it is the reference/alternative
 backend, not a runtime fallback.
 
 **Fork storage formats**:
-- **Plain**: data fork is the raw file; resource fork is stored in a `._filename`
-  (dot-underscore) sidecar or a `%filename` percent-encoded sidecar.
+- **Plain**: data fork is the raw file, no resource fork exists. Can be upgraded
+  to 'Macintosh' or 'AppleDouble' (depending on platform).
+- **Macintosh**: on macOS only, uses xattrs to access the real mac's resource fork
+- and legacy metadata.
 - **AppleDouble**: data fork is the raw file; metadata and resource fork are in a
   `._filename` companion file (macOS-compatible).
 - **AppleSingle**: both forks plus metadata in a single file (`.ad` extension).
