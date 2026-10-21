@@ -5,6 +5,8 @@
 /* Forward declarations in QuickDraw.h (DO NOT DELETE THIS LINE) */
 
 #include <base/common.h>
+
+#include <vector>
 #include <QuickDraw.h>
 #include <CQuickDraw.h>
 #include <MemoryMgr.h>
@@ -43,7 +45,7 @@ OSErr Executor::C_BitMapToRegion(RgnHandle rh, const BitMap *bmp)
     unsigned char scruffmask, scruffhold0, scruffhold1;
     unsigned char *zeroline;
     unsigned char *line0p, *line1p, c, *p, *saveline0p, *saveline1p;
-    INTEGER *outp, *endoutp, transition;
+    INTEGER transition;
     Boolean havewritteny;
     /* 0x00 or 0x100, depending on the state of the last xorred byte */
     unsigned int tableindex;
@@ -52,14 +54,15 @@ OSErr Executor::C_BitMapToRegion(RgnHandle rh, const BitMap *bmp)
        && ((PixMap *)bmp)->pixelSize != 1)
         /*-->*/ return pixmapTooDeepErr;
 
-    SetHandleSize((Handle)rh, MAXRGNSIZE);
-    outp = (INTEGER *)((char *)*rh + RGN_SMALL_SIZE);
-    endoutp = (INTEGER *)((char *)*rh + MAXRGNSIZE);
+    /* build the region data in host memory and size the
+       handle once at the end. Growing it to MAXRGNSIZE up front wrote past
+       the handle whenever that SetHandleSize failed (a full heap). */
+    std::vector<GUEST<INTEGER>> out;
 
 #define OUTPUT(v)                                                    \
     do                                                               \
     {                                                                \
-        if(outp >= endoutp)                                          \
+        if(RGN_SMALL_SIZE + (out.size() + 1) * sizeof(INTEGER) > MAXRGNSIZE) \
         {                                                            \
             /* ### set the size to something reasonable, although we \
                should see what the mac does */                       \
@@ -67,7 +70,7 @@ OSErr Executor::C_BitMapToRegion(RgnHandle rh, const BitMap *bmp)
             return rgnTooBigErr;                                     \
         }                                                            \
         else                                                         \
-            *outp++ = CW_RAW(v);                                     \
+            out.push_back(v);                                        \
     } while(0)
 
     top = bmp->bounds.top;
@@ -123,33 +126,37 @@ OSErr Executor::C_BitMapToRegion(RgnHandle rh, const BitMap *bmp)
         line1p = saveline1p + rowbytes;
     }
     OUTPUT(RGN_STOP);
-    rgnsize = (char *)outp - (char *)*rh;
-    switch(rgnsize)
+    rgnsize = RGN_SMALL_SIZE + out.size() * sizeof(INTEGER);
+    if(rgnsize == RGN_SMALL_SIZE + (int)sizeof(INTEGER))
+        goto it_is_empty;
+    if(rgnsize == RGN_SMALL_SIZE + 9 * (int)sizeof(INTEGER))
     {
-        case RGN_SMALL_SIZE + sizeof(INTEGER):
-        it_is_empty:
-            RGN_BBOX(rh) = {};
-            RGN_SET_SMALL(rh);
-            break;
-        case RGN_SMALL_SIZE + 9 * sizeof(INTEGER):
-            outp = RGN_DATA(rh);
-            (*rh)->rgnBBox.top = GUEST<int16_t>::fromRaw(outp[0]);
-            (*rh)->rgnBBox.left = GUEST<int16_t>::fromRaw(outp[1]);
-            (*rh)->rgnBBox.bottom = GUEST<int16_t>::fromRaw(outp[4]);
-            (*rh)->rgnBBox.right = GUEST<int16_t>::fromRaw(outp[2]);
-            RGN_SET_SMALL(rh);
-            break;
-        default:
-            (*rh)->rgnBBox = bmp->bounds;
-/* #warning we are not setting the bounding box properly */
-#if 1
-            (*rh)->rgnSize = rgnsize;
-#else
-            RGN_SET_SMALL(rh);
-#endif
-            break;
+        /* one rectangle */
+        SetHandleSize((Handle)rh, RGN_SMALL_SIZE);
+        if(MemError() != noErr)
+            return MemError();
+        (*rh)->rgnBBox.top = out[0];
+        (*rh)->rgnBBox.left = out[1];
+        (*rh)->rgnBBox.bottom = out[4];
+        (*rh)->rgnBBox.right = out[2];
+        RGN_SET_SMALL(rh);
+        return noErr;
     }
-    SetHandleSize((Handle)rh, RGN_SIZE(rh));
+    SetHandleSize((Handle)rh, rgnsize);
+    if(MemError() != noErr)
+        return MemError();
+    memcpy((char *)*rh + RGN_SMALL_SIZE, out.data(), out.size() * sizeof(INTEGER));
+    (*rh)->rgnBBox = bmp->bounds;
+/* #warning we are not setting the bounding box properly */
+    (*rh)->rgnSize = rgnsize;
+    return noErr;
+
+it_is_empty:
+    SetHandleSize((Handle)rh, RGN_SMALL_SIZE);
+    if(MemError() != noErr)
+        return MemError();
+    RGN_BBOX(rh) = {};
+    RGN_SET_SMALL(rh);
     return noErr;
 }
 

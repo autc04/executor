@@ -29,7 +29,9 @@ void Item::moveItem(const fs::path& newPath, mac_string_view newName)
         name_ = newName;
 }
 
-const int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904)/4);
+/* 1904 is a leap year, so 1904-1969 holds 17 leap days, not
+   (1970-1904)/4 = 16: with 16, every host file's date was a day early. */
+const int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904+3)/4);
 
 ItemInfo Item::getInfo()
 {
