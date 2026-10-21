@@ -2,47 +2,43 @@
 
 #include "cnidmapper.h"
 #include <map>
-#include <set>
 #include <string>
 #include <unordered_map>
 
 namespace Executor
 {
 
-class SimpleCNIDMapper : public CNIDMapper
+// The in-memory reference backend. It stores records, the parent-keyed posix
+// name index and the parent-keyed Mac name index; all policy lives in
+// ItemCache.
+class SimpleCNIDMapper : public CNIDMapperBackend
 {
     CNID nextCNID_ = 3;
 
-    // The record, exactly as ItemCache sees it. No host path is stored; the path
-    // is derived from the parID chain (see ItemCache::pathOf).
     std::unordered_map<CNID, Mapping> mappings_;
 
-    // parID -> (host name -> child CNID): a directory's child set *and* the
-    // (parID, posixName) -> cnid lookup. There is no inode-keyed index: identity
-    // lives in the record, and inode pairing is built from the scan while
-    // re-listing a directory. See *Binding staleness* in the plan.
+    // parID -> (host name -> child CNID): a directory's child set and the
+    // (parID, posixName) -> cnid lookup.
     std::unordered_map<CNID, std::map<fs::path, CNID>> posixNames_;
 
     // parID -> (case-folded Mac name -> cnid), populated at NameResolve.
     std::unordered_map<CNID, std::map<mac_string, CNID>> names_;
 
-    void forgetRecordName(Mapping& rec);
-
 public:
     explicit SimpleCNIDMapper(mac_string volumeName);
 
-    virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<DirEntry> entries) override;
-    virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
-    virtual std::optional<Mapping> lookupPosixName(CNID parID, const fs::path& posixName) override;
-    virtual CNID createRecord(CNID parID, const fs::path& posixName,
-        const FileIdentity& identity, bool isDir) override;
-    virtual CNID getOrCreateChild(CNID parID, const fs::path& posixName,
-        const FileIdentity& identity, bool isDir) override;
-    virtual std::optional<CNID> cnidForName(CNID parID, mac_string_view macName) override;
-    virtual void nameGroup(CNID parID, const std::vector<NameRequest>& group) override;
-    virtual void deleteCNID(CNID cnid) override;
-    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
-        const fs::path& newPosixName) override;
+    virtual std::optional<Mapping> get(CNID cnid) override;
+    virtual std::optional<Mapping> getChild(CNID parID, const fs::path& posixName) override;
+    virtual std::vector<std::pair<fs::path, CNID>> getChildren(CNID parID) override;
+    virtual std::optional<CNID> getName(CNID parID, mac_string_view foldedMacName) override;
+
+    virtual void put(const Mapping& record) override;
+    virtual void erase(CNID cnid) override;
+    virtual void putChild(CNID parID, const fs::path& posixName, CNID cnid) override;
+    virtual void eraseChild(CNID parID, const fs::path& posixName) override;
+    virtual void putName(CNID parID, mac_string_view foldedMacName, CNID cnid) override;
+    virtual void eraseName(CNID parID, mac_string_view foldedMacName) override;
+    virtual CNID allocate() override;
 };
 
-}
+} // namespace Executor

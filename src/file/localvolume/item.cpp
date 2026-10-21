@@ -371,7 +371,7 @@ std::optional<std::vector<Descriptor>> DirectoryItem::listDirectory()
     // (see *Future Ideas*).
     ItemFactory& factory = itemcache_.itemFactory();
 
-    std::vector<CNIDMapper::DirEntry> entries;
+    std::vector<ItemCache::DirEntry> entries;
     try
     {
         for(const auto& e : fs::directory_iterator(path()))
@@ -408,14 +408,14 @@ std::optional<std::vector<Descriptor>> DirectoryItem::listDirectory()
 
     // readdir never yields an empty name, so an empty one marks a dropped entry.
     entries.erase(std::remove_if(entries.begin(), entries.end(),
-        [](const CNIDMapper::DirEntry& e) { return e.posixName.empty(); }),
+        [](const ItemCache::DirEntry& e) { return e.posixName.empty(); }),
         entries.end());
 
     localVolumeStats().directoryIterations++;
     localVolumeStats().entriesSeen += entries.size();
 
-    std::vector<CNIDMapper::Mapping> mappings =
-        itemcache_.cnidMapper().mapDirectoryContents(cnid(), std::move(entries));
+    std::vector<CNIDRecord> mappings =
+        itemcache_.mapDirectoryContents(cnid(), std::move(entries));
 
     std::vector<Descriptor> descriptors;
     descriptors.reserve(mappings.size());
@@ -479,9 +479,7 @@ void DirectoryItem::resolveGroup(mac_string_view prefix)
     if(begin == end)
         return;
 
-    CNIDMapper& mapper = itemcache_.cnidMapper();
-
-    std::vector<CNIDMapper::NameRequest> group;
+    std::vector<ItemCache::NameRequest> group;
     group.reserve(end - begin);
     for(size_t i = begin; i < end; i++)
     {
@@ -489,13 +487,13 @@ void DirectoryItem::resolveGroup(mac_string_view prefix)
         // The whole group is offered, so already-decided names seed the collision
         // set; only the undecided entries need a name source. The binding is
         // passed too, so a rename that raced the listing is rejected.
-        if(auto rec = mapper.lookupCNID(d.cnid); rec && rec->macname)
+        if(auto rec = itemcache_.lookupCNID(d.cnid); rec && rec->macname)
             group.push_back({ d.cnid, d.posixName, {} });
         else
             group.push_back({ d.cnid, d.posixName, nameSourceOf(d) });
     }
 
-    mapper.nameGroup(cnid(), group);
+    itemcache_.nameGroup(cnid(), group);
 }
 
 fs::path DirectoryItem::nameSourceOf(const Descriptor& d)
@@ -523,21 +521,19 @@ std::optional<mac_string> DirectoryItem::resolveName(const Item& item)
 
     resolveGroup(hostGroupPrefix(item.path().filename()));
 
-    if(auto rec = itemcache_.cnidMapper().lookupCNID(item.cnid()); rec && rec->macname)
+    if(auto rec = itemcache_.lookupCNID(item.cnid()); rec && rec->macname)
         return *rec->macname;
     return {};
 }
 
 ItemPtr DirectoryItem::child(mac_string_view name)
 {
-    CNIDMapper& mapper = itemcache_.cnidMapper();
-
     // Fast path: the name is already decided for this directory.
-    if(auto foundCnid = mapper.cnidForName(cnid(), name))
+    if(auto foundCnid = itemcache_.cnidForName(cnid(), name))
         if(ItemPtr item = itemcache_.realizeByCNID(*foundCnid))
         {
             // Realizing may have recovered a rename, invalidating this name.
-            if(mapper.cnidForName(cnid(), name) == foundCnid)
+            if(itemcache_.cnidForName(cnid(), name) == foundCnid)
                 return item;
         }
 
@@ -547,7 +543,7 @@ ItemPtr DirectoryItem::child(mac_string_view name)
     // Decide the group the name falls in, then look it up.
     resolveGroup(macNamePrefix(name));
 
-    if(auto foundCnid = mapper.cnidForName(cnid(), name))
+    if(auto foundCnid = itemcache_.cnidForName(cnid(), name))
         if(ItemPtr item = itemcache_.realizeByCNID(*foundCnid))
             return item;
 

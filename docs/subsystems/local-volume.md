@@ -35,8 +35,11 @@ the `(dev, ino)` identity, and the kind; the host path is derived from the paren
 chain, not stored, and identity is a verification value rather than a lookup key.
 There is one LMDB environment per volume under `$ExecutorDirectoryMap` (default
 `~/.executor/cnidmap1`), named `root` for `/`, `drive-C` for a Windows `C:/`, and
-`path-...` for any other root. `SimpleCNIDMapper` implements the same interface
-in memory; it is the reference/alternative backend, not a runtime fallback.
+`path-...` for any other root. `CNIDMapperBackend` is a deliberately dumb value
+store: it provides records and indexes plus one transaction seam, while the
+reconciliation and naming policy lives in `ItemCache`. `SimpleCNIDMapper`
+implements the same backend interface in memory; it is the reference/alternative
+backend, not a runtime fallback.
 
 **Fork storage formats**:
 - **Plain**: data fork is the raw file; resource fork is stored in a `._filename`
@@ -49,11 +52,12 @@ in memory; it is the reference/alternative backend, not a runtime fallback.
   128-byte header. Detected last (just before the plain fallback), so a sidecar
   pair describing a file named `foo.bin` wins over the MacBinary interpretation.
 
-**`ItemCache`**: caches `Item` objects and manages CNID assignment. Listing a
-directory stores a descriptor per child and assigns each child a CNID; an `Item`
-is realized from a descriptor on demand (`makeItem`: `DirectoryItem` for a
-directory, bare `FileItem` otherwise). The file's storage format is decided later,
-on first access, by `materialize()`.
+**`ItemCache`**: caches `Item` objects and owns all CNID policy: reconciliation,
+get-or-create, batch naming, recursive delete and move. Listing a directory stores
+a descriptor per child and assigns each child a CNID; an `Item` is realized from a
+descriptor on demand (`makeItem`: `DirectoryItem` for a directory, bare `FileItem`
+otherwise). The file's storage format is decided later, on first access, by
+`materialize()`.
 
 **Materialization**: `FileItem` holds an optional `FileRep`; `open()`, `openRF()`,
 `getInfo()`, `setInfo()`, `deleteItem()` and `moveItem()` call
@@ -82,7 +86,7 @@ reference number.
 | `src/file/localvolume/simplecnidmapper.h` / `.cpp` | In-memory CNID mapper |
 | `src/file/localvolume/openfile.h` | `OpenFile` interface for reading/writing a fork |
 | `src/file/localvolume/mac.h` / `.cpp` | Mac-specific metadata helpers |
-| `src/file/localvolume/cnidmapper.h` | `CnidMapper` abstract interface |
+| `src/file/localvolume/cnidmapper.h` | `CNIDMapperBackend` abstract interface |
 
 ## Important Data Structures
 

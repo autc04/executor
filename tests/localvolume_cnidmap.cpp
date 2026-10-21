@@ -1,9 +1,11 @@
-// Native-only tests for the persistent CNID mapper. They drive `LMDBCNIDMapper`
-// directly (not through the mounted LocalVolume), so "a restart" is simply
-// destroying the mapper and reopening it for the same volume root.
+// Native-only tests for the persistent CNID store. They drive `ItemCache` with
+// an `LMDBCNIDMapper` backend (not through the mounted LocalVolume), so "a
+// restart" is simply destroying the cache and reopening it for the same volume
+// root. The policy under test belongs to `ItemCache`, not to the backend.
 
 #include "gtest/gtest.h"
 
+#include <file/localvolume/itemcache.h>
 #include <file/localvolume/lmdbcnidmapper.h>
 #include <rsys/filesystem.h>
 
@@ -43,18 +45,24 @@ FileIdentity identity(std::uint64_t inode)
     return FileIdentity { 1, inode, true };
 }
 
-CNIDMapper::DirEntry entry(const char* name, std::uint64_t inode, bool isDir)
+ItemCache::DirEntry entry(const char* name, std::uint64_t inode, bool isDir)
 {
-    return CNIDMapper::DirEntry { fs::path(name), identity(inode), isDir };
+    return ItemCache::DirEntry { fs::path(name), identity(inode), isDir };
 }
 
-const CNIDMapper::Mapping* find(const std::vector<CNIDMapper::Mapping>& mappings,
+const CNIDRecord* find(const std::vector<CNIDRecord>& mappings,
     const std::string& name)
 {
     for(const auto& mapping : mappings)
         if(mapping.posixName.string() == name)
             return &mapping;
     return nullptr;
+}
+
+std::unique_ptr<ItemCache> makeCache(const fs::path& root, const char* volumeName)
+{
+    return std::make_unique<ItemCache>(root, makeName(volumeName),
+        std::make_unique<LMDBCNIDMapper>(root, makeName(volumeName)), nullptr);
 }
 
 class CNIDMapFixture : public ::testing::Test
@@ -116,26 +124,26 @@ TEST_F(CNIDMapFixture, DiffAdoptsInodesAfterNoInodeSession)
     CNID a = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
-        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
-        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        auto cache = makeCache(root_, "restamp-diff");
+        ItemCache::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = cache->mapDirectoryContents(2, { noIdentity });
         ASSERT_EQ(mappings.size(), 1u);
         a = mappings.at(0).cnid;
 
-        auto rec = mapper.lookupCNID(a);
+        auto rec = cache->lookupCNID(a);
         ASSERT_TRUE(rec.has_value());
         EXPECT_FALSE(rec->identity.valid);
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
+        auto cache = makeCache(root_, "restamp-diff");
         // Validation is back on: the name+kind match re-adopts the live identity
         // without changing the CNID.
-        auto mappings = mapper.mapDirectoryContents(2, { entry("a", 100, false) });
+        auto mappings = cache->mapDirectoryContents(2, { entry("a", 100, false) });
         ASSERT_EQ(mappings.size(), 1u);
         EXPECT_EQ(mappings.at(0).cnid, a);
 
-        auto rec = mapper.lookupCNID(a);
+        auto rec = cache->lookupCNID(a);
         ASSERT_TRUE(rec.has_value());
         EXPECT_TRUE(rec->identity.valid);
         EXPECT_EQ(rec->identity.device, 1u);
@@ -143,15 +151,15 @@ TEST_F(CNIDMapFixture, DiffAdoptsInodesAfterNoInodeSession)
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("restamp-diff"));
+        auto cache = makeCache(root_, "restamp-diff");
         // The reverse direction does not overwrite a usable identity with an
         // unusable one (as when the flag is enabled again).
-        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
-        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        ItemCache::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = cache->mapDirectoryContents(2, { noIdentity });
         ASSERT_EQ(mappings.size(), 1u);
         EXPECT_EQ(mappings.at(0).cnid, a);
 
-        auto rec = mapper.lookupCNID(a);
+        auto rec = cache->lookupCNID(a);
         ASSERT_TRUE(rec.has_value());
         EXPECT_TRUE(rec->identity.valid);
         EXPECT_EQ(rec->identity.inode, 100u);
@@ -163,18 +171,18 @@ TEST_F(CNIDMapFixture, GetOrCreateChildAdoptsInodesAfterNoInodeSession)
     CNID a = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("restamp-get"));
-        CNIDMapper::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
-        auto mappings = mapper.mapDirectoryContents(2, { noIdentity });
+        auto cache = makeCache(root_, "restamp-get");
+        ItemCache::DirEntry noIdentity { fs::path("a"), FileIdentity {}, false };
+        auto mappings = cache->mapDirectoryContents(2, { noIdentity });
         ASSERT_EQ(mappings.size(), 1u);
         a = mappings.at(0).cnid;
-        ASSERT_FALSE(mapper.lookupCNID(a)->identity.valid);
+        ASSERT_FALSE(cache->lookupCNID(a)->identity.valid);
     }
 
-    LMDBCNIDMapper mapper(root_, makeName("restamp-get"));
-    EXPECT_EQ(mapper.getOrCreateChild(2, "a", identity(100), false), a);
+    auto cache = makeCache(root_, "restamp-get");
+    EXPECT_EQ(cache->getOrCreateChild(2, "a", identity(100), false), a);
 
-    auto rec = mapper.lookupCNID(a);
+    auto rec = cache->lookupCNID(a);
     ASSERT_TRUE(rec.has_value());
     EXPECT_TRUE(rec->identity.valid);
     EXPECT_EQ(rec->identity.inode, 100u);
@@ -186,41 +194,41 @@ TEST_F(CNIDMapFixture, RecordsAndNamesSurviveReopen)
     CNID file = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("persist"));
-        dir = mapper.getOrCreateChild(2, "dir", identity(10), true);
-        mapper.nameGroup(2, { { dir, "dir", "dir" } });
+        auto cache = makeCache(root_, "persist");
+        dir = cache->getOrCreateChild(2, "dir", identity(10), true);
+        cache->nameGroup(2, { { dir, "dir", "dir" } });
 
-        file = mapper.getOrCreateChild(dir, "file", identity(11), false);
-        mapper.nameGroup(dir, { { file, "file", "file" } });
+        file = cache->getOrCreateChild(dir, "file", identity(11), false);
+        cache->nameGroup(dir, { { file, "file", "file" } });
 
         ASSERT_GT(dir, 2);
         ASSERT_GT(file, dir);
     }
 
-    LMDBCNIDMapper mapper(root_, makeName("persist"));
+    auto cache = makeCache(root_, "persist");
 
-    auto dirRec = mapper.lookupCNID(dir);
+    auto dirRec = cache->lookupCNID(dir);
     ASSERT_TRUE(dirRec.has_value());
     EXPECT_EQ(dirRec->parID, 2);
     EXPECT_TRUE(dirRec->isDir);
     ASSERT_TRUE(dirRec->macname.has_value());
     EXPECT_EQ(toString(*dirRec->macname), "dir");
 
-    auto fileRec = mapper.lookupCNID(file);
+    auto fileRec = cache->lookupCNID(file);
     ASSERT_TRUE(fileRec.has_value());
     EXPECT_EQ(fileRec->parID, dir);
     EXPECT_FALSE(fileRec->isDir);
     ASSERT_TRUE(fileRec->macname.has_value());
     EXPECT_EQ(toString(*fileRec->macname), "file");
 
-    EXPECT_EQ(mapper.cnidForName(2, view("dir")), std::optional<CNID>(dir));
+    EXPECT_EQ(cache->cnidForName(2, view("dir")), std::optional<CNID>(dir));
 
-    auto byPosix = mapper.lookupPosixName(dir, "file");
+    auto byPosix = cache->lookupPosixName(dir, "file");
     ASSERT_TRUE(byPosix.has_value());
     EXPECT_EQ(byPosix->cnid, file);
 
     // The allocator continues rather than reusing a CNID from the old session.
-    CNID other = mapper.getOrCreateChild(2, "other", identity(12), false);
+    CNID other = cache->getOrCreateChild(2, "other", identity(12), false);
     EXPECT_GT(other, file);
 }
 
@@ -230,9 +238,9 @@ TEST_F(CNIDMapFixture, DiffPreservesCnidsAcrossReopen)
     CNID b = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("diff"));
+        auto cache = makeCache(root_, "diff");
 
-        auto mappings = mapper.mapDirectoryContents(2,
+        auto mappings = cache->mapDirectoryContents(2,
             { entry("a", 100, false), entry("b", 101, false) });
         ASSERT_EQ(mappings.size(), 2u);
         a = find(mappings, "a")->cnid;
@@ -240,46 +248,46 @@ TEST_F(CNIDMapFixture, DiffPreservesCnidsAcrossReopen)
         ASSERT_GT(a, 2);
         ASSERT_GT(b, a);
 
-        mapper.nameGroup(2, { { a, "a", "a" }, { b, "b", "b" } });
-        ASSERT_TRUE(mapper.cnidForName(2, view("a")).has_value());
-        ASSERT_TRUE(mapper.cnidForName(2, view("b")).has_value());
+        cache->nameGroup(2, { { a, "a", "a" }, { b, "b", "b" } });
+        ASSERT_TRUE(cache->cnidForName(2, view("a")).has_value());
+        ASSERT_TRUE(cache->cnidForName(2, view("b")).has_value());
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("diff"));
+        auto cache = makeCache(root_, "diff");
 
         // "b" was renamed to "c" while no mapper was open: the diff pairs by
         // inode, keeps the CNID and clears the decided name.
-        auto mappings = mapper.mapDirectoryContents(2,
+        auto mappings = cache->mapDirectoryContents(2,
             { entry("a", 100, false), entry("c", 101, false) });
         ASSERT_EQ(mappings.size(), 2u);
 
-        const CNIDMapper::Mapping* aMapping = find(mappings, "a");
-        const CNIDMapper::Mapping* cMapping = find(mappings, "c");
+        const CNIDRecord* aMapping = find(mappings, "a");
+        const CNIDRecord* cMapping = find(mappings, "c");
         ASSERT_NE(aMapping, nullptr);
         ASSERT_NE(cMapping, nullptr);
         EXPECT_EQ(aMapping->cnid, a);
         EXPECT_EQ(cMapping->cnid, b);
 
-        auto aRec = mapper.lookupCNID(a);
+        auto aRec = cache->lookupCNID(a);
         ASSERT_TRUE(aRec.has_value());
         ASSERT_TRUE(aRec->macname.has_value());
         EXPECT_EQ(toString(*aRec->macname), "a");
 
-        auto cRec = mapper.lookupCNID(b);
+        auto cRec = cache->lookupCNID(b);
         ASSERT_TRUE(cRec.has_value());
         EXPECT_EQ(cRec->posixName.string(), "c");
         EXPECT_FALSE(cRec->macname.has_value());
 
-        mapper.nameGroup(2, { { b, "c", "c" } });
-        EXPECT_EQ(mapper.cnidForName(2, view("c")), std::optional<CNID>(b));
+        cache->nameGroup(2, { { b, "c", "c" } });
+        EXPECT_EQ(cache->cnidForName(2, view("c")), std::optional<CNID>(b));
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("diff"));
-        EXPECT_EQ(mapper.cnidForName(2, view("a")), std::optional<CNID>(a));
-        EXPECT_EQ(mapper.cnidForName(2, view("c")), std::optional<CNID>(b));
-        EXPECT_FALSE(mapper.cnidForName(2, view("b")).has_value());
+        auto cache = makeCache(root_, "diff");
+        EXPECT_EQ(cache->cnidForName(2, view("a")), std::optional<CNID>(a));
+        EXPECT_EQ(cache->cnidForName(2, view("c")), std::optional<CNID>(b));
+        EXPECT_FALSE(cache->cnidForName(2, view("b")).has_value());
     }
 }
 
@@ -288,21 +296,21 @@ TEST_F(CNIDMapFixture, IdentityChangeResetsTheMapping)
     CNID a = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("reset"));
-        auto mappings = mapper.mapDirectoryContents(2, { entry("a", 100, false) });
+        auto cache = makeCache(root_, "reset");
+        auto mappings = cache->mapDirectoryContents(2, { entry("a", 100, false) });
         ASSERT_EQ(mappings.size(), 1u);
         a = mappings.at(0).cnid;
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("reset"));
+        auto cache = makeCache(root_, "reset");
         // A new identity namespace (as if the device changed): Phase 11a accepts
         // that nothing matches, so the old record is deleted and a fresh CNID is
         // assigned.
-        auto mappings = mapper.mapDirectoryContents(2, { entry("a", 200, false) });
+        auto mappings = cache->mapDirectoryContents(2, { entry("a", 200, false) });
         ASSERT_EQ(mappings.size(), 1u);
         EXPECT_NE(mappings.at(0).cnid, a);
-        EXPECT_FALSE(mapper.lookupCNID(a).has_value());
+        EXPECT_FALSE(cache->lookupCNID(a).has_value());
     }
 }
 
@@ -313,34 +321,34 @@ TEST_F(CNIDMapFixture, MoveAndDeleteSurviveReopen)
     CNID file = 0;
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("move"));
-        dir = mapper.getOrCreateChild(2, "dir", identity(20), true);
-        other = mapper.getOrCreateChild(2, "other", identity(21), true);
-        file = mapper.getOrCreateChild(dir, "file", identity(22), false);
-        mapper.nameGroup(dir, { { file, "file", "file" } });
+        auto cache = makeCache(root_, "move");
+        dir = cache->getOrCreateChild(2, "dir", identity(20), true);
+        other = cache->getOrCreateChild(2, "other", identity(21), true);
+        file = cache->getOrCreateChild(dir, "file", identity(22), false);
+        cache->nameGroup(dir, { { file, "file", "file" } });
 
         // The host rename has already happened; the mapper only re-homes.
-        mapper.moveCNID(file, other, view("renamed"), "renamed");
+        cache->moveCNID(file, other, view("renamed"), "renamed");
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("move"));
-        EXPECT_FALSE(mapper.lookupPosixName(dir, "file").has_value());
+        auto cache = makeCache(root_, "move");
+        EXPECT_FALSE(cache->lookupPosixName(dir, "file").has_value());
 
-        auto moved = mapper.lookupPosixName(other, "renamed");
+        auto moved = cache->lookupPosixName(other, "renamed");
         ASSERT_TRUE(moved.has_value());
         EXPECT_EQ(moved->cnid, file);
         ASSERT_TRUE(moved->macname.has_value());
         EXPECT_EQ(toString(*moved->macname), "renamed");
 
-        mapper.deleteCNID(other);
+        cache->deleteCNID(other);
     }
 
     {
-        LMDBCNIDMapper mapper(root_, makeName("move"));
-        EXPECT_FALSE(mapper.lookupCNID(other).has_value());
-        EXPECT_FALSE(mapper.lookupCNID(file).has_value());   // recursive delete
-        EXPECT_FALSE(mapper.lookupPosixName(2, "other").has_value());
+        auto cache = makeCache(root_, "move");
+        EXPECT_FALSE(cache->lookupCNID(other).has_value());
+        EXPECT_FALSE(cache->lookupCNID(file).has_value());   // recursive delete
+        EXPECT_FALSE(cache->lookupPosixName(2, "other").has_value());
     }
 }
 

@@ -34,7 +34,7 @@ object**, not a pipeline:
 
 The model is **link-free**: an `Item` owns no other `Item`; a `DirectoryItem`
 holds a descriptor list rather than child `Item`s, identity lives in the
-`CNIDMapper`, and realized `Item`s are kept alive only by the realization LRU
+`CNIDMapperBackend`, and realized `Item`s are kept alive only by the realization LRU
 or an external reference.
 The file-format concern is **split out of `Item`** (into a `FileRep`), so an
 `Item` can exist without knowing its format, and **a `CNID`'s identity is the
@@ -58,8 +58,8 @@ calls `cacheDirectory(dir)` on **every ancestor**. Each `cacheDirectory`
 (`itemcache.cpp:42`) does:
 
 - one `directory_iterator` over the directory;
-- `SimpleCNIDMapper::mapDirectoryContents` (`simplecnidmapper.cpp:18`) — sorts
-  all entries and runs the batch CNID diff;
+- the batch CNID diff — then `SimpleCNIDMapper::mapDirectoryContents`, now
+  `ItemCache::mapDirectoryContents` — sorts all entries and runs the diff;
 - `LocalVolume::createItemForDirEntry` (`localvolume.cpp:96`) for **every
   entry**, probing all factories: `fs::is_directory` / `fs::is_regular_file`
   stats, AppleSingle 8-byte magic read (`appledouble.cpp:117`), AppleDouble
@@ -116,10 +116,9 @@ cost the LRU was meant to bound.
 
 ### F5. Mac names are batch-assigned and factories cannot rename
 
-Names are chosen by the CNID mappers from the host filename during batch
-enumeration (`simplecnidmapper.cpp:59-70`; LMDB equivalent
-`lmdbcnidmapper.cpp:223-228`), with `#N` suffixed by `toMacRomanFilename(name,
-index)` (`simplecnidmapper.cpp:66`) for collisions. `ItemCache::cacheDirectory`
+Names are chosen by `ItemCache`'s naming policy from the host filename during
+batch enumeration (the policy formerly lived in the two mappers), with `#N`
+suffixed by `toMacRomanFilename(name, index)` for collisions. `ItemCache::cacheDirectory`
 hands the finished name to the factory (`itemcache.cpp:85`), so a factory cannot
 override it. Content-derived names (an embedded filename in an AppleDouble /
 AppleSingle / MacBinary header) are not used. See
@@ -136,14 +135,14 @@ AppleSingle / MacBinary header) are not used. See
 | Directory listing | materializing that directory |
 | Mac name | materializing that directory (batch) |
 
-and `CNIDMapper` is batch-shaped (`mapDirectoryContents(dirID, allEntries)`)
-because batch mode is *possible* only as a consequence of always caching a
-directory whole. **Whole-directory batching is an artifact** — assigning a single
+and the CNID store's policy is batch-shaped
+(`ItemCache::mapDirectoryContents(dirID, allEntries)`) because batch mode is
+*possible* only as a consequence of always caching a directory whole. **Whole-directory batching is an artifact** — assigning a single
 entry a CNID needs only its parent id and its host path. But **batching by shared
 `macNamePrefix` is required**: disambiguators must be assigned consistently for
-the whole group, and assignment must query the mapper for the disambiguators it
-has already handed out. The mapper stores each mapping's host path and reuses it
-across enumerations, so identity is *today* path-keyed; the enumeration
+the whole group, and assignment must query the store for the disambiguators it
+has already handed out. The store keeps each binding's `posixName` and identity
+and reuses them across enumerations; the enumeration
 dependency lives in `ItemCache::realizeByHostPath(fs::path)` (`itemcache.cpp:169`),
 which has no path → CNID index and must enumerate each ancestor to find the child.
 
@@ -162,7 +161,7 @@ model; those marked **[revisit]** may need a further decision before their phase
    follows the *file*: a **same-directory external rename** keeps it, and a
    delete-and-recreate at the same name gets a new one. (A cross-directory host
    move is seen as delete + create, so it does not; a FileManager-initiated move
-   keeps the CNID through an explicit `moveCNID`.) The mapper assigns the `CNID`
+   keeps the CNID through an explicit `moveCNID`.) CNIDResolve assigns the `CNID`
    (and its `parID`) at **CNIDResolve**; the `macName` is decided separately, at
    **NameResolve**, and is therefore optional until then. `macName` never
    determines the `CNID`.
@@ -182,9 +181,10 @@ model; those marked **[revisit]** may need a further decision before their phase
    match key is the host inode (with the kind), not the path, so a delete-and-recreate
    at an existing name is a *new* entry by design (Decision 3) — while a
    same-directory rename keeps its CNID and adopts the new name (Phase 10).
-9. **[revised] Every mapper read-modify-write is one transaction.** The
+9. **[revised] Every CNID-store read-modify-write is one transaction.** The
    per-directory diff, get-or-create (`resolveChildCNID`), `nameGroup`, and
-   `deleteCNID`/`moveCNID` each read and write inside a single write transaction,
+   `deleteCNID`/`moveCNID` each read and write inside a single write transaction
+   (`ItemCache` policy over `CNIDMapperBackend::withTransaction`),
    so concurrent writers converge (Phase 11). No host I/O runs inside one. The
    naming batch is the prefix group, not the whole directory.
 10. **Identity is split from format.** `Item` may be instantiated without knowing
@@ -193,7 +193,7 @@ model; those marked **[revisit]** may need a further decision before their phase
     tie-break.** A `Listed` directory's descriptors are sorted by
     `(macNamePrefix, posixName)`, and that is the listing order. (Was: host-path
     sort order.)
-12. **delete/rename/move update the mapper and flush the whole directory.**
+12. **delete/rename/move update the CNID store and flush the whole directory.**
     `deleteCNID`/`moveCNID` keep the CNID mapping correct; the `ItemCache` flush
     stays directory-wide. Finer-grained invalidation is deferred (*Future Ideas*).
 13. **[revised] Count and List are separate directory stages.** Count keeps only
@@ -207,7 +207,7 @@ model; those marked **[revisit]** may need a further decision before their phase
     (re-checking candidate existence, trusting the content probes). External
     changes are reconciled at access, not on a timer.
 15. **Items are link-free.** No `Item` owns another; a `DirectoryItem` stores a
-    descriptor list, not child `Item`s. Identity lives in the `CNIDMapper`, and
+    descriptor list, not child `Item`s. Identity lives in the CNID store, and
     realized `Item`s are retained only by the LRU or an external reference (see
     *Object model*).
 
@@ -326,7 +326,8 @@ Count. No child `Item` is created or retained.
 
 ### CNIDResolve (Item)
 
-Give an entry a `CNID` (and its `parID`) by looking it up in the mapper — keyed by
+Give an entry a `CNID` (and its `parID`) by looking it up in the CNID store
+through `ItemCache` — keyed by
 its binding `(parID, posixName)`, with the record's `(dev, ino)` identity
 validating it — or creating a record on a miss. List performs it for every
 visible child as part of its reconciliation diff. The same per-entry primitive
@@ -362,22 +363,22 @@ building it. The two words are kept distinct so they *could* be split later
 
 ### Realize (a cache event, not a state)
 
-Turning a mapper record into a live `Item` object is not a stage. It is a cache
+Turning a store record into a live `Item` object is not a stage. It is a cache
 event driven by the realization LRU (see *Caching*): any record can be realized on
 demand and dropped arbitrarily, because a realized `Item` is a pure function of
-its mapper record plus live host state.
+its store record plus live host state.
 
 ## Object model
 
 **Items are link-free.** No `Item` owns another `Item`: a `DirectoryItem` stores
 descriptors, not children, and the parent→child relation lives entirely in the
-`CNIDMapper`. A realized `Item` is held only by the realization LRU or by an
+`CNIDMapperBackend`. A realized `Item` is held only by the realization LRU or by an
 external reference (see *Caching*).
 
 - **`Item`** — identity: `parID`, `cnid`, `path`, and `macName`, plus the identity
   ops (`deleteItem`, `moveItem`). `cnid` is assigned at **CNIDResolve**; `macName`
   is decided separately at **NameResolve** and is therefore *optional* until then
-  (the authoritative copy lives in the mapper record). The record stores no path:
+  (the authoritative copy lives in the store record). The record stores no path:
   it holds `parID` + `posixName`, and the path is derived from the `parID` chain.
   `deleteItem`/`moveItem` stay the public API here but delegate the host-file
   mutation to the rep, so a file's format need not be known until it is Materialized.
@@ -710,11 +711,12 @@ affect the open handle (the OS keeps the fd on the inode). This removes the
 
 ## Component changes (sketch)
 
-### `CNIDMapper` (`cnidmapper.h`)
+### `CNIDMapperBackend` (`cnidmapper.h`)
 
-Backing store, per volume. The mapper owns the store and the atomic
-read-modify-write operations (the diff, `nameGroup`, `deleteCNID`, `moveCNID`);
-realization and staleness policy live in `ItemCache`/`DirectoryItem`:
+Backing store, per volume. It is deliberately a dumb value store: records, the
+two parent-keyed indexes, and one transaction seam. Reconciliation, naming,
+get-or-create, recursive delete and move *policy* live in `ItemCache`; the
+backend never decides what a record should mean:
 
 - **record** per CNID: `{ parID, posixName, macName?, identity, kind }`. The
   host **path is derived** from the `parID` chain and `posixName`, never stored, so
@@ -730,23 +732,15 @@ re-listing a directory (see *Binding staleness*).
 
 Operations:
 
-- CNIDResolve: get-or-create for `(parID, posixName)` in **one** atomic call; a
-  lookup followed by a create would let two instances mint two CNIDs for one
-  binding.
-- **Resolve / diff** (the batch form): pair the fresh scan with the stored children
-  by `(dev, ino)` (built from the scan) and by name — reuse, rename, create, or
-  delete, per *Reconciliation* — then NameResolve the affected groups. The diff
-  re-reads the stored child set inside its write transaction even though the host
-  scan happened outside it. `lookupChild`/`getOrCreateChild` go away.
-- `deleteCNID`/`moveCNID` maintain the two maps above. `moveCNID` must not perform
-  host I/O inside the transaction: the caller renames the host file first and
-  passes the resulting name. A tear between the two is reconciled by the inode
-  diff, in either order.
-- A group's naming is a read-modify-write; a `NameRequest` carries the
-  `posixName` its `nameSource` was computed from, so the transaction can drop a
-  request whose binding was renamed in the meantime. Larger operations are handed
-  to the mapper as a `std::function` so the transaction shape is backend-neutral
-  (Decision 9).
+- primitives: `get`, `getChild`, `getChildren`, `getName`; `put`, `erase`,
+  `putChild`, `eraseChild`, `putName`, `eraseName`, `allocate`.
+- one transaction seam, `withTransaction(std::function<void()>)`: the in-memory
+  backend runs the callback directly, while LMDB opens a single write transaction
+  and retries on map growth or `MDB_MAP_RESIZED`. The callback is re-runnable, so
+  a retry starts from the state before the attempt (Decision 9).
+- there is no policy here: no diff, no get-or-create, no naming, no recursive
+  delete and no move. `ItemCache` composes those from the primitives inside one
+  `withTransaction` call.
 
 ### `FileStamp` (`filestamp.h`, `filestamp.cpp`)
 
@@ -770,7 +764,12 @@ changes (see *Listing staleness*).
   name for the FSSpec comes from NameResolve of that one entry's group.
 - `resolve(name)`: the parent is Listed (or the name's group NameResolved), then
   the name is looked up via the mapper's `(parID, macName)` index.
-- an LRU over all `Item`s, by cache weight; realization and the mapper/factory
+- the CNID store policy: `mapDirectoryContents` (the reconciliation diff),
+  `getOrCreateChild`, `nameGroup`, `deleteCNID`, `moveCNID`, and
+  `lookupCNID`/`lookupPosixName`/`cnidForName`. Each compound operation runs its
+  body inside one backend `withTransaction` call; `DirectoryItem` asks
+  `ItemCache` and never touches the backend.
+- an LRU over all `Item`s, by cache weight; realization and the backend/factory
   seams the Count/List/NameResolve stages drive.
 
 ### `Item` / `DirectoryItem` / `FileItem` (`item.h`, `item.cpp`)
@@ -821,11 +820,11 @@ The binding check deletes nothing: it flushes the parent so the diff can reconci
 an already-realized `items_` entry is trusted (the "as of last access" bound). If the
 item is open, the diff **updates it in place** rather than replacing it.
 
-Parts: the mapper answers `lookupCNID` / `lookupPosixName` / `cnidForName` /
-`mapDirectoryContents` / `nameGroup` plus the `createRecord`/`deleteCNID`/
-`moveCNID` primitives; `ItemCache` owns `items_`, realization, and the
-identity/kind policy of `resolveChildCNID`; and `DirectoryItem::child(name)` is
-the single directory-side lookup funnel (below).
+Parts: `ItemCache` answers `lookupCNID` / `lookupPosixName` / `cnidForName` /
+`mapDirectoryContents` / `nameGroup` / `deleteCNID` / `moveCNID` by composing the
+backend's value primitives inside `withTransaction`; `ItemCache` also owns
+`items_`, realization, and the identity/kind policy of `resolveChildCNID`; and
+`DirectoryItem::child(name)` is the single directory-side lookup funnel (below).
 
 **By CNID** (`resolveDir(dirID)`, `realizeByCNID(CNID)`, FCB revalidation): the steps
 above. The record gives the parent, so a binding failure flushes it and retries; a
@@ -896,32 +895,35 @@ drives the stages itself:
   (the batch itself): every read of an `Item`'s `macName` goes through here, so a
   caller never observes an undecided name.
 
-Both live on `DirectoryItem`, which reaches the mapper and the factory through
-`ItemCache::cnidMapper()` / `itemFactory()` and the realizer through `ItemCache`'s
-realize seams (`cacheItem`, `findRealizedItem`, `realizeDescriptor`).
+Both live on `DirectoryItem`, which reaches the CNID policy and the factory
+through `ItemCache`'s policy methods / `itemFactory()`, and the realizer through
+`ItemCache`'s realize seams (`cacheItem`, `findRealizedItem`,
+`realizeDescriptor`).
 
 ### Invalidation
 
 | Event | Action |
 |---|---|
 | create / dir-create | host op, then `DirectoryItem::clearCache()` (clear `listed_`/`count_`, re-cache); the next access re-lists → diff → new record |
-| delete | `mapper.deleteCNID(cnid)`, drop `items_[cnid]`, flush the parent |
-| rename / move (FileManager) | `mapper.moveCNID(cnid, newParID, newName)`, flush the old and new parent listings |
+| delete | `ItemCache::deleteCNID(cnid)`, drop `items_[cnid]`, flush the parent |
+| rename / move (FileManager) | `ItemCache::moveCNID(cnid, newParID, newName)`, flush the old and new parent listings |
 | external change | next `ensureListed` (stamp) → re-list → the binding diff (rename/delete/create) + decide the affected name groups; or a binding check fails → flush the parent → re-list → recover |
 
 ### Responsibility summary
 
-- **Identity** (CNID/inode lookup, realize, validate, flush): `ItemCache` + mapper.
+- **Identity** (CNID/inode lookup, realize, validate, flush): `ItemCache` +
+  `CNIDMapperBackend`.
 - **Listing staleness & naming** (`ensureListed`, `resolveGroup`/`resolveName`):
-  `DirectoryItem`, reaching the mapper and factory through `ItemCache`. The
-  per-directory reconciliation diff is the mapper's batch operation
-  (`mapDirectoryContents`); `DirectoryItem::listDirectory` builds the scan and
-  installs the result.
+  `DirectoryItem` drives the stages, calling `ItemCache` policy methods and the
+  factory through `ItemCache`. The per-directory reconciliation diff is
+  `ItemCache::mapDirectoryContents`; `DirectoryItem::listDirectory` builds the
+  scan and installs the result.
 - **Index listing**: `DirectoryItem::descriptors_` + `ItemCache` realizing
   (`realizeDescriptor`).
-- The mapper owns the store and the atomic read-modify-write operations (the
-  diff, `nameGroup`, `deleteCNID`, `moveCNID`); realization and staleness policy
-  stay in `ItemCache`/`DirectoryItem`.
+- `ItemCache` owns the atomic read-modify-write operations (the diff,
+  `nameGroup`, `deleteCNID`, `moveCNID`); `CNIDMapperBackend` owns only the
+  records/indexes and the transaction seam, and realization/staleness policy
+  stays in `ItemCache`/`DirectoryItem`.
 
 ### Filesystem contracts
 
@@ -964,14 +966,15 @@ listing did not finish within 5 minutes — F4 in practice.
 - **The HFS backend shares the `PBCatMove` shape** — `hfsPBCatMove`
   (`src/hfs/hfsHier.cpp:266-270`) feeds `ioNewName` to `ROMlib_findvcbandfile`.
   Out of scope here.
-- **Name disambiguation is stable across deletion**: the mapper reuses mappings
-  by path. Covered by `DisambiguatedNamesStableAcrossDelete`.
+- **Name disambiguation is stable across deletion**: the store reuses a binding's
+  record (and therefore its CNID) while the host binding exists. Covered by
+  `DisambiguatedNamesStableAcrossDelete`.
 
 ### Phase 1 — Path resolution without ancestor enumeration (F1) — DONE (based on older design)
 
-`SimpleCNIDMapper` stores per-directory children as `(host filename → cnid)`
-(the `(parID, posixName)` lookup + diff index); added `lookupChild` /
-`getOrCreateChild`; `ItemCache::realizeByHostPath(path)` walks components through them
+The CNID store keeps per-directory children as `(host filename → cnid)`
+(the `(parID, posixName)` lookup + diff index); `ItemCache` gained
+`lookupPosixName` / `getOrCreateChild`; `ItemCache::realizeByHostPath(path)` walks components through them
 instead of `cacheDirectory` on each ancestor. Guard:
 `ResolvePathListsAtMostTheTargetParent` (no ancestor scan; at most the target's
 immediate parent, to name it).
@@ -1124,10 +1127,11 @@ staleness*).
 
 ### Phase 11 — CNID persistence, transactions, multi-instance sharing — DONE through 11c
 
-Rewrite `LMDBCNIDMapper` against the current interface. The dormant implementation
-predates the link-free, identity-validated design and cannot be re-enabled as
-is: it stores a path rather than an identity, drops kind, matches by sorted
-path, names every new entry eagerly, and has `deleteMapping` stubbed. LMDB's
+Rewrite `LMDBCNIDMapper` against the current interface (now as the primitive
+`CNIDMapperBackend`; policy lives in `ItemCache`). The dormant implementation
+predated the link-free, identity-validated design and could not be re-enabled as
+is: it stored a path rather than an identity, dropped kind, matched by sorted
+path, named every new entry eagerly, and had `deleteMapping` stubbed. LMDB's
 single writer then lets two Executor instances share CNID and naming decisions
 for the same volume.
 
@@ -1142,9 +1146,10 @@ for the same volume.
   `max + 1` reuses the highest CNID after it is deleted, which can make a stale
   guest CNID denote a different file.
 - **Transactions.** Each read-modify-write — the diff, get-or-create, `nameGroup`,
-  `deleteCNID`, `moveCNID` — runs in one LMDB write transaction, and no host I/O
-  runs inside one (Decision 9). CNID allocation happens inside the transaction.
-  The host scan stays outside; the diff re-reads the stored child set inside.
+  `deleteCNID`, `moveCNID` — runs in one LMDB write transaction opened by the
+  backend's `withTransaction` seam, and no host I/O runs inside one (Decision 9).
+  CNID allocation happens inside the transaction. The host scan stays outside;
+  the diff re-reads the stored child set inside.
 - **Naming.** Keep Phase 9's rule: names are decided only in `nameGroup`, never
   eagerly by the diff. `NameRequest` carries the binding (`posixName`) its
   `nameSource` was derived from, and `nameGroup` drops a request whose record no
@@ -1169,8 +1174,8 @@ Assume the volume is on a block-backed filesystem with stable device numbering
 namespace change — tmpfs, overlayfs, device renumbering, NFS — the first re-list
 fails both diff passes and deletes and recreates every record, so persisted CNIDs
 and names are lost. Document that limitation and do not mitigate it; this is the
-default. The LMDB backend is enabled and validates `(dev, ino)` exactly as
-`SimpleCNIDMapper` does.
+default. The LMDB backend is enabled, and `ItemCache` validates `(dev, ino)` for
+both backends.
 
 ### Phase 11b — Global switch to disable identity validation — DONE
 
@@ -1267,9 +1272,9 @@ without a native path.
   `cmdlinePathToFSSpec`.
 - `tests/localvolume_macbinary.cpp` — native-only; backend functions, no
   FileManager.
-- `tests/localvolume_cnidmap.cpp` — native-only; drives `LMDBCNIDMapper`
-  directly and reopens it to simulate a restart (persistence, the diff across a
-  reopen, move/delete).
+- `tests/localvolume_cnidmap.cpp` — native-only; drives `ItemCache` with an
+  `LMDBCNIDMapper` backend and reopens it to simulate a restart (persistence,
+  the diff across a reopen, move/delete).
 - `tests/main_executor.cpp` — global environment: initialises Executor, points
   `ExecutorDirectoryMap` at the temp tree (so CNID state is per-run), calls
   `ROMlib_fileinit()` (mounts `/`), and creates a temp dir opened as the default WD.
@@ -1346,7 +1351,7 @@ operations. Helpers in
   including a Plain file *becoming* AppleDouble when its `._*` appears, and
   becoming Plain again when it is removed.
 - **Persistence (Phase 11a)**: records and decided names survive destroying and
-  reopening the mapper; the CNID allocator continues rather than reusing an old
+  reopening the store; the CNID allocator continues rather than reusing an old
   CNID; a re-open diff preserves CNIDs for unchanged entries and recovers a
   same-directory rename by inode; move and recursive delete persist.
 - **Identity policy (Phase 11b/11c)**: `--dont-use-inodes` clears
@@ -1433,7 +1438,6 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 |---|---|---|
 | A live `Item` never learns its new parent after a cross-directory FileManager move: `Item::moveItem` updates `path_` but not `parID_`, so `ioFlParID`, `FSSpec.parID`, and `ensureNamed` use the old parent. | Bug | **Yes** — `DISABLED_MoveUpdatesParID` (disabled; fails today) |
 | `Item::moveItem` does not set `probeStale_`; the plan says a path change marks the rep's probe trace stale outright. Normal moves usually rematerialize anyway because the old path fact fails. | Minor | No — only white-box/contrived |
-| Reconciliation and naming are duplicated in `SimpleCNIDMapper` and `LMDBCNIDMapper`; the plan's `std::function`/backend-neutral transaction seam is not implemented. | Structural | No — a Simple-vs-LMDB differential test is possible but not written |
 | Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
 
 ### Still open: other holes
@@ -1458,6 +1462,10 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 - **`MDB_MAP_RESIZED` handling** for the read-only lookups and the initialization
   transaction — fixed in `6ac93d10`. No focused regression test: forcing the
   error needs a second process/environment that grows the map.
+- **CNID policy ownership** — `CNIDMapper` was split into `CNIDMapperBackend`
+  (value primitives plus one `withTransaction` seam) and policy moved into
+  `ItemCache`. Reconciliation and naming are no longer duplicated across the two
+  backends, and `tests/localvolume_cnidmap.cpp` now drives `ItemCache`.
 - **Access-by-CNID / binding-retry coverage gap** — closed by
   `DirectoryRenameRecoveredByCnidAccess` (enabled; passes). It also covers the
   previously indirect binding-failure/re-list/retry path.

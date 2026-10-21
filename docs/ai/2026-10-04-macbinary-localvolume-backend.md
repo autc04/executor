@@ -54,14 +54,11 @@ hard-coded `TEXT`/`ttxt` FInfo that threw `UpgradeRequiredException` on
    (including extension). Restoring the filename embedded in the MacBinary
    header remains deferred (see *Deferred*).
    - There is no provision anywhere for a content-derived Mac name. Names are
-     chosen by the CNID mappers from the host filename only
-     (`SimpleCNIDMapper::mapDirectoryContents`,
-     `src/file/localvolume/simplecnidmapper.cpp:59-70`; the LMDB equivalent at
-     `src/file/localvolume/lmdbcnidmapper.cpp:223-228`), with `#N` suffixed by
-     `toMacRomanFilename(name, index)` (`src/util/macstrings.cpp:204`) for
-     collisions. `ItemCache::cacheDirectory`
-     (`src/file/localvolume/itemcache.cpp:69-85`) hands the finished name to the
-     factory, so a factory cannot rename an item.
+     chosen by `ItemCache`'s naming policy (`ItemCache::nameGroup`) from the host
+     filename only, with `#N` suffixed by `toMacRomanFilename(name, index)`
+     (`src/util/macstrings.cpp:204`) for collisions. `DirectoryItem::resolveGroup`
+     drives that policy and stores the finished name on the record, so a factory
+     cannot rename an item.
 2. **Writes preserve all unmanaged header bytes.** The 128-byte header is read
    into a raw buffer; writes start from those raw bytes so unknown fields (the
    `"mBIN"` signature, secondary-header length, computer/OS-type, comment length,
