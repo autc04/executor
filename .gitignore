@@ -12,3 +12,4 @@ CMakeSettings.json
 .finf
 result
 .direnv
+compile_commands.json
