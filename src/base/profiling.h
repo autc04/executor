@@ -7,6 +7,7 @@
 #  include <tracy/Tracy.hpp>
 #else
 #  define ZoneScoped
+#  define ZoneScopedN(name)
 #  define ZoneTransientN(varname, name, active)
 
 namespace tracy
