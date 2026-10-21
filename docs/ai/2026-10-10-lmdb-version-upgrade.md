@@ -36,7 +36,7 @@ Starting Executor with no application (so it launches Browser) segfaulted in
 `mdb_page_get`. The crash reproduced with *both* LMDB `22af328` and `LMDB_1.0.2`,
 so it is **not** a 1.0 regression: it is a latent bug exposed by finally enabling
 `LMDBCNIDMapper` (Browser recursively enumerates the whole host tree, which fills
-the default 1 MB map and drives the `growMapIfNecessary` retry path).
+the default 1 MB map and drives the `withMapRetry` retry path).
 
 Chain of events:
 
@@ -51,7 +51,7 @@ Chain of events:
    a **second** time. `mdb_txn_end()` now takes the `MDB_TXN_FINISHED` early-out,
    which skips the `mode = 0` reset that protects `me_txn0`, and therefore
    `free()`s `me_txn0` (`mdb_txn_end`, `if (mode & MDB_END_FREE) free(txn);`).
-4. `growMapIfNecessary` catches the map-full error, grows the map, and retries;
+4. `withMapRetry` catches the map-full error, grows the map, and retries;
    `mdb_txn_begin` reuses the now-dangling `env->me_txn0`, whose first field
    (`mt_parent`) has been overwritten by the allocator. The next
    `mdb_page_get` walks the bogus `mt_parent` dirty-list and crashes.
@@ -69,6 +69,11 @@ void commit() {
 
 This is a genuine `lmdb++` bug (present in upstream `bendiken/lmdbxx` and in the
 fork) and would bite any caller that grows-and-retries on `MDB_MAP_FULL`.
+
+`withMapRetry` (formerly `growMapIfNecessary`) also wraps the read-only lookups
+(`lookupCNID`, `lookupPosixName`, `cnidForName`) and the constructor's initial
+transaction. On `MDB_MAP_RESIZED` it calls `mdb_env_set_mapsize(env, 0)` to adopt
+the size another instance grew the map to, then retries the operation.
 
 ## Upstream versions (as of 2026-10-10)
 

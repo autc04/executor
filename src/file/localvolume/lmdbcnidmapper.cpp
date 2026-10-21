@@ -185,10 +185,13 @@ CNIDMapper::Mapping toMapping(const LMDBCNIDMapper::StoredMapping& rec)
     };
 }
 
-// Retry a whole read-modify-write after the map grows. A map-full error aborts
-// the transaction, so re-running the callback starts from a clean state.
+// Run `f`, retrying after a map-size change. A map-full error aborts the
+// transaction, so the callback is re-run from a clean state; MDB_MAP_RESIZED
+// means another process grew the map, so the environment adopts the new size
+// and the callback is re-run. This wraps both write transactions and read-only
+// lookups.
 template <class F>
-auto growMapIfNecessary(lmdb::env& env, const F& f) -> decltype(f())
+auto withMapRetry(lmdb::env& env, const F& f) -> decltype(f())
 {
     for(;;)
     {
@@ -272,56 +275,58 @@ LMDBCNIDMapper::LMDBCNIDMapper(fs::path root, mac_string volumeName)
     env_.set_mapsize(std::size_t{256} * 1024 * 1024);
     env_.open(envPath.string().c_str());
 
-    auto txn = lmdb::txn::begin(env_);
-    config_ = lmdb::dbi::open(txn, "config", MDB_CREATE);
-    mappings_ = lmdb::dbi::open(txn, "mappings", MDB_CREATE);
-    posixNames_ = lmdb::dbi::open(txn, "posixNames", MDB_CREATE);
-    names_ = lmdb::dbi::open(txn, "names", MDB_CREATE);
+    withMapRetry(env_, [&] {
+        auto txn = lmdb::txn::begin(env_);
+        config_ = lmdb::dbi::open(txn, "config", MDB_CREATE);
+        mappings_ = lmdb::dbi::open(txn, "mappings", MDB_CREATE);
+        posixNames_ = lmdb::dbi::open(txn, "posixNames", MDB_CREATE);
+        names_ = lmdb::dbi::open(txn, "names", MDB_CREATE);
 
-    std::uint32_t schema = 0;
-    if(auto stored = getConfigU32(txn, config_, "schema"))
-        schema = *stored;
-    else
-    {
-        schema = kSchemaVersion;
-        putConfigU32(txn, config_, "schema", schema);
-    }
-    if(schema != kSchemaVersion)
-        throw std::runtime_error("unsupported CNID database schema");
+        std::uint32_t schema = 0;
+        if(auto stored = getConfigU32(txn, config_, "schema"))
+            schema = *stored;
+        else
+        {
+            schema = kSchemaVersion;
+            putConfigU32(txn, config_, "schema", schema);
+        }
+        if(schema != kSchemaVersion)
+            throw std::runtime_error("unsupported CNID database schema");
 
-    // The environment is per volume, so a different root here means a hash
-    // collision or a reused folder; refuse rather than mix CNIDs.
-    lmdb::val rootKey { "root", 4 };
-    lmdb::val rootValue;
-    const std::string rootString = root.string();
-    if(config_.get(txn, rootKey, rootValue))
-    {
-        if(std::string(rootValue.data(), rootValue.size()) != rootString)
-            throw std::runtime_error("CNID database belongs to a different volume");
-    }
-    else
-    {
-        lmdb::val value { rootString.data(), rootString.size() };
-        config_.put(txn, rootKey, value);
-    }
+        // The environment is per volume, so a different root here means a hash
+        // collision or a reused folder; refuse rather than mix CNIDs.
+        lmdb::val rootKey { "root", 4 };
+        lmdb::val rootValue;
+        const std::string rootString = root.string();
+        if(config_.get(txn, rootKey, rootValue))
+        {
+            if(std::string(rootValue.data(), rootValue.size()) != rootString)
+                throw std::runtime_error("CNID database belongs to a different volume");
+        }
+        else
+        {
+            lmdb::val value { rootString.data(), rootString.size() };
+            config_.put(txn, rootKey, value);
+        }
 
-    if(!getMapping(txn, 2))
-    {
-        StoredMapping rootRecord;
-        rootRecord.parID = 1;
-        rootRecord.cnid = 2;
-        rootRecord.macname = volumeName;
-        rootRecord.isDir = true;
-        putMapping(txn, rootRecord);
-    }
+        if(!getMapping(txn, 2))
+        {
+            StoredMapping rootRecord;
+            rootRecord.parID = 1;
+            rootRecord.cnid = 2;
+            rootRecord.macname = volumeName;
+            rootRecord.isDir = true;
+            putMapping(txn, rootRecord);
+        }
 
-    std::uint32_t nextCNID = 3;
-    if(auto stored = getConfigU32(txn, config_, "nextCNID"))
-        nextCNID = *stored;
-    else
-        putConfigU32(txn, config_, "nextCNID", nextCNID);
+        std::uint32_t nextCNID = 3;
+        if(auto stored = getConfigU32(txn, config_, "nextCNID"))
+            nextCNID = *stored;
+        else
+            putConfigU32(txn, config_, "nextCNID", nextCNID);
 
-    txn.commit();
+        txn.commit();
+    });
 }
 
 LMDBCNIDMapper::~LMDBCNIDMapper() = default;
@@ -503,7 +508,7 @@ void LMDBCNIDMapper::deleteCNID(lmdb::txn& txn, CNID cnid)
 std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(
     CNID dirID, std::vector<DirEntry> entries)
 {
-    return growMapIfNecessary(env_, [this, dirID, entries]() {
+    return withMapRetry(env_, [this, dirID, entries]() {
         auto txn = lmdb::txn::begin(env_);
 
         // The stored child set, in posix-name order. An index entry whose record
@@ -634,30 +639,34 @@ std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(
 
 std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
 {
-    auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+    return withMapRetry(env_, [&]() -> std::optional<CNIDMapper::Mapping> {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
 
-    if(auto rec = getMapping(txn, cnid))
-        return toMapping(*rec);
+        if(auto rec = getMapping(txn, cnid))
+            return toMapping(*rec);
 
-    return {};
+        return {};
+    });
 }
 
 std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupPosixName(CNID parID,
     const fs::path& posixName)
 {
-    auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+    return withMapRetry(env_, [&]() -> std::optional<CNIDMapper::Mapping> {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
 
-    if(auto cnid = getPosixName(txn, parID, posixName))
-        if(auto rec = getMapping(txn, *cnid))
-            return toMapping(*rec);
+        if(auto cnid = getPosixName(txn, parID, posixName))
+            if(auto rec = getMapping(txn, *cnid))
+                return toMapping(*rec);
 
-    return {};
+        return {};
+    });
 }
 
 CNID LMDBCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
     const FileIdentity& identity, bool isDir)
 {
-    return growMapIfNecessary(env_, [&] {
+    return withMapRetry(env_, [&] {
         auto txn = lmdb::txn::begin(env_);
         CNID cnid = createRecord(txn, parID, posixName, identity, isDir);
         txn.commit();
@@ -668,7 +677,7 @@ CNID LMDBCNIDMapper::createRecord(CNID parID, const fs::path& posixName,
 CNID LMDBCNIDMapper::getOrCreateChild(CNID parID, const fs::path& posixName,
     const FileIdentity& identity, bool isDir)
 {
-    return growMapIfNecessary(env_, [&] {
+    return withMapRetry(env_, [&] {
         auto txn = lmdb::txn::begin(env_);
 
         if(auto existing = getPosixName(txn, parID, posixName))
@@ -703,14 +712,16 @@ CNID LMDBCNIDMapper::getOrCreateChild(CNID parID, const fs::path& posixName,
 std::optional<CNID> LMDBCNIDMapper::cnidForName(CNID parID,
     mac_string_view macName)
 {
-    auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
-    return getName(txn, parID, foldName(macName));
+    return withMapRetry(env_, [&]() -> std::optional<CNID> {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+        return getName(txn, parID, foldName(macName));
+    });
 }
 
 void LMDBCNIDMapper::nameGroup(CNID parID,
     const std::vector<NameRequest>& group)
 {
-    growMapIfNecessary(env_, [&] {
+    withMapRetry(env_, [&] {
         auto txn = lmdb::txn::begin(env_);
 
         for(const NameRequest& req : group)
@@ -744,7 +755,7 @@ void LMDBCNIDMapper::nameGroup(CNID parID,
 
 void LMDBCNIDMapper::deleteCNID(CNID cnid)
 {
-    growMapIfNecessary(env_, [&] {
+    withMapRetry(env_, [&] {
         auto txn = lmdb::txn::begin(env_);
         deleteCNID(txn, cnid);
         txn.commit();
@@ -754,7 +765,7 @@ void LMDBCNIDMapper::deleteCNID(CNID cnid)
 void LMDBCNIDMapper::moveCNID(CNID cnid, CNID newParent,
     mac_string_view newMacName, const fs::path& newPosixName)
 {
-    growMapIfNecessary(env_, [&] {
+    withMapRetry(env_, [&] {
         auto txn = lmdb::txn::begin(env_);
 
         auto rec = getMapping(txn, cnid);
