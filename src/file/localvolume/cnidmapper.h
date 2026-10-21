@@ -18,10 +18,10 @@ using CNID = int32_t;
 // reconciliation, get-or-create and naming policy live in ItemCache. A backend
 // provides primitive reads and writes, plus one transaction seam so ItemCache
 // can run a compound read-modify-write atomically.
-class CNIDMapperBackend
+class CNIDMapper
 {
 public:
-    virtual ~CNIDMapperBackend() = default;
+    virtual ~CNIDMapper() = default;
 
     // One record, as stored. The authoritative record lives in the backend;
     // this is a copy. `macname` is empty until NameResolve. No host path is
@@ -67,6 +67,6 @@ public:
 };
 
 // A short alias for the record type used by callers that only need the value.
-using CNIDRecord = CNIDMapperBackend::Mapping;
+using CNIDRecord = CNIDMapper::Mapping;
 
 } // namespace Executor

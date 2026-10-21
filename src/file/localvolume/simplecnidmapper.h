@@ -11,7 +11,7 @@ namespace Executor
 // The in-memory reference backend. It stores records, the parent-keyed posix
 // name index and the parent-keyed Mac name index; all policy lives in
 // ItemCache.
-class SimpleCNIDMapper : public CNIDMapperBackend
+class SimpleCNIDMapper : public CNIDMapper
 {
     CNID nextCNID_ = 3;
 

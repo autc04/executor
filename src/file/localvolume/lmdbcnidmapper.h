@@ -17,7 +17,7 @@ namespace Executor
 // of the volume root. It stores records, the parent-keyed posix-name index and
 // the parent-keyed Mac-name index. All reconciliation and naming policy lives
 // in ItemCache; this class provides the primitives and the transaction seam.
-class LMDBCNIDMapper : public CNIDMapperBackend
+class LMDBCNIDMapper : public CNIDMapper
 {
     lmdb::env env_;
     lmdb::dbi config_;

@@ -8,7 +8,7 @@ SimpleCNIDMapper::SimpleCNIDMapper(mac_string volumeName)
     mappings_.emplace(2, Mapping{1, 2, fs::path(), std::move(volumeName), {}, true});
 }
 
-std::optional<CNIDMapperBackend::Mapping> SimpleCNIDMapper::get(CNID cnid)
+std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::get(CNID cnid)
 {
     auto it = mappings_.find(cnid);
     if(it == mappings_.end())
@@ -17,7 +17,7 @@ std::optional<CNIDMapperBackend::Mapping> SimpleCNIDMapper::get(CNID cnid)
     return it->second;
 }
 
-std::optional<CNIDMapperBackend::Mapping> SimpleCNIDMapper::getChild(CNID parID,
+std::optional<CNIDMapper::Mapping> SimpleCNIDMapper::getChild(CNID parID,
                                                                      const fs::path& posixName)
 {
     auto dirIt = posixNames_.find(parID);

@@ -25,14 +25,15 @@ std::pair<std::uint64_t, std::uint64_t> inodeKey(const FileIdentity& id)
 {
     return { id.device, id.inode };
 }
+
 }
 
 ItemCache::ItemCache(fs::path root,
                 mac_string_view volumeName,
-                std::unique_ptr<CNIDMapperBackend> cnidMapperBackend,
+                std::unique_ptr<CNIDMapper> cnidMapper,
                 ItemFactory *itemFactory
                 )
-    : cnidMapperBackend_(std::move(cnidMapperBackend))
+    : cnidMapper_(std::move(cnidMapper))
     , itemFactory_(itemFactory)
     , rootPath_(std::move(root))
 {
@@ -105,225 +106,212 @@ void ItemCache::noteItemFreed(CNID cnid)
 
 std::optional<CNIDRecord> ItemCache::lookupCNID(CNID cnid)
 {
-    return cnidMapperBackend_->get(cnid);
+    return cnidMapper_->get(cnid);
 }
-
 
 CNID ItemCache::getOrCreateChild(CNID parID, const fs::path& posixName,
     const FileIdentity& identity, bool isDir)
 {
     CNID cnid = 0;
-    cnidMapperBackend_->withTransaction([&] {
-        cnid = getOrCreateChildLocked(parID, posixName, identity, isDir);
-    });
-    return cnid;
-}
-
-CNID ItemCache::getOrCreateChildLocked(CNID parID, const fs::path& posixName,
-    const FileIdentity& identity, bool isDir)
-{
-    if(auto existing = cnidMapperBackend_->getChild(parID, posixName))
-    {
-        // The same host file still holds the name, so reuse its CNID. A different
-        // kind, or a different file (the inode changed), is a new item.
-        if(existing->isDir == isDir && sameIdentity(existing->identity, identity))
+    cnidMapper_->withTransaction([&] {
+        if(auto existing = cnidMapper_->getChild(parID, posixName))
         {
-            if(!existing->identity.valid && identity.valid)
+            // The same host file still holds the name, so reuse its CNID. A
+            // different kind, or a different file (the inode changed), is a new
+            // item.
+            if(existing->isDir == isDir
+               && sameIdentity(existing->identity, identity))
             {
-                existing->identity = identity;
-                cnidMapperBackend_->put(*existing);
+                if(!existing->identity.valid && identity.valid)
+                {
+                    existing->identity = identity;
+                    cnidMapper_->put(*existing);
+                }
+                cnid = existing->cnid;
+                return;
             }
-            return existing->cnid;
+
+            deleteCNIDLocked(existing->cnid);
         }
+        // A child index without a record is harmless: putChild below overwrites
+        // it.
 
-        deleteCNIDLocked(existing->cnid);
-    }
-    // A child index without a record is harmless: putChild below overwrites it.
-
-    CNID cnid = cnidMapperBackend_->allocate();
-    CNIDRecord record { parID, cnid, posixName, std::nullopt, identity, isDir };
-    cnidMapperBackend_->put(record);
-    cnidMapperBackend_->putChild(parID, posixName, cnid);
+        cnid = cnidMapper_->allocate();
+        CNIDRecord record { parID, cnid, posixName, std::nullopt, identity, isDir };
+        cnidMapper_->put(record);
+        cnidMapper_->putChild(parID, posixName, cnid);
+    });
     return cnid;
 }
 
 std::optional<CNID> ItemCache::cnidForName(CNID parID, mac_string_view macName)
 {
-    return cnidMapperBackend_->getName(parID, foldMacName(macName));
+    return cnidMapper_->getName(parID, foldMacName(macName));
 }
 
 std::vector<CNIDRecord> ItemCache::mapDirectoryContents(CNID dirID,
     std::vector<DirEntry> entries)
 {
     std::vector<CNIDRecord> result;
-    cnidMapperBackend_->withTransaction([&] {
-        result = mapDirectoryContentsLocked(dirID, entries);
-    });
-    return result;
-}
-
-std::vector<CNIDRecord> ItemCache::mapDirectoryContentsLocked(CNID dirID,
-    const std::vector<DirEntry>& entries)
-{
-    // The stored child set, in posix-name order. An index entry whose record is
-    // gone is an orphan; drop it.
-    std::vector<CNIDRecord> stored;
-    for(auto& child : cnidMapperBackend_->getChildren(dirID))
-    {
-        if(auto rec = cnidMapperBackend_->get(child.second))
-            stored.push_back(std::move(*rec));
-        else
-            cnidMapperBackend_->eraseChild(dirID, child.first);
-    }
-
-    std::unordered_map<CNID, std::size_t> storedIndex;
-    std::map<fs::path, std::size_t> storedByName;
-    for(std::size_t i = 0; i < stored.size(); ++i)
-    {
-        storedIndex[stored[i].cnid] = i;
-        storedByName[stored[i].posixName] = i;
-    }
-
-    const std::size_t n = entries.size();
-    std::vector<bool> consumed(n, false);
-    std::set<CNID> surviving;
-
-    // Pass 1: a child whose name, kind and identity still match a scanned entry is
-    // unchanged. A child's name is unique, so each entry matches at most one child.
-    for(std::size_t i = 0; i < n; ++i)
-    {
-        const DirEntry& e = entries[i];
-
-        auto it = storedByName.find(e.posixName);
-        if(it == storedByName.end())
-            continue;
-
-        CNIDRecord& rec = stored[it->second];
-        if(rec.isDir != e.isDir || !sameIdentity(rec.identity, e.identity))
-            continue;
-
-        // After a --dont-use-inodes session the record has no usable identity;
-        // re-adopt one now that the host exposes it. A usable identity is never
-        // replaced by an unusable one.
-        if(!rec.identity.valid && e.identity.valid)
+    cnidMapper_->withTransaction([&] {
+        // The stored child set, in posix-name order. An index entry whose record
+        // is gone is an orphan; drop it.
+        std::vector<CNIDRecord> stored;
+        for(auto& child : cnidMapper_->getChildren(dirID))
         {
-            rec.identity = e.identity;
-            cnidMapperBackend_->put(rec);
+            if(auto rec = cnidMapper_->get(child.second))
+                stored.push_back(std::move(*rec));
+            else
+                cnidMapper_->eraseChild(dirID, child.first);
         }
 
-        consumed[i] = true;
-        surviving.insert(rec.cnid);
-    }
-
-    // The inode pairing for rename recovery is scratch, built from the scan.
-    std::map<std::pair<std::uint64_t, std::uint64_t>, std::vector<std::size_t>> byInode;
-    for(std::size_t i = 0; i < n; ++i)
-        if(entries[i].identity.valid && !consumed[i])
-            byInode[inodeKey(entries[i].identity)].push_back(i);
-
-    // Pass 2: a child that was not kept was renamed, split, or is gone. Process in
-    // CNID order so the result does not depend on scan order.
-    std::vector<CNID> remaining;
-    for(auto& rec : stored)
-        if(!surviving.count(rec.cnid))
-            remaining.push_back(rec.cnid);
-    std::sort(remaining.begin(), remaining.end());
-
-    for(CNID cnid : remaining)
-    {
-        CNIDRecord& rec = stored[storedIndex.at(cnid)];
-
-        std::vector<std::size_t> occurrences;
-        if(rec.identity.valid)
-            if(auto bit = byInode.find(inodeKey(rec.identity)); bit != byInode.end())
-                for(std::size_t i : bit->second)
-                    if(!consumed[i])
-                        occurrences.push_back(i);
-
-        if(occurrences.size() == 1 && entries[occurrences[0]].isDir == rec.isDir)
+        std::unordered_map<CNID, std::size_t> storedIndex;
+        std::map<fs::path, std::size_t> storedByName;
+        for(std::size_t i = 0; i < stored.size(); ++i)
         {
-            // Exactly one occurrence at a new name: the entry was renamed.
-            std::size_t i = occurrences[0];
-            consumed[i] = true;
+            storedIndex[stored[i].cnid] = i;
+            storedByName[stored[i].posixName] = i;
+        }
 
-            forgetRecordName(rec);
-            cnidMapperBackend_->eraseChild(dirID, rec.posixName);
-            rec.macname.reset();   // the Mac name is re-derived
-            rec.posixName = entries[i].posixName;
-            cnidMapperBackend_->put(rec);
-            cnidMapperBackend_->putChild(dirID, rec.posixName, rec.cnid);
+        const std::size_t n = entries.size();
+        std::vector<bool> consumed(n, false);
+        std::set<CNID> surviving;
+
+        // Pass 1: a child whose name, kind and identity still match a scanned
+        // entry is unchanged. A child's name is unique, so each entry matches at
+        // most one child.
+        for(std::size_t i = 0; i < n; ++i)
+        {
+            const DirEntry& e = entries[i];
+
+            auto it = storedByName.find(e.posixName);
+            if(it == storedByName.end())
+                continue;
+
+            CNIDRecord& rec = stored[it->second];
+            if(rec.isDir != e.isDir || !sameIdentity(rec.identity, e.identity))
+                continue;
+
+            // After a --dont-use-inodes session the record has no usable
+            // identity; re-adopt one now that the host exposes it. A usable
+            // identity is never replaced by an unusable one.
+            if(!rec.identity.valid && e.identity.valid)
+            {
+                rec.identity = e.identity;
+                cnidMapper_->put(rec);
+            }
+
+            consumed[i] = true;
             surviving.insert(rec.cnid);
         }
-        else
+
+        // The inode pairing for rename recovery is scratch, built from the scan.
+        std::map<std::pair<std::uint64_t, std::uint64_t>, std::vector<std::size_t>> byInode;
+        for(std::size_t i = 0; i < n; ++i)
+            if(entries[i].identity.valid && !consumed[i])
+                byInode[inodeKey(entries[i].identity)].push_back(i);
+
+        // Pass 2: a child that was not kept was renamed, split, or is gone.
+        // Process in CNID order so the result does not depend on scan order.
+        std::vector<CNID> remaining;
+        for(auto& rec : stored)
+            if(!surviving.count(rec.cnid))
+                remaining.push_back(rec.cnid);
+        std::sort(remaining.begin(), remaining.end());
+
+        for(CNID cnid : remaining)
         {
-            // No occurrence: gone. Several: the old CNID is dropped and each
-            // occurrence becomes a new entry.
-            deleteCNIDLocked(cnid);
+            CNIDRecord& rec = stored[storedIndex.at(cnid)];
+
+            std::vector<std::size_t> occurrences;
+            if(rec.identity.valid)
+                if(auto bit = byInode.find(inodeKey(rec.identity)); bit != byInode.end())
+                    for(std::size_t i : bit->second)
+                        if(!consumed[i])
+                            occurrences.push_back(i);
+
+            if(occurrences.size() == 1 && entries[occurrences[0]].isDir == rec.isDir)
+            {
+                // Exactly one occurrence at a new name: the entry was renamed.
+                std::size_t i = occurrences[0];
+                consumed[i] = true;
+
+                forgetRecordName(rec);
+                cnidMapper_->eraseChild(dirID, rec.posixName);
+                rec.macname.reset();   // the Mac name is re-derived
+                rec.posixName = entries[i].posixName;
+                cnidMapper_->put(rec);
+                cnidMapper_->putChild(dirID, rec.posixName, rec.cnid);
+                surviving.insert(rec.cnid);
+            }
+            else
+            {
+                // No occurrence: gone. Several: the old CNID is dropped and each
+                // occurrence becomes a new entry.
+                deleteCNIDLocked(cnid);
+            }
         }
-    }
 
-    std::vector<CNIDRecord> result;
-    result.reserve(n);
+        std::vector<CNIDRecord> mapped;
+        mapped.reserve(n);
 
-    for(auto& rec : stored)
-        if(surviving.count(rec.cnid))
-            result.push_back(rec);
+        for(auto& rec : stored)
+            if(surviving.count(rec.cnid))
+                mapped.push_back(rec);
 
-    for(std::size_t i = 0; i < n; ++i)
-        if(!consumed[i])
-        {
-            CNID cnid = cnidMapperBackend_->allocate();
-            CNIDRecord record { dirID, cnid, entries[i].posixName, std::nullopt,
-                entries[i].identity, entries[i].isDir };
-            cnidMapperBackend_->put(record);
-            cnidMapperBackend_->putChild(dirID, record.posixName, cnid);
-            result.push_back(std::move(record));
-        }
+        for(std::size_t i = 0; i < n; ++i)
+            if(!consumed[i])
+            {
+                CNID cnid = cnidMapper_->allocate();
+                CNIDRecord record { dirID, cnid, entries[i].posixName, std::nullopt,
+                    entries[i].identity, entries[i].isDir };
+                cnidMapper_->put(record);
+                cnidMapper_->putChild(dirID, record.posixName, cnid);
+                mapped.push_back(std::move(record));
+            }
 
+        result = std::move(mapped);
+    });
     return result;
 }
 
 void ItemCache::nameGroup(CNID parID, const std::vector<NameRequest>& group)
 {
-    cnidMapperBackend_->withTransaction([&] {
-        nameGroupLocked(parID, group);
-    });
-}
+    cnidMapper_->withTransaction([&] {
+        // Names can only collide within one prefix group (two names with
+        // different folded prefixes cannot be equal), so the collision set is
+        // exactly the group's already-decided members. Seeding only those keeps
+        // naming linear.
+        std::set<mac_string> used;
+        for(const NameRequest& req : group)
+            if(auto rec = cnidMapper_->get(req.cnid); rec && rec->macname)
+                used.insert(foldMacName(*rec->macname));
 
-void ItemCache::nameGroupLocked(CNID parID, const std::vector<NameRequest>& group)
-{
-    // Names can only collide within one prefix group (two names with different
-    // folded prefixes cannot be equal), so the collision set is exactly the
-    // group's already-decided members. Seeding only those keeps naming linear.
-    std::set<mac_string> used;
-    for(const NameRequest& req : group)
-        if(auto rec = cnidMapperBackend_->get(req.cnid); rec && rec->macname)
-            used.insert(foldMacName(*rec->macname));
-
-    for(const NameRequest& req : group)
-    {
-        auto rec = cnidMapperBackend_->get(req.cnid);
-        if(!rec || rec->parID != parID)
-            continue;
-        if(rec->posixName != req.posixName)
-            continue;   // the binding changed after the listing
-        if(rec->macname)
-            continue;   // already decided; names are sticky
-
-        int index = 0;
-        for(;;)
+        for(const NameRequest& req : group)
         {
-            mac_string candidate = toMacRomanFilename(req.nameSource, index++);
-            mac_string folded = foldMacName(candidate);
-            if(used.insert(folded).second)
+            auto rec = cnidMapper_->get(req.cnid);
+            if(!rec || rec->parID != parID)
+                continue;
+            if(rec->posixName != req.posixName)
+                continue;   // the binding changed after the listing
+            if(rec->macname)
+                continue;   // already decided; names are sticky
+
+            int index = 0;
+            for(;;)
             {
-                rec->macname = std::move(candidate);
-                cnidMapperBackend_->put(*rec);
-                cnidMapperBackend_->putName(parID, folded, req.cnid);
-                break;
+                mac_string candidate = toMacRomanFilename(req.nameSource, index++);
+                mac_string folded = foldMacName(candidate);
+                if(used.insert(folded).second)
+                {
+                    rec->macname = std::move(candidate);
+                    cnidMapper_->put(*rec);
+                    cnidMapper_->putName(parID, folded, req.cnid);
+                    break;
+                }
             }
         }
-    }
+    });
 }
 
 void ItemCache::forgetRecordName(const CNIDRecord& record)
@@ -332,35 +320,35 @@ void ItemCache::forgetRecordName(const CNIDRecord& record)
         return;
 
     mac_string folded = foldMacName(*record.macname);
-    if(auto existing = cnidMapperBackend_->getName(record.parID, folded);
+    if(auto existing = cnidMapper_->getName(record.parID, folded);
        existing && *existing == record.cnid)
-        cnidMapperBackend_->eraseName(record.parID, folded);
+        cnidMapper_->eraseName(record.parID, folded);
 }
 
 void ItemCache::deleteCNID(CNID cnid)
 {
-    cnidMapperBackend_->withTransaction([&] {
+    cnidMapper_->withTransaction([&] {
         deleteCNIDLocked(cnid);
     });
 }
 
 void ItemCache::deleteCNIDLocked(CNID cnid)
 {
-    auto record = cnidMapperBackend_->get(cnid);
+    auto record = cnidMapper_->get(cnid);
     if(!record)
         return;
 
     forgetRecordName(*record);
-    cnidMapperBackend_->eraseChild(record->parID, record->posixName);
+    cnidMapper_->eraseChild(record->parID, record->posixName);
 
     // Collect the children before mutating, so deleting from the index while
     // iterating it is not an issue.
-    auto children = cnidMapperBackend_->getChildren(cnid);
-    cnidMapperBackend_->erase(cnid);
+    auto children = cnidMapper_->getChildren(cnid);
+    cnidMapper_->erase(cnid);
 
     for(auto& child : children)
     {
-        cnidMapperBackend_->eraseChild(cnid, child.first);
+        cnidMapper_->eraseChild(cnid, child.first);
         deleteCNIDLocked(child.second);
     }
 }
@@ -368,37 +356,31 @@ void ItemCache::deleteCNIDLocked(CNID cnid)
 void ItemCache::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
     const fs::path& newPosixName)
 {
-    cnidMapperBackend_->withTransaction([&] {
-        moveCNIDLocked(cnid, newParent, newMacName, newPosixName);
+    cnidMapper_->withTransaction([&] {
+        auto rec = cnidMapper_->get(cnid);
+        if(!rec)
+            return;
+
+        const CNID oldParent = rec->parID;
+        const CNID targetParent = newParent == 0 ? oldParent : newParent;
+        if(oldParent == targetParent && newMacName.empty()
+           && newPosixName == rec->posixName)
+            return;
+
+        // Both name maps are keyed by parent, so a move re-homes the entries.
+        forgetRecordName(*rec);
+        cnidMapper_->eraseChild(oldParent, rec->posixName);
+
+        rec->parID = targetParent;
+        rec->posixName = newPosixName;
+        if(!newMacName.empty())
+            rec->macname = mac_string(newMacName.data(), newMacName.size());
+
+        cnidMapper_->put(*rec);
+        cnidMapper_->putChild(targetParent, rec->posixName, cnid);
+        if(rec->macname)
+            cnidMapper_->putName(targetParent, foldMacName(*rec->macname), cnid);
     });
-}
-
-void ItemCache::moveCNIDLocked(CNID cnid, CNID newParent, mac_string_view newMacName,
-    const fs::path& newPosixName)
-{
-    auto rec = cnidMapperBackend_->get(cnid);
-    if(!rec)
-        return;
-
-    const CNID oldParent = rec->parID;
-    const CNID targetParent = newParent == 0 ? oldParent : newParent;
-    if(oldParent == targetParent && newMacName.empty()
-       && newPosixName == rec->posixName)
-        return;
-
-    // Both name maps are keyed by parent, so a move re-homes the entries.
-    forgetRecordName(*rec);
-    cnidMapperBackend_->eraseChild(oldParent, rec->posixName);
-
-    rec->parID = targetParent;
-    rec->posixName = newPosixName;
-    if(!newMacName.empty())
-        rec->macname = mac_string(newMacName.data(), newMacName.size());
-
-    cnidMapperBackend_->put(*rec);
-    cnidMapperBackend_->putChild(targetParent, rec->posixName, cnid);
-    if(rec->macname)
-        cnidMapperBackend_->putName(targetParent, foldMacName(*rec->macname), cnid);
 }
 
 ItemPtr ItemCache::findRealizedItem(CNID cnid) const
@@ -440,7 +422,7 @@ fs::path ItemCache::pathOf(CNID cnid)
 
     for(CNID c = cnid; c != 2;)
     {
-        auto rec = cnidMapperBackend_->get(c);
+        auto rec = cnidMapper_->get(c);
         if(!rec)
             return {};
 

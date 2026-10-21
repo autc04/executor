@@ -24,7 +24,7 @@ using CNID = int32_t;
 
 // The owner of the local-volume object model and of the CNID store policy:
 // reconciliation, get-or-create, naming and recursive deletion. The
-// CNIDMapperBackend behind it is a dumb value store (records and indexes).
+// CNIDMapper behind it is a dumb value store (records and indexes).
 class ItemCache
 {
 public:
@@ -49,7 +49,7 @@ public:
     };
 
 private:
-    std::unique_ptr<CNIDMapperBackend> cnidMapperBackend_;
+    std::unique_ptr<CNIDMapper> cnidMapper_;
     ItemFactory *itemFactory_;
     const fs::path rootPath_;
 
@@ -95,10 +95,13 @@ private:
         const FileIdentity& identity, bool isDir);
 
     // Recursive record delete and move; only ItemCache's delete/move entry
-    // points call them.
+    // points call them. deleteCNIDLocked is recursive, so it stays a member;
+    // the other policy bodies are inlined into their transaction lambdas.
     void deleteCNID(CNID cnid);
+    void deleteCNIDLocked(CNID cnid);
     void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
         const fs::path& newPosixName);
+    void forgetRecordName(const CNIDRecord& record);
 
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
@@ -109,21 +112,9 @@ private:
     // payload. Callers that already hold the DirectoryItem clear it directly.
     void flushDirectoryCache(CNID dirID);
 
-    // The bodies of the policy methods, called inside one backend transaction.
-    // They must not start a transaction themselves.
-    std::vector<CNIDRecord> mapDirectoryContentsLocked(CNID dirID,
-        const std::vector<DirEntry>& entries);
-    CNID getOrCreateChildLocked(CNID parID, const fs::path& posixName,
-        const FileIdentity& identity, bool isDir);
-    void nameGroupLocked(CNID parID, const std::vector<NameRequest>& group);
-    void deleteCNIDLocked(CNID cnid);
-    void moveCNIDLocked(CNID cnid, CNID newParent, mac_string_view newMacName,
-        const fs::path& newPosixName);
-    void forgetRecordName(const CNIDRecord& record);
-
 public:
     ItemCache(fs::path root, mac_string_view volumeName,
-                std::unique_ptr<CNIDMapperBackend> cnidMapperBackend,
+                std::unique_ptr<CNIDMapper> cnidMapper,
                 ItemFactory *itemFactory
                 );
     ~ItemCache();

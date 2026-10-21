@@ -23,7 +23,7 @@ using namespace Executor;
 
 namespace
 {
-using Mapping = CNIDMapperBackend::Mapping;
+using Mapping = CNIDMapper::Mapping;
 
 mac_string makeName(const char* s)
 {
@@ -46,7 +46,7 @@ FileIdentity identity(std::uint64_t inode)
     return FileIdentity { 1, inode, true };
 }
 
-void exerciseBackend(CNIDMapperBackend& backend)
+void exerciseBackend(CNIDMapper& backend)
 {
     auto root = backend.get(2);
     ASSERT_TRUE(root.has_value());

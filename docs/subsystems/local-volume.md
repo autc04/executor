@@ -35,7 +35,7 @@ the `(dev, ino)` identity, and the kind; the host path is derived from the paren
 chain, not stored, and identity is a verification value rather than a lookup key.
 There is one LMDB environment per volume under `$ExecutorDirectoryMap` (default
 `~/.executor/cnidmap1`), named `root` for `/`, `drive-C` for a Windows `C:/`, and
-`path-...` for any other root. `CNIDMapperBackend` is a deliberately dumb value
+`path-...` for any other root. `CNIDMapper` is a deliberately dumb value
 store: it provides records and indexes plus one transaction seam, while the
 reconciliation and naming policy lives in `ItemCache`. `SimpleCNIDMapper`
 implements the same backend interface in memory; it is the reference/alternative
@@ -86,7 +86,7 @@ reference number.
 | `src/file/localvolume/simplecnidmapper.h` / `.cpp` | In-memory CNID mapper |
 | `src/file/localvolume/openfile.h` | `OpenFile` interface for reading/writing a fork |
 | `src/file/localvolume/mac.h` / `.cpp` | Mac-specific metadata helpers |
-| `src/file/localvolume/cnidmapper.h` | `CNIDMapperBackend` abstract interface |
+| `src/file/localvolume/cnidmapper.h` | `CNIDMapper` abstract interface |
 
 ## Important Data Structures
 
