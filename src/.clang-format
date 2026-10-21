@@ -88,7 +88,6 @@ PenaltyReturnTypeOnItsOwnLine: 60
 SpaceAfterCStyleCast: false
 SpaceBeforeAssignmentOperators: true
 SpaceInEmptyParentheses: false
-SpaceBeforeParens: Never
 SpacesBeforeTrailingComments: 1
 SpacesInAngles:  false
 SpacesInContainerLiterals: true
