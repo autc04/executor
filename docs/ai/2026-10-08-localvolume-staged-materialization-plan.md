@@ -218,25 +218,36 @@ model; those marked **[revisit]** may need a further decision before their phase
 While listing a directory we know a grouping key, **not** the name:
 
 ```
-macNamePrefix = truncate(30 - maxDisambiguatorDigits)(
-                  stripAll(
-                    first31(toMacRoman(posixName))))
+macNamePrefix(posixName) = truncate(30 - maxDisambiguatorDigits)(
+                             stripAll(
+                               first31(toMacRomanFilename(posixName, 0))))
 
 stripAll(x) | endsWith ".bin" = stripAll(stripBin(x))
             | endsWithDisambiguator = stripAll(stripDisambiguator(x))
             | otherwise = x
 ```
 
-- `toMacRoman(x)` — raw conversion to MacRoman (not `toMacRomanFilename`'s
-  truncation logic).
+- `toMacRomanFilename(posixName, 0)` — the same host→Mac filename conversion
+  used for the final name (see *The final name*), with no disambiguator suffix.
+  It maps `:` to `/` and falls back to raw bytes (high-bit bytes → `?`) when the
+  host name is not representable, so the grouping key is a function of the *Mac
+  name*. Do **not** use the raw `toMacRoman()` character mapping here: it would
+  group a host `a:b` under `A:B` while its Mac name is `a/b`, and `child("a/b")`
+  would compute a different key. The conversion's own 31-byte cap/ellipsis does
+  not affect the prefix: the final truncation to 27 drops the ellipsis at byte
+  30. (`first31` is therefore redundant with the current conversion, but
+  harmless.)
 - `stripBin` — drop a trailing `.bin`, so a MacBinary `foo.bin` groups with a
   plain `foo`.
 - `stripDisambiguator` — drop a trailing `#<digits>`.
 - `maxDisambiguatorDigits = 3`; truncate to `30 - 3 = 27` bytes to leave room for
   a generated `#999`.
 
-The prefix is computed at enumeration and stored on each descriptor. It is
-**case-folded** (the same MacRoman upper-casing the mapper's name index uses), so
+In the code this composition is `hostGroupPrefix(posixName)`; `macNamePrefix`
+is the second stage, applied to a Mac string. The prefix is computed at
+enumeration from the same host→Mac conversion that produces the final name, and
+stored on each descriptor. It is **case-folded** (the same MacRoman upper-casing
+the mapper's name index uses), so
 `Foo` and `foo` are one group — grouping must not be case-sensitive while the name
 index is not. A `Listed` directory keeps its descriptors sorted by the folded
 prefix then `posixName`, so a group is exactly the contiguous range of descriptors
@@ -1408,3 +1419,60 @@ against regressing F1/F3.
 - `src/util/macstrings.cpp` — `toMacRomanFilename`.
 - `docs/subsystems/local-volume.md`, `docs/subsystems/file-manager.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`.
+
+## Implementation review status (2026-10-21)
+
+These are the points from the implementation review that remain open, with the
+test coverage that now exists. Tests marked `DISABLED_` are in
+`tests/localvolume_ops.cpp`; run them explicitly with
+`--gtest_also_run_disabled_tests` (command at the end of this section).
+
+### Still open: design deltas
+
+| Point | Nature | Test case now? |
+|---|---|---|
+| A live `Item` never learns its new parent after a cross-directory FileManager move: `Item::moveItem` updates `path_` but not `parID_`, so `ioFlParID`, `FSSpec.parID`, and `ensureNamed` use the old parent. | Bug | **Yes** — `DISABLED_MoveUpdatesParID` (disabled; fails today) |
+| `Item::moveItem` does not set `probeStale_`; the plan says a path change marks the rep's probe trace stale outright. Normal moves usually rematerialize anyway because the old path fact fails. | Minor | No — only white-box/contrived |
+| Reconciliation and naming are duplicated in `SimpleCNIDMapper` and `LMDBCNIDMapper`; the plan's `std::function`/backend-neutral transaction seam is not implemented. | Structural | No — a Simple-vs-LMDB differential test is possible but not written |
+| Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
+
+### Still open: other holes
+
+| Point | Nature | Test case now? |
+|---|---|---|
+| NameResolve failure is silent: `Item::name()` can return an undecided (empty) name, and `nativePathToFSSpec` then emits a zero-length FSSpec. Host-path resolution also realizes hidden sidecars that the listing filters out. | Bug | **Yes** — `DISABLED_HiddenSidecarPathHasNoEmptyFSSpecName` and `DISABLED_UnreadableParentHasNoEmptyFSSpecName` (disabled; fail) |
+| Directories containing only hidden sidecars appear empty but fail to delete with `fBsyErr`; a directory's own `._name`/`%name` sidecar is not removed or renamed; `AppleDoubleRep` removes only the winning scheme. | Bug | **Yes** — `DISABLED_DeleteDirectoryWithOnlyHiddenSidecars`, `DISABLED_DirectoryDeleteRemovesItsOwnSidecar`, `DISABLED_DirectoryRenameMovesItsOwnSidecar`, `DISABLED_DeleteRemovesBothAppleDoubleSchemes` (disabled; fail) |
+| A per-entry `stat` failure is read as “gone”, the listing is cached as valid, and the child's CNID is deleted. `PathStat` cannot distinguish `ENOENT` from `EACCES`/`EIO`. | Bug | **Yes** — `DISABLED_StatFailureDoesNotRenumberChild` (disabled; fails). The `PathStat` API aspect is not separately tested. |
+| `PBCatMove` does not refresh an open FCB's cached `fcbCName` or `fcbDirID` (unlike `PBHRename`). | Bug | **Yes** — `DISABLED_CatMoveUpdatesOpenFCB` (disabled; fails) |
+| Host-path resolution canonicalizes symlinks, so a link whose target escapes the volume root returns `nullopt` instead of being followed as the listing does; host-path resolution also bypasses the hidden-name filter. | Edge case | Partial — the hidden-name side is covered by the empty-FSSpec tests; the symlink escape has no test (needs a non-`/` volume fixture) |
+| A deleted `Item` stays in the LRU (with its payload) until normal eviction; `ItemCache::deleteItem` does not drop it from the cache. | Minor resource retention | No — needs a test-only LRU accessor |
+| Persistent CNID DB has no GC/compaction. There is no evidence this is a practical concern; it remains an open design question, not an observed defect. | Theoretical / open policy | No — expected behavior is undefined until a policy is chosen |
+| Minor: a listed empty directory weighs 1 rather than 0; `SimpleCNIDMapper` is dead runtime code with no equivalence test; `lookupPosixName` is unused by `ItemCache`. | Minor | No |
+
+### Closed since the review
+
+- **Doc inconsistencies** (status line, inode-keyed wording, re-stamping, root
+  pinning, Phase 8 `mtime`, funnel/`realizeDescriptor` descriptions, “dumb value
+  store”, retention wording) and the stale `stats.h` comment — fixed in
+  `3448f4c0`.
+- **`MDB_MAP_RESIZED` handling** for the read-only lookups and the initialization
+  transaction — fixed in `6ac93d10`. No focused regression test: forcing the
+  error needs a second process/environment that grows the map.
+- **Access-by-CNID / binding-retry coverage gap** — closed by
+  `DirectoryRenameRecoveredByCnidAccess` (enabled; passes). It also covers the
+  previously indirect binding-failure/re-list/retry path.
+- **`realizeDescriptor` vs `realizeByCNID`** — closed by aligning the plan text
+  with the code: the listing realizes from its stamp-validated descriptor and
+  does not repeat the binding check.
+- **`toMacRoman` vs `toMacRomanFilename`** — the grouping-key formula above was
+  corrected to use `toMacRomanFilename(posixName, 0)`. The code already did
+  this; raw `toMacRoman` would under-group `:`/invalid-encoding names and break
+  lookup by the displayed name.
+
+The nine open-point tests are in `tests/localvolume_ops.cpp` (committed as
+`47d8461c`) and can be run with:
+
+```sh
+./build/tests/tests --gtest_also_run_disabled_tests \
+  --gtest_filter='*MoveUpdatesParID*:*CatMoveUpdatesOpenFCB*:*DeleteDirectoryWithOnlyHiddenSidecars*:*DirectoryDeleteRemovesItsOwnSidecar*:*DirectoryRenameMovesItsOwnSidecar*:*DeleteRemovesBothAppleDoubleSchemes*:*HiddenSidecarPathHasNoEmptyFSSpecName*:*UnreadableParentHasNoEmptyFSSpecName*:*StatFailureDoesNotRenumberChild*'
+```
