@@ -18,8 +18,11 @@ SimpleCNIDMapper::SimpleCNIDMapper(fs::path root, mac_string volumeName)
 std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dirID,
         std::vector<fs::directory_entry> realPaths)
 {
-    auto& cachedContents = directories_[dirID];
-    
+    /* A copy: deleteCNID below erases from directories_[dirID] while this
+       walks it (a file gone from the host since the last listing), which
+       left the walk skipping entries and reading past the end. */
+    const std::vector<CNID> cachedContents = directories_[dirID];
+
     std::sort(realPaths.begin(), realPaths.end());
 
     std::vector<Mapping> dirMappings;
@@ -29,8 +32,16 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
     newContents.reserve(realPaths.size());
 
     auto cacheIt = cachedContents.begin(), cacheEnd = cachedContents.end();
-    StoredMapping* mapping = cacheIt != cacheEnd ? &mappings_.at(*cacheIt) : nullptr;
-    
+    /* The mapping at cacheIt, skipping CNIDs whose mapping is gone (a
+       folder's contents, deleted with it). */
+    auto current = [&]() -> StoredMapping* {
+        for(; cacheIt != cacheEnd; ++cacheIt)
+            if(auto it = mappings_.find(*cacheIt); it != mappings_.end())
+                return &it->second;
+        return nullptr;
+    };
+    StoredMapping* mapping = current();
+
     std::set<mac_string> usedNames;
     // FIXME: add names that are already in use by existing mappings
 
@@ -41,7 +52,7 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             // discard mapping
             deleteCNID(mapping->cnid);
             ++cacheIt;
-            mapping = cacheIt != cacheEnd ? &mappings_.at(*cacheIt) : nullptr;
+            mapping = current();
         }
 
         if(mapping && mapping->path == entry.path())
@@ -51,7 +62,7 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
             newContents.push_back(mapping->cnid);
 
             ++cacheIt;
-            mapping = cacheIt != cacheEnd ? &mappings_.at(*cacheIt) : nullptr;
+            mapping = current();
         }
         else
         {
@@ -84,7 +95,11 @@ std::vector<CNIDMapper::Mapping> SimpleCNIDMapper::mapDirectoryContents(CNID dir
         }
     }
 
-    cachedContents = std::move(newContents);
+    /* Mappings after the last entry: gone too. */
+    for(; mapping; ++cacheIt, mapping = current())
+        deleteCNID(mapping->cnid);
+
+    directories_[dirID] = std::move(newContents);
 
     return dirMappings;
 }

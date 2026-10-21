@@ -125,6 +125,22 @@ struct HostFolder
         return names;
     }
 
+    /* A file's number (its catalog node ID). */
+    long fileID(const std::string& filename)
+    {
+        CInfoPBRec pb = {};
+        Str255 name;
+        name[0] = filename.size();
+        memcpy(name + 1, filename.data(), filename.size());
+        pb.hFileInfo.ioNamePtr = name;
+        pb.hFileInfo.ioVRefNum = vRefNum;
+        pb.hFileInfo.ioDirID = dirID;
+        pb.hFileInfo.ioFDirIndex = 0;
+        PBGetCatInfoSync(&pb);
+        EXPECT_EQ(noErr, pb.hFileInfo.ioResult);
+        return pb.hFileInfo.ioDirID;
+    }
+
     uint32_t modDate(const std::string& filename)
     {
         CInfoPBRec pb = {};
@@ -153,4 +169,36 @@ TEST(FilesInternal, HostFileDates)
     EXPECT_EQ(2082844800u, folder.modDate("f"));
     fs::last_write_time(folder.path / "f", 86400 * 365);
     EXPECT_EQ(2082844800u + 86400u * 365u, folder.modDate("f"));
+}
+
+/* Files deleted on the host between two listings: in the middle of the
+   folder, then at its end. The others keep their file numbers (aliases
+   and file ID references depend on them). */
+TEST(FilesInternal, ListingAfterHostDelete)
+{
+    HostFolder folder;
+    folder.create("a");
+    folder.create("b");
+    folder.create("c");
+    folder.create("d");
+    letCacheExpire();
+    EXPECT_EQ((std::vector<std::string>{ "a", "b", "c", "d" }), folder.list());
+    long a = folder.fileID("a"), c = folder.fileID("c"), d = folder.fileID("d");
+
+    fs::remove(folder.path / "b");
+    letCacheExpire();
+    EXPECT_EQ((std::vector<std::string>{ "a", "c", "d" }), folder.list());
+    EXPECT_EQ(a, folder.fileID("a"));
+    EXPECT_EQ(c, folder.fileID("c"));
+    EXPECT_EQ(d, folder.fileID("d"));
+
+    fs::remove(folder.path / "c");
+    fs::remove(folder.path / "d");
+    letCacheExpire();
+    EXPECT_EQ((std::vector<std::string>{ "a" }), folder.list());
+    EXPECT_EQ(a, folder.fileID("a"));
+
+    folder.create("e");
+    letCacheExpire();
+    EXPECT_EQ((std::vector<std::string>{ "a", "e" }), folder.list());
 }
