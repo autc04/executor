@@ -724,7 +724,9 @@ void LocalVolume::setFPosCommon(ParmBlkPtr pb, bool checkEOF)
     int32_t eof = (int32_t)fcbx.access->getEOF();
     int32_t newPos = fcbx.fcb->fcbCrPs;
     
-    switch(pb->ioParam.ioPosMode)
+    /* The low two bits are the positioning mode; bits above them are flags
+       (noCacheMask, ...), which a caller may set along with any mode. */
+    switch(pb->ioParam.ioPosMode & 0x3)
     {
         case fsAtMark:
             break;

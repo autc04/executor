@@ -663,6 +663,33 @@ TEST_F(FileTest, Seek)
 
 }
 
+/* ioPosMode's low two bits are the mode; the bits above are flags
+   (noCacheMask, $20, asks not to cache), allowed with any mode. */
+TEST_F(FileTest, SeekWithFlags)
+{
+    hello();
+    open(fsRdPerm);
+
+    ParamBlockRec pb;
+    memset(&pb, 42, sizeof(pb));
+    pb.ioParam.ioRefNum = refNum;
+    pb.ioParam.ioPosMode = fsFromStart | 0x20;
+    pb.ioParam.ioPosOffset = 3;
+    PBSetFPosSync(&pb);
+
+    EXPECT_EQ(noErr, pb.ioParam.ioResult);
+    EXPECT_EQ(3, pb.ioParam.ioPosOffset);
+
+    memset(&pb, 42, sizeof(pb));
+    pb.ioParam.ioRefNum = refNum;
+    pb.ioParam.ioPosMode = fsFromMark | 0x20;
+    pb.ioParam.ioPosOffset = 4;
+    PBSetFPosSync(&pb);
+
+    EXPECT_EQ(noErr, pb.ioParam.ioResult);
+    EXPECT_EQ(7, pb.ioParam.ioPosOffset);
+}
+
 TEST(Files, DeleteFullDirectory)
 {
     HParamBlockRec pb;
