@@ -40,9 +40,11 @@ set(NATIVE_TEST_SOURCES
         files_internal.cpp guestvalues.cpp cpu.cpp
         sane.cpp
         localvolume_macbinary.cpp
+        # ItemCache CNID policy, using the in-memory backend and public APIs.
+        localvolume_itemcache.cpp
         # FileManager-vs-host sequences against the mounted-'/' LocalVolume.
         localvolume_ops.cpp
-        # Persistence and transaction shape of the LMDB CNID mapper.
+        # Low-level CNID backend contract, plus LMDB persistence/transactions.
         localvolume_cnidmap.cpp
         # Native-only: drives the .IPP driver through the Device Manager.
         # The dual-mode ABI comparison against Apple's headers belongs in

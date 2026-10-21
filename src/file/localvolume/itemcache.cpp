@@ -108,10 +108,6 @@ std::optional<CNIDRecord> ItemCache::lookupCNID(CNID cnid)
     return cnidMapperBackend_->get(cnid);
 }
 
-std::optional<CNIDRecord> ItemCache::lookupPosixName(CNID parID, const fs::path& posixName)
-{
-    return cnidMapperBackend_->getChild(parID, posixName);
-}
 
 CNID ItemCache::getOrCreateChild(CNID parID, const fs::path& posixName,
     const FileIdentity& identity, bool isDir)

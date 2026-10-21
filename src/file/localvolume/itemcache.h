@@ -89,6 +89,17 @@ private:
     // a fresh CNID is assigned. No name is decided.
     CNID resolveChildCNID(CNID parID, const fs::path& posixName, const PathStat& st);
 
+    // CNIDResolve's atomic body: get-or-create for one binding. Only
+    // resolveChildCNID calls it.
+    CNID getOrCreateChild(CNID parID, const fs::path& posixName,
+        const FileIdentity& identity, bool isDir);
+
+    // Recursive record delete and move; only ItemCache's delete/move entry
+    // points call them.
+    void deleteCNID(CNID cnid);
+    void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
+        const fs::path& newPosixName);
+
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
     ItemPtr makeItem(CNID parID, CNID cnid, const fs::path& path,
@@ -98,8 +109,8 @@ private:
     // payload. Callers that already hold the DirectoryItem clear it directly.
     void flushDirectoryCache(CNID dirID);
 
-    // The bodies of the public policy methods, called inside one backend
-    // transaction. They must not start a transaction themselves.
+    // The bodies of the policy methods, called inside one backend transaction.
+    // They must not start a transaction themselves.
     std::vector<CNIDRecord> mapDirectoryContentsLocked(CNID dirID,
         const std::vector<DirEntry>& entries);
     CNID getOrCreateChildLocked(CNID parID, const fs::path& posixName,
@@ -133,7 +144,8 @@ public:
     // The format/hidden-file policy.
     ItemFactory& itemFactory() { return *itemFactory_; }
 
-    // --- CNID store policy (the backend is a dumb value store) ---
+    // --- CNID store policy driven by DirectoryItem (the backend is a dumb
+    // value store) ---
 
     // Reconcile a fresh scan of `dirID` against its stored children: a child
     // whose name, kind and identity still match keeps its CNID and Mac name; a
@@ -150,18 +162,6 @@ public:
     // caller validates (see tryRealize).
     std::optional<CNIDRecord> lookupCNID(CNID cnid);
 
-    // The record for the child of `parID` stored under `posixName`, or nothing.
-    std::optional<CNIDRecord> lookupPosixName(CNID parID, const fs::path& posixName);
-
-    // CNIDResolve as one atomic read-modify-write: the CNID for the child of
-    // `parID` stored under `posixName`, creating a record when there is none.
-    // The same identity and kind reuse the CNID; any other file at that name is
-    // a different item, so the old record is dropped and a fresh CNID assigned.
-    // No name is decided. This is one transaction so two instances cannot mint
-    // two CNIDs for one binding.
-    CNID getOrCreateChild(CNID parID, const fs::path& posixName,
-        const FileIdentity& identity, bool isDir);
-
     // The child of `parID` whose decided Mac name is `macName` (case-folded), or
     // nothing.
     std::optional<CNID> cnidForName(CNID parID, mac_string_view macName);
@@ -170,14 +170,6 @@ public:
     // Mac name that does not collide with any name already decided in `parID`.
     // Already-decided names are left untouched.
     void nameGroup(CNID parID, const std::vector<NameRequest>& group);
-
-    void deleteCNID(CNID cnid);
-
-    // Re-home a binding. The caller has already performed the host rename and
-    // passes the resulting host name; this is a pure store update, so no host
-    // I/O runs inside the transaction.
-    void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
-        const fs::path& newPosixName);
 
     // Mark `item` as in use: promote it to the most-recently-used end of the
     // queue, inserting it if it is not there yet, then bound the queue's weight by

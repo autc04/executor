@@ -1272,9 +1272,13 @@ without a native path.
   `cmdlinePathToFSSpec`.
 - `tests/localvolume_macbinary.cpp` — native-only; backend functions, no
   FileManager.
-- `tests/localvolume_cnidmap.cpp` — native-only; drives `ItemCache` with an
-  `LMDBCNIDMapper` backend and reopens it to simulate a restart (persistence,
-  the diff across a reopen, move/delete).
+- `tests/localvolume_itemcache.cpp` — native-only; drives `ItemCache`'s CNID
+  policy through the public realization/listing/move/delete API, using
+  `SimpleCNIDMapper` and real host files (diff/rename, identity adoption, naming,
+  move, recursive delete).
+- `tests/localvolume_cnidmap.cpp` — native-only; the `CNIDMapperBackend` primitive
+  contract on both the Simple and LMDB backends, plus LMDB persistence and
+  transaction rollback.
 - `tests/main_executor.cpp` — global environment: initialises Executor, points
   `ExecutorDirectoryMap` at the temp tree (so CNID state is per-run), calls
   `ROMlib_fileinit()` (mounts `/`), and creates a temp dir opened as the default WD.
@@ -1451,7 +1455,7 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 | Host-path resolution canonicalizes symlinks, so a link whose target escapes the volume root returns `nullopt` instead of being followed as the listing does; host-path resolution also bypasses the hidden-name filter. | Edge case | Partial — the hidden-name side is covered by the empty-FSSpec tests; the symlink escape has no test (needs a non-`/` volume fixture) |
 | A deleted `Item` stays in the LRU (with its payload) until normal eviction; `ItemCache::deleteItem` does not drop it from the cache. | Minor resource retention | No — needs a test-only LRU accessor |
 | Persistent CNID DB has no GC/compaction. There is no evidence this is a practical concern; it remains an open design question, not an observed defect. | Theoretical / open policy | No — expected behavior is undefined until a policy is chosen |
-| Minor: a listed empty directory weighs 1 rather than 0; `SimpleCNIDMapper` is dead runtime code with no equivalence test; `lookupPosixName` is unused by `ItemCache`. | Minor | No |
+| Minor: a listed empty directory weighs 1 rather than 0. | Minor | No |
 
 ### Closed since the review
 
@@ -1462,6 +1466,13 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 - **`MDB_MAP_RESIZED` handling** for the read-only lookups and the initialization
   transaction — fixed in `6ac93d10`. No focused regression test: forcing the
   error needs a second process/environment that grows the map.
+- **CNID test layering / encapsulation** — policy tests now use the in-memory
+  backend and public `ItemCache`/`DirectoryItem` APIs; the mapper contract,
+  persistence and transaction tests are separate. `lookupPosixName` was removed,
+  and the methods used only inside `ItemCache` (`getOrCreateChild`, `deleteCNID`,
+  `moveCNID`) are private. The methods `DirectoryItem` drives
+  (`mapDirectoryContents`, `lookupCNID`, `cnidForName`, `nameGroup`) remain the
+  public collaborator seam; the tests do not call them.
 - **CNID policy ownership** — `CNIDMapper` was split into `CNIDMapperBackend`
   (value primitives plus one `withTransaction` seam) and policy moved into
   `ItemCache`. Reconciliation and naming are no longer duplicated across the two
