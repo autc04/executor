@@ -1031,12 +1031,12 @@ TEST_F(LocalVolumeFixture, HostRenameRecoveredWhileFileIsOpen)
 // today are DISABLED_ so the default suite stays green until the defect is
 // fixed; run them with, for example,
 //   build/tests --gtest_also_run_disabled_tests \
-//               --gtest_filter='*MoveUpdatesParID*'
+//               --gtest_filter='*StatFailureDoesNotRenumberChild*'
 // --------------------------------------------------------------------------
 
 // A FileManager move must update the live Item's parent (ioFlParID and the
 // FSSpec's parID), not just its host path and mapper record.
-TEST_F(LocalVolumeFixture, DISABLED_MoveUpdatesParID)
+TEST_F(LocalVolumeFixture, MoveUpdatesParID)
 {
     hostDir("src");
     hostDir("dst");

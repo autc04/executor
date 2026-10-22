@@ -125,8 +125,9 @@ public:
 
     virtual void deleteItem();
 
-    // Rename/move on the host (moveHost), then re-point at the new name.
-    void moveItem(const fs::path& newPath, mac_string_view newName);
+    // Move on the host (moveHost), then re-point at the new path and parent.
+    // The parent is updated only after the host move succeeds.
+    void moveItem(const fs::path& newPath, CNID newParent, mac_string_view newName);
 
     // Re-point a realized Item at a moved binding, keeping the object itself (so
     // an open FCB survives a host rename). The Mac name is re-derived only when

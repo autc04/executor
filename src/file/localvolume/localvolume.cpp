@@ -773,7 +773,7 @@ void LocalVolume::PBCatMove(CMovePBPtr pb)
         for(auto& fcbx : fcbExtensions)
             if(fcbx.file == fileItem)
             {
-                fcbx.fcb->fcbDirID = newParent->cnid();
+                fcbx.fcb->fcbDirID = fileItem->parID();
                 setFCBName(fcbx.fcb, fileItem->name());
             }
 }

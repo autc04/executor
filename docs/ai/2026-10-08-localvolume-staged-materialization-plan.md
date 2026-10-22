@@ -1446,7 +1446,7 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 
 | Point | Nature | Test case now? |
 |---|---|---|
-| A live `Item` never learns its new parent after a cross-directory FileManager move: `Item::moveItem` updates `path_` but not `parID_`, so `ioFlParID`, `FSSpec.parID`, and `ensureNamed` use the old parent. | Bug | **Yes** — `DISABLED_MoveUpdatesParID` (disabled; fails today) |
+
 | Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
 
 ### Still open: other holes
@@ -1467,6 +1467,9 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 - **`MDB_MAP_RESIZED` handling** for the read-only lookups and the initialization
   transaction — fixed in `6ac93d10`. No focused regression test: forcing the
   error needs a second process/environment that grows the map.
+- **`MoveUpdatesParID`** — `Item::moveItem` now takes the destination parent
+  and updates `parID_` after the host move succeeds; `ItemCache::moveItem` passes
+  the new parent. `MoveUpdatesParID` is enabled and passes.
 - **Host-path hidden filtering** — `realizeByHostPath` now applies
   `ItemFactory::isHidden`, matching the listing. `HiddenSidecarPathHasNoEmptyFSSpecName`
   is enabled and asserts that the sidecar is not addressable.
@@ -1506,10 +1509,10 @@ test coverage that now exists. Tests marked `DISABLED_` are in
   this; raw `toMacRoman` would under-group `:`/invalid-encoding names and break
   lookup by the displayed name.
 
-The two remaining open-point tests are in `tests/localvolume_ops.cpp` and can be
-run with:
+The remaining open-point test is in `tests/localvolume_ops.cpp` and can be run
+with:
 
 ```sh
 ./build/tests/tests --gtest_also_run_disabled_tests \
-  --gtest_filter='*MoveUpdatesParID*:*StatFailureDoesNotRenumberChild*'
+  --gtest_filter='*StatFailureDoesNotRenumberChild*'
 ```

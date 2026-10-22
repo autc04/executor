@@ -612,7 +612,7 @@ void ItemCache::renameItem(ItemPtr item, mac_string_view newName)
 
     // Host I/O first, then the mapper: the two cannot be made atomic, and the
     // inode diff converges if they tear (see Phase 11).
-    item->moveItem(newPath, newName);
+    item->moveItem(newPath, item->parID(), newName);
     moveCNID(item->cnid(), 0, newName, newPath.filename());
 }
 
@@ -628,6 +628,6 @@ void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_vi
         newPath /= toUnicodeFilename(newName);
 
     // Host I/O first, then the mapper; a tear is reconciled by the inode diff.
-    item->moveItem(newPath, newName);
+    item->moveItem(newPath, newParent->cnid(), newName);
     moveCNID(item->cnid(), newParent->cnid(), newName, newPath.filename());
 }

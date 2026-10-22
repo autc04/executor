@@ -124,10 +124,11 @@ void Item::deleteItem()
     fs::remove(path());
 }
 
-void Item::moveItem(const fs::path& newPath, mac_string_view newName)
+void Item::moveItem(const fs::path& newPath, CNID newParent, mac_string_view newName)
 {
     moveHost(newPath);
     path_ = newPath;
+    parID_ = newParent;
     pathChanged();
     if(!newName.empty())
         decideName(mac_string(newName));
