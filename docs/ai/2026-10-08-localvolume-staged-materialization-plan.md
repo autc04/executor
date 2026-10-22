@@ -1438,23 +1438,20 @@ against regressing F1/F3.
 ## Implementation review status (2026-10-21)
 
 These are the points from the implementation review that remain open, with the
-test coverage that now exists. Tests marked `DISABLED_` are in
-`tests/localvolume_ops.cpp`; run them explicitly with
+test coverage that now exists. The large-directory benchmark remains
+`DISABLED_` in `tests/localvolume_ops.cpp`; run it explicitly with
 `--gtest_also_run_disabled_tests` (command at the end of this section).
 
 ### Still open: design deltas
 
 | Point | Nature | Test case now? |
 |---|---|---|
-
 | Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
 
 ### Still open: other holes
 
 | Point | Nature | Test case now? |
 |---|---|---|
-| `Item::name()` has no failure signal: it can return an empty name. `nativePathToFSSpec` now rejects that instead of emitting a zero-length FSSpec. | Remaining API limitation | **Yes** — `UnreadableParentHasNoEmptyFSSpecName` (enabled; passes) |
-| A per-entry `stat` failure is read as “gone”, the listing is cached as valid, and the child's CNID is deleted. `PathStat` cannot distinguish `ENOENT` from `EACCES`/`EIO`. | Bug | **Yes** — `DISABLED_StatFailureDoesNotRenumberChild` (disabled; fails). The `PathStat` API aspect is not separately tested. |
 | Host-path resolution canonicalizes symlinks, so a link whose target escapes the volume root returns `nullopt` instead of being followed as the listing does. | Edge case | No — needs a non-`/` volume fixture |
 | Persistent CNID DB has no GC/compaction. There is no evidence this is a practical concern; it remains an open design question, not an observed defect. | Theoretical / open policy | No — expected behavior is undefined until a policy is chosen |
 
@@ -1475,7 +1472,15 @@ test coverage that now exists. Tests marked `DISABLED_` are in
   is enabled and asserts that the sidecar is not addressable.
 - **Zero-length FSSpecs** — `nativePathToFSSpec` now returns `nullopt` when the
   item has no decided name. `UnreadableParentHasNoEmptyFSSpecName` is enabled.
-  `Item::name()` still has no failure signal (the remaining API limitation above).
+- **Silent NameResolve failures** — `Item::name()` now throws `ioErr`/`fnfErr`
+  when the name cannot be resolved instead of returning an empty name;
+  `resolveName` reports a failed parent listing as `ioErr`, and
+  `nativePathToFSSpec` converts the failure to `nullopt`.
+- **Per-entry `stat` failures** — `PathStat` now distinguishes a missing path
+  from a failed stat (`error`), `EINTR` is retried, and a non-`ENOENT`/`ENOTDIR`
+  failure aborts the listing rather than committing a partial scan. This covers
+  `EACCES`, `EIO`, `ESTALE`, `ELOOP`, etc. `StatFailureDoesNotRenumberChild` is
+  enabled and passes.
 - **Directory sidecars** — directory delete now removes hidden children and its
   own `._name`/`%name` companions; directory move moves those companions. The
   four corresponding sidecar tests are enabled and pass. File AppleDouble
@@ -1509,10 +1514,10 @@ test coverage that now exists. Tests marked `DISABLED_` are in
   this; raw `toMacRoman` would under-group `:`/invalid-encoding names and break
   lookup by the displayed name.
 
-The remaining open-point test is in `tests/localvolume_ops.cpp` and can be run
-with:
+No open-point defect tests remain. The large-directory benchmark is still
+disabled and can be run with:
 
 ```sh
 ./build/tests/tests --gtest_also_run_disabled_tests \
-  --gtest_filter='*StatFailureDoesNotRenumberChild*'
+  --gtest_filter='*BenchmarkLargeDirectory*'
 ```

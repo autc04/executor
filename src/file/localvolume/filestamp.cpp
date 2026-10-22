@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #endif
 
+#include <cerrno>
 #include <unordered_map>
 
 using namespace Executor;
@@ -101,9 +102,21 @@ PathStat Executor::statPath(const fs::path& path)
         // GetFileAttributesEx exposes no inode; a handle-based variant
         // (GetFileInformationByHandle) is needed for identity on Windows.
     }
+    else
+    {
+        const DWORD error = GetLastError();
+        if(error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            s.error = std::error_code((int)error, std::system_category());
+    }
 #else
     struct stat st;
-    if(::stat(path.string().c_str(), &st) == 0)
+    int statResult;
+    do
+    {
+        statResult = ::stat(path.string().c_str(), &st);
+    } while(statResult != 0 && errno == EINTR);
+
+    if(statResult == 0)
     {
 #if defined(__APPLE__)
         const struct timespec& ts = st.st_mtimespec;
@@ -124,6 +137,8 @@ PathStat Executor::statPath(const fs::path& path)
         s.identity.valid = !dontUseInodes && st.st_ino != 0
             && deviceUsesStableIdentity(s.identity.device, path);
     }
+    else if(errno != ENOENT && errno != ENOTDIR)
+        s.error = std::error_code(errno, std::generic_category());
 #endif
 
     return s;

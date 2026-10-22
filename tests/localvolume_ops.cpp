@@ -1194,7 +1194,7 @@ TEST_F(LocalVolumeFixture, UnreadableParentHasNoEmptyFSSpecName)
 
 // A per-entry stat failure must not delete the entry's CNID: the file is still
 // there, and a transient stat error must not be read as "gone".
-TEST_F(LocalVolumeFixture, DISABLED_StatFailureDoesNotRenumberChild)
+TEST_F(LocalVolumeFixture, StatFailureDoesNotRenumberChild)
 {
     hostDir("d");
     hostFile("d/f", "x");
@@ -1230,13 +1230,22 @@ TEST_F(LocalVolumeFixture, DISABLED_StatFailureDoesNotRenumberChild)
     }
 
     // A readdir that succeeds while a child cannot be stat'ed must not be
-    // committed as a listing that omits the child.
+    // committed as a listing that omits the child. The indexed lookup must
+    // report the failure instead of returning an empty listing.
     bumpMtime("d");
-    auto listed = fmList(d->cnid);
-    fs::permissions(host("d"), fs::perms::owner_all);
+    CInfoPBRec ipb;
+    std::memset(&ipb, 42, sizeof(ipb));
+    ipb.hFileInfo.ioCompletion = nullptr;
+    ipb.hFileInfo.ioVRefNum = vRefNum_;
+    ipb.hFileInfo.ioDirID = d->cnid;
+    Str255 buffer;
+    buffer[0] = 0;
+    ipb.hFileInfo.ioNamePtr = buffer;
+    ipb.hFileInfo.ioFDirIndex = 1;
+    PBGetCatInfoSync(&ipb);
+    EXPECT_EQ(ioErr, ipb.hFileInfo.ioResult);
 
-    if(!listed.empty())
-        GTEST_SKIP() << "stat of a child succeeded without directory search permission";
+    fs::permissions(host("d"), fs::perms::owner_all);
 
     bumpMtime("d");
     auto after = fmGet(d->cnid, "f");

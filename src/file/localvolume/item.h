@@ -115,7 +115,8 @@ public:
 
     // The Mac name. Deciding it is NameResolve, so reading it may list the
     // parent directory's `macNamePrefix` group on first use; every name read goes
-    // through here, so a caller never observes an undecided name.
+    // through here, so a caller never observes an undecided name. Throws ioErr or
+    // fnfErr if the name cannot be resolved.
     const mac_string& name();
 
     // The Mac name, set once NameResolve has decided it. `name()` is the reading

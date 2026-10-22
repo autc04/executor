@@ -318,6 +318,8 @@ protected:
             if(ipb.hFileInfo.ioResult == fnfErr)
                 break;
             EXPECT_EQ(noErr, ipb.hFileInfo.ioResult);
+            if(ipb.hFileInfo.ioResult != noErr)
+                break;
             bool isDir = (ipb.hFileInfo.ioFlAttrib & kIsDirMask) != 0;
             if(isDir && !includeDirectories)
                 continue;
@@ -344,6 +346,8 @@ protected:
             if(pb.ioParam.ioResult == fnfErr)
                 break;
             EXPECT_EQ(noErr, pb.ioParam.ioResult);
+            if(pb.ioParam.ioResult != noErr)
+                break;
             result.push_back({ pstring(buffer), pb.fileParam.ioDirID, false });
         }
         return result;

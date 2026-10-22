@@ -560,10 +560,16 @@ void ItemCache::ensureNamed(Item& item)
 
     auto dir = std::dynamic_pointer_cast<DirectoryItem>(realizeByCNID(item.parID()));
     if(!dir)
-        return;
+    {
+        if(!lookupCNID(item.parID()))
+            throw OSErrorException(fnfErr);
+        throw OSErrorException(ioErr);
+    }
 
     if(auto name = dir->resolveName(item))
         item.decideName(*name);
+    else
+        throw OSErrorException(fnfErr);
 }
 
 ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,

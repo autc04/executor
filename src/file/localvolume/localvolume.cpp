@@ -856,15 +856,24 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
 
     if(item)
     {
-        const auto& name = item->name();
-        if(name.empty())
+        const mac_string* name;
+        try
+        {
+            name = &item->name();
+        }
+        catch(const OSErrorException&)
+        {
+            return std::nullopt;
+        }
+
+        if(name->empty())
             return std::nullopt;
 
         FSSpec spec;
         spec.vRefNum = vcb.vcbVRefNum;
         spec.parID = item->parID();
-        memcpy(&spec.name[1], name.c_str(), name.size());
-        spec.name[0] = name.size();
+        memcpy(&spec.name[1], name->c_str(), name->size());
+        spec.name[0] = name->size();
         return spec;
     }
     else

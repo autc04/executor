@@ -404,6 +404,15 @@ std::optional<std::vector<Descriptor>> DirectoryItem::listDirectory()
     for(auto& entry : entries)
     {
         PathStat st = statPath(path() / entry.posixName);
+        if(st.error)
+        {
+            // The entry may still exist; a partial scan must not be committed as
+            // "this child is gone". Abort the listing and let the caller retry.
+            std::cerr << "stat failed for " << (path() / entry.posixName)
+                      << ": " << st.error.message() << std::endl;
+            return std::nullopt;
+        }
+
         if(!st.exists || (!st.isDirectory && !st.isRegular))
         {
             entry.posixName.clear();   // not addressable; dropped below
@@ -525,7 +534,7 @@ fs::path DirectoryItem::nameSourceOf(const Descriptor& d)
 std::optional<mac_string> DirectoryItem::resolveName(const Item& item)
 {
     if(!ensureListed())
-        return {};
+        throw OSErrorException(ioErr);
 
     resolveGroup(hostGroupPrefix(item.path().filename()));
 

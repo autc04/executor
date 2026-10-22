@@ -3,6 +3,7 @@
 #include <rsys/filesystem.h>
 
 #include <cstdint>
+#include <system_error>
 
 namespace Executor
 {
@@ -63,13 +64,19 @@ struct PathStat
     bool isDirectory = false;
     bool isRegular = false;
     bool exists = false;
+
+    // Set when the stat failed for a reason other than "not found". `exists` is
+    // false for both a missing path and a failed stat; callers that must not
+    // confuse the two check this first.
+    std::error_code error;
 };
 
 // stat the path (following symlinks); `stamp.valid` and `identity.valid` are
-// false, and `exists` is false, if it could not be stat'd. Identity is reported
-// only when the path's own filesystem provides stable (dev, ino) values (Phase
-// 11c) and --dont-use-inodes is not set. One LocalVolume may span several
-// devices, so the decision is per filesystem instance, not per volume.
+// false, and `exists` is false, if it could not be stat'd. A missing path
+// leaves `error` clear; any other failure sets it. Identity is reported only
+// when the path's own filesystem provides stable (dev, ino) values (Phase 11c)
+// and --dont-use-inodes is not set. One LocalVolume may span several devices,
+// so the decision is per filesystem instance, not per volume.
 PathStat statPath(const fs::path& path);
 
 // The change stamp alone (a convenience wrapper around statPath).
