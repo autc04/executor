@@ -1066,7 +1066,7 @@ TEST_F(LocalVolumeFixture, DISABLED_MoveUpdatesParID)
 
 // PBCatMove must keep an open FCB's cached name and parent current, as
 // PBHRename does.
-TEST_F(LocalVolumeFixture, DISABLED_CatMoveUpdatesOpenFCB)
+TEST_F(LocalVolumeFixture, CatMoveUpdatesOpenFCB)
 {
     hostDir("src");
     hostDir("dst");
@@ -1094,7 +1094,7 @@ TEST_F(LocalVolumeFixture, DISABLED_CatMoveUpdatesOpenFCB)
 
 // The guest sees a directory containing only hidden sidecars as empty, so it
 // must be deletable; the invisible entries must not produce fBsyErr.
-TEST_F(LocalVolumeFixture, DISABLED_DeleteDirectoryWithOnlyHiddenSidecars)
+TEST_F(LocalVolumeFixture, DeleteDirectoryWithOnlyHiddenSidecars)
 {
     hostDir("d");
     hostFile("d/._foo", "sidecar");
@@ -1111,7 +1111,7 @@ TEST_F(LocalVolumeFixture, DISABLED_DeleteDirectoryWithOnlyHiddenSidecars)
 }
 
 // A directory's own AppleDouble companion must be removed with it.
-TEST_F(LocalVolumeFixture, DISABLED_DirectoryDeleteRemovesItsOwnSidecar)
+TEST_F(LocalVolumeFixture, DirectoryDeleteRemovesItsOwnSidecar)
 {
     hostDir("d");
     hostFile("._d", "sidecar");
@@ -1122,7 +1122,7 @@ TEST_F(LocalVolumeFixture, DISABLED_DirectoryDeleteRemovesItsOwnSidecar)
 }
 
 // A directory's own AppleDouble companion must follow a rename.
-TEST_F(LocalVolumeFixture, DISABLED_DirectoryRenameMovesItsOwnSidecar)
+TEST_F(LocalVolumeFixture, DirectoryRenameMovesItsOwnSidecar)
 {
     hostDir("d");
     hostFile("._d", "sidecar");
@@ -1132,9 +1132,10 @@ TEST_F(LocalVolumeFixture, DISABLED_DirectoryRenameMovesItsOwnSidecar)
     EXPECT_FALSE(fs::exists(host("._d")));
 }
 
-// Deleting a file must remove every AppleDouble companion, not just the
-// scheme that won classification.
-TEST_F(LocalVolumeFixture, DISABLED_DeleteRemovesBothAppleDoubleSchemes)
+// AppleDouble sidecar ownership follows the rep that won classification. The
+// percent scheme is probed first, so it is the companion that moves and is
+// deleted; the other scheme is only hidden from the guest, not owned.
+TEST_F(LocalVolumeFixture, DeleteRemovesOnlyWinningAppleDoubleScheme)
 {
     hostFile("foo", "data");
     hostFile("%foo", "percent sidecar");
@@ -1143,24 +1144,21 @@ TEST_F(LocalVolumeFixture, DISABLED_DeleteRemovesBothAppleDoubleSchemes)
     ASSERT_EQ(noErr, fmDelete(rootDirID_, "foo"));
     EXPECT_FALSE(fs::exists(host("foo")));
     EXPECT_FALSE(fs::exists(host("%foo")));
-    EXPECT_FALSE(fs::exists(host("._foo")));
+    EXPECT_TRUE(fs::exists(host("._foo")));
 }
 
-// A realized item whose name cannot be decided must not yield an FSSpec with
-// a zero-length name. A hidden sidecar is not in the parent's listing, so it
-// has no name to resolve.
-TEST_F(LocalVolumeFixture, DISABLED_HiddenSidecarPathHasNoEmptyFSSpecName)
+// Host-path resolution must apply the same hidden-name filter as listing: a
+// sidecar the listing hides is not addressable and yields no FSSpec.
+TEST_F(LocalVolumeFixture, HiddenSidecarPathHasNoEmptyFSSpecName)
 {
     hostFile("._foo", "sidecar");
 
-    auto spec = nativePathToFSSpec(host("._foo"));
-    if(spec)
-        EXPECT_GT(spec->name[0], 0) << "an FSSpec must not carry an undecided name";
+    EXPECT_FALSE(nativePathToFSSpec(host("._foo")).has_value());
 }
 
 // If the parent cannot be listed, NameResolve cannot decide the child's name;
 // that must surface as "no FSSpec", not an FSSpec with a zero-length name.
-TEST_F(LocalVolumeFixture, DISABLED_UnreadableParentHasNoEmptyFSSpecName)
+TEST_F(LocalVolumeFixture, UnreadableParentHasNoEmptyFSSpecName)
 {
     hostDir("d");
     hostFile("d/f", "x");

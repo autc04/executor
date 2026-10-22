@@ -232,6 +232,9 @@ class DirectoryItem : public Item
 
     DirectoryItemPtr self();
 
+protected:
+    virtual void moveHost(const fs::path& newPath) override;
+
 public:
     using Item::Item;
 
@@ -242,8 +245,8 @@ public:
     size_t cacheWeight() const override
     {
         // A listing retains one descriptor per visible child, so it weighs as much
-        // as that many items; an empty or unlisted directory is one unit.
-        return isListed() && !descriptors_.empty() ? descriptors_.size() : 1;
+        // as that many items; an unlisted directory is one unit.
+        return isListed() ? descriptors_.size() : 1;
     }
 
     const std::vector<Descriptor>& descriptors() const { return descriptors_; }

@@ -518,6 +518,11 @@ ItemPtr ItemCache::realizeByHostPath(fs::path inPath)
         if(!st.exists || (!st.isDirectory && !st.isRegular))
             return {};
 
+        // Match the listing's visibility rule: a sidecar filtered out of the
+        // listing is not addressable by host path either.
+        if(itemFactory().isHidden(fs::directory_entry(childPath)))
+            return {};
+
         CNID cnid = resolveChildCNID(dir->cnid(), elem, st);
         item = realizeByCNID(cnid);
         if(!item)
@@ -584,7 +589,17 @@ ItemPtr ItemCache::makeItem(CNID parID, CNID cnid, const fs::path& path,
 void ItemCache::deleteItem(ItemPtr item)
 {
     item->deleteItem();
-    
+
+    // The binding is gone, so the LRU must not keep the deleted Item (and its
+    // payload) alive until normal eviction; open holders still own it.
+    auto cached = cachedIndex_.find(item.get());
+    if(cached != cachedIndex_.end())
+    {
+        cachedWeight_ -= cached->second->weight;
+        cachedItems_.erase(cached->second);
+        cachedIndex_.erase(cached);
+    }
+
     items_.erase(item->cnid());
     deleteCNID(item->cnid());
     flushDirectoryCache(item->parID());

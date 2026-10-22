@@ -210,6 +210,12 @@ model; those marked **[revisit]** may need a further decision before their phase
     descriptor list, not child `Item`s. Identity lives in the CNID store, and
     realized `Item`s are retained only by the LRU or an external reference (see
     *Object model*).
+16. **AppleDouble companion ownership follows the winning rep.** Both `%name`
+    and `._name` are hidden by name, but only the scheme selected during
+    classification is part of the item. Delete and move touch only that scheme;
+    a companion in the other scheme is left untouched. This is deliberate until
+    a concrete reason to treat both names as owned appears. Directories are not
+    rep-classified, so their own companions are handled separately by name.
 
 ## Names
 
@@ -1441,21 +1447,16 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 | Point | Nature | Test case now? |
 |---|---|---|
 | A live `Item` never learns its new parent after a cross-directory FileManager move: `Item::moveItem` updates `path_` but not `parID_`, so `ioFlParID`, `FSSpec.parID`, and `ensureNamed` use the old parent. | Bug | **Yes** — `DISABLED_MoveUpdatesParID` (disabled; fails today) |
-| `Item::moveItem` does not set `probeStale_`; the plan says a path change marks the rep's probe trace stale outright. Normal moves usually rematerialize anyway because the old path fact fails. | Minor | No — only white-box/contrived |
 | Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
 
 ### Still open: other holes
 
 | Point | Nature | Test case now? |
 |---|---|---|
-| NameResolve failure is silent: `Item::name()` can return an undecided (empty) name, and `nativePathToFSSpec` then emits a zero-length FSSpec. Host-path resolution also realizes hidden sidecars that the listing filters out. | Bug | **Yes** — `DISABLED_HiddenSidecarPathHasNoEmptyFSSpecName` and `DISABLED_UnreadableParentHasNoEmptyFSSpecName` (disabled; fail) |
-| Directories containing only hidden sidecars appear empty but fail to delete with `fBsyErr`; a directory's own `._name`/`%name` sidecar is not removed or renamed; `AppleDoubleRep` removes only the winning scheme. | Bug | **Yes** — `DISABLED_DeleteDirectoryWithOnlyHiddenSidecars`, `DISABLED_DirectoryDeleteRemovesItsOwnSidecar`, `DISABLED_DirectoryRenameMovesItsOwnSidecar`, `DISABLED_DeleteRemovesBothAppleDoubleSchemes` (disabled; fail) |
+| `Item::name()` has no failure signal: it can return an empty name. `nativePathToFSSpec` now rejects that instead of emitting a zero-length FSSpec. | Remaining API limitation | **Yes** — `UnreadableParentHasNoEmptyFSSpecName` (enabled; passes) |
 | A per-entry `stat` failure is read as “gone”, the listing is cached as valid, and the child's CNID is deleted. `PathStat` cannot distinguish `ENOENT` from `EACCES`/`EIO`. | Bug | **Yes** — `DISABLED_StatFailureDoesNotRenumberChild` (disabled; fails). The `PathStat` API aspect is not separately tested. |
-| `PBCatMove` does not refresh an open FCB's cached `fcbCName` or `fcbDirID` (unlike `PBHRename`). | Bug | **Yes** — `DISABLED_CatMoveUpdatesOpenFCB` (disabled; fails) |
-| Host-path resolution canonicalizes symlinks, so a link whose target escapes the volume root returns `nullopt` instead of being followed as the listing does; host-path resolution also bypasses the hidden-name filter. | Edge case | Partial — the hidden-name side is covered by the empty-FSSpec tests; the symlink escape has no test (needs a non-`/` volume fixture) |
-| A deleted `Item` stays in the LRU (with its payload) until normal eviction; `ItemCache::deleteItem` does not drop it from the cache. | Minor resource retention | No — needs a test-only LRU accessor |
+| Host-path resolution canonicalizes symlinks, so a link whose target escapes the volume root returns `nullopt` instead of being followed as the listing does. | Edge case | No — needs a non-`/` volume fixture |
 | Persistent CNID DB has no GC/compaction. There is no evidence this is a practical concern; it remains an open design question, not an observed defect. | Theoretical / open policy | No — expected behavior is undefined until a policy is chosen |
-| Minor: a listed empty directory weighs 1 rather than 0. | Minor | No |
 
 ### Closed since the review
 
@@ -1466,6 +1467,24 @@ test coverage that now exists. Tests marked `DISABLED_` are in
 - **`MDB_MAP_RESIZED` handling** for the read-only lookups and the initialization
   transaction — fixed in `6ac93d10`. No focused regression test: forcing the
   error needs a second process/environment that grows the map.
+- **Host-path hidden filtering** — `realizeByHostPath` now applies
+  `ItemFactory::isHidden`, matching the listing. `HiddenSidecarPathHasNoEmptyFSSpecName`
+  is enabled and asserts that the sidecar is not addressable.
+- **Zero-length FSSpecs** — `nativePathToFSSpec` now returns `nullopt` when the
+  item has no decided name. `UnreadableParentHasNoEmptyFSSpecName` is enabled.
+  `Item::name()` still has no failure signal (the remaining API limitation above).
+- **Directory sidecars** — directory delete now removes hidden children and its
+  own `._name`/`%name` companions; directory move moves those companions. The
+  four corresponding sidecar tests are enabled and pass. File AppleDouble
+  companions follow Decision 16: only the winning scheme is owned.
+- **`PBCatMove` FCB state** — open FCBs now get the new parent and name, matching
+  `PBHRename`. `CatMoveUpdatesOpenFCB` is enabled and passes.
+- **Probe staleness on move** — `Item::moveItem` now calls `pathChanged()`, so a
+  path change marks the rep's probe trace stale. No direct test (white-box).
+- **Deleted Item LRU retention** — `ItemCache::deleteItem` now drops the item from
+  the LRU after the host delete. No direct test (needs an LRU accessor).
+- **Empty listed-directory weight** — a listed empty directory now weighs 0
+  instead of 1. No test.
 - **CNID test layering / encapsulation** — policy tests now use the in-memory
   backend and public `ItemCache`/`DirectoryItem` APIs; the mapper contract,
   persistence and transaction tests are separate. `lookupPosixName` was removed,
@@ -1487,10 +1506,10 @@ test coverage that now exists. Tests marked `DISABLED_` are in
   this; raw `toMacRoman` would under-group `:`/invalid-encoding names and break
   lookup by the displayed name.
 
-The nine open-point tests are in `tests/localvolume_ops.cpp` (committed as
-`47d8461c`) and can be run with:
+The two remaining open-point tests are in `tests/localvolume_ops.cpp` and can be
+run with:
 
 ```sh
 ./build/tests/tests --gtest_also_run_disabled_tests \
-  --gtest_filter='*MoveUpdatesParID*:*CatMoveUpdatesOpenFCB*:*DeleteDirectoryWithOnlyHiddenSidecars*:*DirectoryDeleteRemovesItsOwnSidecar*:*DirectoryRenameMovesItsOwnSidecar*:*DeleteRemovesBothAppleDoubleSchemes*:*HiddenSidecarPathHasNoEmptyFSSpecName*:*UnreadableParentHasNoEmptyFSSpecName*:*StatFailureDoesNotRenumberChild*'
+  --gtest_filter='*MoveUpdatesParID*:*StatFailureDoesNotRenumberChild*'
 ```

@@ -767,6 +767,15 @@ void LocalVolume::PBCatMove(CMovePBPtr pb)
             throw OSErrorException(dupFNErr);
 
     itemCache->moveItem(item, newParent, newName);
+
+    // Keep the name and parent in any open FCBs current, as PBHRename does.
+    if(auto fileItem = std::dynamic_pointer_cast<FileItem>(item))
+        for(auto& fcbx : fcbExtensions)
+            if(fcbx.file == fileItem)
+            {
+                fcbx.fcb->fcbDirID = newParent->cnid();
+                setFCBName(fcbx.fcb, fileItem->name());
+            }
 }
 
 void LocalVolume::PBFlushFile(ParmBlkPtr pb)
@@ -847,8 +856,11 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
 
     if(item)
     {
-        FSSpec spec;
         const auto& name = item->name();
+        if(name.empty())
+            return std::nullopt;
+
+        FSSpec spec;
         spec.vRefNum = vcb.vcbVRefNum;
         spec.parID = item->parID();
         memcpy(&spec.name[1], name.c_str(), name.size());

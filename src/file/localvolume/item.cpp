@@ -55,6 +55,12 @@ int64_t macModTime(const fs::path& path)
 {
     return fs::last_write_time(path) + macToUnixEpoch;
 }
+
+// An AppleDouble companion beside `p`, using the named naming scheme.
+fs::path sidecarPath(const fs::path& p, const char* prefix)
+{
+    return p.parent_path() / (prefix + p.filename().string());
+}
 }
 
 mac_string Executor::macNamePrefix(mac_string_view macName)
@@ -122,6 +128,7 @@ void Item::moveItem(const fs::path& newPath, mac_string_view newName)
 {
     moveHost(newPath);
     path_ = newPath;
+    pathChanged();
     if(!newName.empty())
         decideName(mac_string(newName));
 }
@@ -610,13 +617,47 @@ const Descriptor* DirectoryItem::childByIndex(int index, bool includeDirectories
     return nullptr;
 }
 
+void DirectoryItem::moveHost(const fs::path& newPath)
+{
+    const fs::path oldPath = path();
+    fs::rename(oldPath, newPath);
+
+    boost::system::error_code ec;
+    fs::rename(sidecarPath(oldPath, "._"), sidecarPath(newPath, "._"), ec);
+    fs::rename(sidecarPath(oldPath, "%"), sidecarPath(newPath, "%"), ec);
+}
+
 void DirectoryItem::deleteItem()
 {
+    const fs::path p = path();
     boost::system::error_code ec;
-    fs::remove(path() / ".rsrc", ec);
-    fs::remove(path() / ".finf", ec);       // TODO: individual ItemFactories should provide this info
 
-    fs::remove(path(), ec);
+    // The guest sees only non-hidden children. A non-empty directory must fail
+    // without touching metadata; an apparently empty one may still contain
+    // hidden sidecars, which must be removed before the directory itself.
+    ItemFactory& factory = itemcache_.itemFactory();
+    std::vector<fs::path> hidden;
+    bool hasVisibleChild = false;
+    boost::system::error_code iterEc;
+    for(fs::directory_iterator it(p, iterEc), end; !iterEc && it != end;
+        it.increment(iterEc))
+    {
+        if(factory.isHidden(*it))
+            hidden.push_back(it->path());
+        else
+            hasVisibleChild = true;
+    }
+
+    if(hasVisibleChild)
+        throw OSErrorException(fBsyErr);
+
+    for(const auto& path : hidden)
+        fs::remove_all(path, ec);
+
+    fs::remove(p / ".rsrc", ec);
+    fs::remove(p / ".finf", ec);       // TODO: individual ItemFactories should provide this info
+
+    fs::remove(p, ec);
 
     if(ec)
     {
@@ -624,5 +665,12 @@ void DirectoryItem::deleteItem()
             throw OSErrorException(fBsyErr);
         else
             throw OSErrorException(paramErr);
+    }
+
+    // The directory's own AppleDouble companion lives beside it, not inside it.
+    if(!p.filename().empty())
+    {
+        fs::remove(sidecarPath(p, "._"), ec);
+        fs::remove(sidecarPath(p, "%"), ec);
     }
 }
