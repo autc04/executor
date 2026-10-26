@@ -655,6 +655,50 @@ TEST_F(LocalVolumeFixture, MoveKeepsDisambiguatedNameAndPosixName)
     EXPECT_EQ(disambiguated->cnid, moved->cnid);
 }
 
+// A family large enough to reach "#100": that candidate keeps only the first 26
+// bytes of the host name, so the grouping key must not be longer than that.
+// Two groups differing at byte 27 would otherwise mint the same name, because
+// each group's collision set is checked on its own.
+TEST_F(LocalVolumeFixture, LargeCollisionGroupsKeepDistinctNames)
+{
+    // 26 shared bytes, a group byte, then three more shared bytes, so every
+    // member of a group truncates to the same candidates. The four-byte tail
+    // starts past byte 31 and so never reaches a Mac name.
+    auto name = [](char group, int i) {
+        std::string tail = std::to_string(i);
+        tail.insert(0, 4 - tail.size(), '0');
+        return std::string(26, 'a') + group + "bbb" + tail;
+    };
+
+    hostDir("d");
+    for(int i = 0; i <= 100; i++)
+    {
+        hostFile("d/" + name('A', i));
+        hostFile("d/" + name('B', i));
+    }
+
+    auto d = fmGet(rootDirID_, "d");
+    ASSERT_TRUE(d.has_value());
+
+    auto entries = fmList(d->cnid);
+    ASSERT_EQ(202u, entries.size());
+
+    std::set<std::string> names;
+    std::set<long> cnids;
+    for(auto& e : entries)
+    {
+        names.insert(e.name);
+        cnids.insert(e.cnid);
+
+        // Every name must address its own entry, never a namesake.
+        auto got = fmGet(d->cnid, e.name);
+        ASSERT_TRUE(got.has_value()) << e.name;
+        EXPECT_EQ(e.cnid, got->cnid) << e.name;
+    }
+    EXPECT_EQ(202u, names.size());
+    EXPECT_EQ(202u, cnids.size());
+}
+
 // Ambiguity that arises only from case-insensitive comparison. This is the one
 // case that needs a case-sensitive host filesystem (Foo and foO cannot coexist
 // on macOS's default filesystem), so it is skipped there.

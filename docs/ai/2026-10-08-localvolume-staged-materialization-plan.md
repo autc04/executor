@@ -224,7 +224,7 @@ model; those marked **[revisit]** may need a further decision before their phase
 While listing a directory we know a grouping key, **not** the name:
 
 ```
-macNamePrefix(posixName) = truncate(30 - maxDisambiguatorDigits)(
+macNamePrefix(posixName) = truncate(30 - 1 - maxDisambiguatorDigits)(
                              stripAll(
                                first31(toMacRomanFilename(posixName, 0))))
 
@@ -240,14 +240,21 @@ stripAll(x) | endsWith ".bin" = stripAll(stripBin(x))
   name*. Do **not** use the raw `toMacRoman()` character mapping here: it would
   group a host `a:b` under `A:B` while its Mac name is `a/b`, and `child("a/b")`
   would compute a different key. The conversion's own 31-byte cap/ellipsis does
-  not affect the prefix: the final truncation to 27 drops the ellipsis at byte
+  not affect the prefix: the final truncation to 26 drops the ellipsis at byte
   30. (`first31` is therefore redundant with the current conversion, but
   harmless.)
 - `stripBin` — drop a trailing `.bin`, so a MacBinary `foo.bin` groups with a
   plain `foo`.
 - `stripDisambiguator` — drop a trailing `#<digits>`.
-- `maxDisambiguatorDigits = 3`; truncate to `30 - 3 = 27` bytes to leave room for
-  a generated `#999`.
+- `maxDisambiguatorDigits = 3`; truncate to `30 - 1 - 3 = 26` bytes. A candidate
+  spends one of its 31 bytes on the ellipsis that marks the truncation and
+  `1 + digits` on the suffix, so a truncated candidate keeps only
+  `30 - (1 + digits)` source bytes — 26, not 27, for a three-digit suffix. The
+  key must stay a **prefix** of every candidate its group can generate; if it is
+  longer than the bytes a candidate keeps, two groups that differ only in the
+  dropped bytes can mint the same name, and their collision sets are separate.
+  (Indices beyond `maxDisambiguatorDigits` digits would break the bound again;
+  the generator currently does not enforce the cap.)
 
 In the code this composition is `hostGroupPrefix(posixName)`; `macNamePrefix`
 is the second stage, applied to a Mac string. The prefix is computed at
@@ -258,10 +265,11 @@ the mapper's name index uses), so
 index is not. A `Listed` directory keeps its descriptors sorted by the folded
 prefix then `posixName`, so a group is exactly the contiguous range of descriptors
 with equal folded prefix, found by binary search — no separate group index.
-Entries in a group are the ones that can collide. Because a name's group is a
-function of the name itself, two names from different groups can never be equal,
-so a group's collision set is exactly its own members (already-decided ones plus
-those decided in the current batch) — naming stays linear in the directory size.
+Entries in a group are the ones that can collide. Because the key is a prefix of
+any candidate a member can generate, two names from different groups can never be
+equal, so a group's collision set is exactly its own members (already-decided
+ones plus those decided in the current batch) — naming stays linear in the
+directory size.
 
 ### The final name
 

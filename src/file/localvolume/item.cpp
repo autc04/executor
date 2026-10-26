@@ -19,8 +19,11 @@ using namespace Executor;
 
 namespace
 {
-// A generated disambiguator ("#123") is at most this many digits; a group's
-// truncated prefix leaves room for one.
+// A generated disambiguator is "#" plus at most this many digits. A group's
+// truncated prefix must fit in the bytes a candidate keeps: 31 total, minus the
+// ellipsis that marks the truncation, minus the suffix ("#" + digits).
+// Otherwise two groups could generate the same candidate, and neither collision
+// set would see the other.
 constexpr size_t maxDisambiguatorDigits = 3;
 
 bool endsWithBin(const mac_string& s)
@@ -85,7 +88,10 @@ mac_string Executor::macNamePrefix(mac_string_view macName)
         break;
     }
 
-    const size_t maxPrefix = 30 - maxDisambiguatorDigits;
+    // A candidate keeps `30 - suffixBytes` source bytes: the 31st byte is the
+    // ellipsis that marks the truncation, and the suffix is "#" + digits.
+    const size_t maxSuffixBytes = 1 + maxDisambiguatorDigits;
+    const size_t maxPrefix = 30 - maxSuffixBytes;
     if(s.size() > maxPrefix)
         s.resize(maxPrefix);
 
