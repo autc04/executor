@@ -692,11 +692,24 @@ void DirectoryItem::deleteItem()
         if(factory.isHidden(*it))
             hidden.push_back(it->path());
         else
+        {
             hasVisibleChild = true;
+            break;
+        }
     }
 
     if(hasVisibleChild)
         throw OSErrorException(fBsyErr);
+
+    // An unfinished scan says nothing about what the directory holds: it may
+    // still contain visible children that were never reached. Removing
+    // anything now could strip metadata from a directory that survives, so
+    // report the failure and leave everything for a retry.
+    if(iterEc)
+    {
+        std::cerr << "cannot scan " << p << ": " << iterEc.message() << std::endl;
+        throw OSErrorException(ioErr);
+    }
 
     for(const auto& path : hidden)
         fs::remove_all(path, ec);

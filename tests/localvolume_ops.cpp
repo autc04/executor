@@ -1302,6 +1302,50 @@ TEST_F(LocalVolumeFixture, DeleteDirectoryWithOnlyHiddenSidecars)
     EXPECT_FALSE(fs::exists(host("d")));
 }
 
+// A delete whose scan failed must report the failure and touch nothing: the
+// directory may still hold visible children that were never reached, so reading
+// the empty scan as "empty directory" could strip metadata from a directory
+// that survives. Unlinking a child needs only write+execute on the parent,
+// which is what would let the removal through in the first place.
+TEST_F(LocalVolumeFixture, DeleteUnreadableDirectoryTouchesNothing)
+{
+    hostDir("d");
+    hostFile("d/f", "data");
+    hostFile("d/._f", "sidecar");
+    hostDir("d/.rsrc");   // an empty Basilisk-style metadata directory
+
+    // Drop read, keep write and execute: readdir fails, while unlinking a child
+    // would still be permitted.
+    const auto unreadable = fs::perms::owner_write | fs::perms::owner_exe;
+    fs::permissions(host("d"), unreadable);
+
+    bool enforced = false;
+    try
+    {
+        for(auto& entry : fs::directory_iterator(host("d")))
+            (void)entry;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        enforced = true;
+    }
+
+    if(!enforced)   // e.g. running as root, where permissions are not enforced
+    {
+        fs::permissions(host("d"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce directory permissions";
+    }
+
+    EXPECT_EQ(ioErr, fmDelete(rootDirID_, "d"));
+
+    fs::permissions(host("d"), fs::perms::owner_all);
+
+    EXPECT_TRUE(fs::exists(host("d")));
+    EXPECT_TRUE(fs::exists(host("d/f")));
+    EXPECT_TRUE(fs::exists(host("d/._f")));
+    EXPECT_TRUE(fs::exists(host("d/.rsrc")));
+}
+
 // A directory's own AppleDouble companion must be removed with it.
 TEST_F(LocalVolumeFixture, DirectoryDeleteRemovesItsOwnSidecar)
 {
