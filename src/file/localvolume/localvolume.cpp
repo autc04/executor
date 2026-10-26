@@ -532,7 +532,14 @@ LocalVolume::NonexistentFile LocalVolume::resolveForCreate(mac_string_view name,
 
     if(parent->child(name))
         throw OSErrorException(dupFNErr);
-    
+
+    // The guest name does not spell out a format's host encoding: a MacBinary
+    // item called "bar" lives at "bar.bin", so creating "bar.bin" would
+    // otherwise open the existing file. New items always use the default (plain)
+    // encoding, so the host path is just the converted guest name.
+    if(statPath(parent->path() / toUnicodeFilename(name)).exists)
+        throw OSErrorException(dupFNErr);
+
     return NonexistentFile { parent, name };
 }
 
@@ -586,9 +593,10 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(bdNamErr);
 
     auto parent = resolveDir(item->parID());
-    if(parent->child(newName))
-        throw OSErrorException(dupFNErr);
-    
+    if(ItemPtr existing = parent->child(newName))
+        if(existing != item)
+            throw OSErrorException(dupFNErr);
+
     itemCache->renameItem(item, newName);
 
     // Keep the name in any open FCBs current, as the HFS backend does.

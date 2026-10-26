@@ -223,6 +223,22 @@ TEST_F(LocalVolumeFixture, DuplicateCreateFails)
     EXPECT_EQ(dupFNErr, fmMakeDir(rootDirID_, "dup"));
 }
 
+// A MacBinary file called "foo" lives at host "foo.bin", so creating the
+// guest name "foo.bin" would land on the existing host file even though the
+// FileManager's guest-name check finds nothing. Creation must refuse.
+TEST_F(LocalVolumeFixture, CreateOntoMacBinaryAliasFails)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+
+    EXPECT_EQ(dupFNErr, fmCreateFile(rootDirID_, "foo.bin"));
+    EXPECT_EQ(dupFNErr, fmMakeDir(rootDirID_, "foo.bin"));
+
+    // Still the MacBinary file, untouched.
+    ASSERT_TRUE(fmGetType(rootDirID_, "foo").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "foo"));
+    EXPECT_FALSE(fmGet(rootDirID_, "foo.bin").has_value());
+}
+
 TEST_F(LocalVolumeFixture, DeleteRoundTrip)
 {
     ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "f"));
@@ -329,6 +345,182 @@ TEST_F(LocalVolumeFixture, RenameCollisionFails)
     hostFile("a");
     hostFile("b");
     EXPECT_EQ(dupFNErr, fmRename(rootDirID_, "a", "b"));
+}
+
+// Renaming a same-case target is now a no-op success rather than dupFNErr.
+TEST_F(LocalVolumeFixture, RenameToSameNameSucceeds)
+{
+    hostFile("foo", "plain");
+    EXPECT_EQ(noErr, fmRename(rootDirID_, "foo", "foo"));
+    EXPECT_TRUE(fs::exists(host("foo")));
+    EXPECT_TRUE(fmGet(rootDirID_, "foo").has_value());
+}
+
+TEST_F(LocalVolumeFixture, MacBinaryRenameToSameNameSucceeds)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    EXPECT_EQ(noErr, fmRename(rootDirID_, "foo", "foo"));
+    EXPECT_TRUE(fs::exists(host("foo.bin")));
+    ASSERT_TRUE(fmGetType(rootDirID_, "foo").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "foo"));
+}
+
+// A case-only rename reaches the rep: it must allow the same file and let the
+// host apply the case change.
+TEST_F(LocalVolumeFixture, RenameToCaseVariantSucceeds)
+{
+    hostFile("foo", "plain");
+    ASSERT_EQ(noErr, fmRename(rootDirID_, "foo", "FOO"));
+    EXPECT_TRUE(fmGet(rootDirID_, "FOO").has_value());
+}
+
+TEST_F(LocalVolumeFixture, MacBinaryCaseOnlyRename)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    ASSERT_EQ(noErr, fmRename(rootDirID_, "foo", "FOO"));
+
+    auto after = fmGet(rootDirID_, "FOO");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_TRUE(fs::exists(host("FOO.bin")));
+    ASSERT_TRUE(fmGetType(rootDirID_, "FOO").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "FOO"));
+}
+
+// Renaming a MacBinary item must keep the host encoding, so the next access
+// still classifies it as MacBinary rather than plain data.
+TEST_F(LocalVolumeFixture, MacBinaryRenameKeepsBinExtension)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    auto before = fmGet(rootDirID_, "foo");
+    ASSERT_TRUE(before.has_value());
+    ASSERT_TRUE(fmGetType(rootDirID_, "foo").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "foo"));
+
+    ASSERT_EQ(noErr, fmRename(rootDirID_, "foo", "bar"));
+
+    EXPECT_FALSE(fs::exists(host("foo.bin")));
+    EXPECT_FALSE(fs::exists(host("bar")));
+    EXPECT_TRUE(fs::exists(host("bar.bin")));
+
+    auto after = fmGet(rootDirID_, "bar");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+    EXPECT_FALSE(fmGet(rootDirID_, "foo").has_value());
+
+    // The old path is gone, so this forces the reclassification that used to
+    // lose the format.
+    ASSERT_TRUE(fmGetType(rootDirID_, "bar").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "bar"));
+    EXPECT_EQ((std::set<std::string> { "bar" }), namesOf(fmList(rootDirID_)));
+}
+
+// The guest asked for "bar.bin", so that is the name it must see; the encoding
+// is layered on top (host "bar.bin.bin"), keeping nameSource's stem() inverse.
+TEST_F(LocalVolumeFixture, MacBinaryRenameAddsBinToNameEndingInBin)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+
+    ASSERT_EQ(noErr, fmRename(rootDirID_, "foo", "bar.bin"));
+
+    EXPECT_TRUE(fs::exists(host("bar.bin.bin")));
+    EXPECT_FALSE(fs::exists(host("bar.bin")));
+    ASSERT_TRUE(fmGet(rootDirID_, "bar.bin").has_value());
+    ASSERT_TRUE(fmGetType(rootDirID_, "bar.bin").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "bar.bin"));
+}
+
+TEST_F(LocalVolumeFixture, MacBinaryMoveKeepsBinExtension)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostBytes("src/foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+    auto before = fmGet(src->cnid, "foo");
+    ASSERT_TRUE(before.has_value());
+
+    ASSERT_EQ(noErr, fmMove(src->cnid, "foo", dst->cnid));
+
+    EXPECT_FALSE(fs::exists(host("src/foo.bin")));
+    EXPECT_TRUE(fs::exists(host("dst/foo.bin")));
+    auto after = fmGet(dst->cnid, "foo");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(before->cnid, after->cnid);
+}
+
+TEST_F(LocalVolumeFixture, MacBinaryMoveAndRename)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostBytes("src/foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+
+    ASSERT_EQ(noErr, fmMove(src->cnid, "foo", dst->cnid, "bar"));
+
+    EXPECT_FALSE(fs::exists(host("src/foo.bin")));
+    EXPECT_TRUE(fs::exists(host("dst/bar.bin")));
+    EXPECT_FALSE(fs::exists(host("dst/bar")));
+    EXPECT_TRUE(fmGet(dst->cnid, "bar").has_value());
+}
+
+// Guest "bar.bin" (a plain file here) is a different guest name from "bar",
+// so the FileManager check cannot see the host collision; the rep must.
+TEST_F(LocalVolumeFixture, MacBinaryRenameOntoAliasFails)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    hostFile("bar.bin", "plain");
+
+    ASSERT_TRUE(fmGet(rootDirID_, "bar.bin").has_value());
+    EXPECT_EQ(dupFNErr, fmRename(rootDirID_, "foo", "bar"));
+
+    EXPECT_TRUE(fs::exists(host("foo.bin")));
+    EXPECT_TRUE(fs::exists(host("bar.bin")));
+    EXPECT_EQ("plain", hostRead("bar.bin"));
+    EXPECT_TRUE(fmGet(rootDirID_, "foo").has_value());
+}
+
+// A plain item renamed to a name that encodes onto a MacBinary primary must
+// be rejected too; the check belongs to the moving item's rep, whatever it is.
+TEST_F(LocalVolumeFixture, PlainRenameOntoMacBinaryAliasFails)
+{
+    hostBytes("foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    hostFile("x", "plain");
+
+    EXPECT_EQ(dupFNErr, fmRename(rootDirID_, "x", "foo.bin"));
+
+    EXPECT_TRUE(fs::exists(host("x")));
+    ASSERT_TRUE(fmGetType(rootDirID_, "foo").has_value());
+    EXPECT_EQ(0u, *fmGetType(rootDirID_, "foo")); // still MacBinary
+}
+
+// A move without a new name uses the existing encoded host filename. The
+// destination's plain "foo.bin" has a different guest name ("foo.bin"), so
+// only the rep's host-path check can see the collision.
+TEST_F(LocalVolumeFixture, MacBinaryMoveOntoAliasFails)
+{
+    hostDir("src");
+    hostDir("dst");
+    hostBytes("src/foo.bin", makeMacBinary("foo", { 1, 2, 3 }, { 4, 5 }));
+    hostFile("dst/foo.bin", "plain");
+
+    auto src = fmGet(rootDirID_, "src");
+    auto dst = fmGet(rootDirID_, "dst");
+    ASSERT_TRUE(src.has_value());
+    ASSERT_TRUE(dst.has_value());
+    ASSERT_TRUE(fmGet(dst->cnid, "foo.bin").has_value());
+
+    EXPECT_EQ(dupFNErr, fmMove(src->cnid, "foo", dst->cnid));
+
+    EXPECT_TRUE(fs::exists(host("src/foo.bin")));
+    EXPECT_EQ("plain", hostRead("dst/foo.bin"));
+    EXPECT_TRUE(fmGet(src->cnid, "foo").has_value());
 }
 
 // --------------------------------------------------------------------------

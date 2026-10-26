@@ -87,6 +87,9 @@ public:
 
     // A MacBinary file is presented without its ".bin" extension.
     virtual fs::path nameSource(const fs::path& filename) const override;
+
+    // The inverse: a Mac name is stored with ".bin" appended.
+    virtual fs::path hostName(const fs::path& macFilename) const override;
 };
 
 class MacBinaryItemFactory : public ItemFactory

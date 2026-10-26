@@ -430,6 +430,18 @@ fs::path MacBinaryRep::nameSource(const fs::path& filename) const
     return filename.stem();
 }
 
+fs::path MacBinaryRep::hostName(const fs::path& macFilename) const
+{
+    // Store the guest's "foo" as "foo.bin"; the inverse of nameSource. An
+    // empty name is the "keep the current filename" move, which never encodes.
+    if(macFilename.empty())
+        return macFilename;
+
+    fs::path stored = macFilename;
+    stored += ".bin";
+    return stored;
+}
+
 FileRepPtr MacBinaryItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
     const fs::directory_entry& e, ProbeTrace& trace)
 {

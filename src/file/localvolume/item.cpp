@@ -124,6 +124,11 @@ void Item::deleteItem()
     fs::remove(path());
 }
 
+fs::path Item::hostName(mac_string_view macName)
+{
+    return toUnicodeFilename(macName);
+}
+
 void Item::moveItem(const fs::path& newPath, CNID newParent, mac_string_view newName)
 {
     moveHost(newPath);
@@ -178,8 +183,34 @@ fs::path FileRep::nameSource(const fs::path& filename) const
     return filename;
 }
 
+fs::path FileRep::hostName(const fs::path& macFilename) const
+{
+    return macFilename;
+}
+
+void FileRep::checkTargetFree(const fs::path& newPath) const
+{
+    if(newPath == item_.path())
+        return;
+
+    if(!statPath(newPath).exists)
+        return;
+
+    // A case-only rename on a case-insensitive host, and a rename onto a hard
+    // link, both name this same file; they are moves of the item, not a
+    // collision. equivalent() asks the host directly, so it does not depend on
+    // the project's inode-identity policy.
+    boost::system::error_code ec;
+    bool sameFile = fs::equivalent(item_.path(), newPath, ec);
+    if(!ec && sameFile)
+        return;
+
+    throw OSErrorException(dupFNErr);
+}
+
 void FileRep::move(const fs::path& newPath)
 {
+    checkTargetFree(newPath);
     fs::rename(item_.path(), newPath);
 }
 
@@ -284,6 +315,12 @@ fs::path FileItem::nameSource(const fs::path& filename)
 {
     ensureMaterialized();
     return rep_->nameSource(filename);
+}
+
+fs::path FileItem::hostName(mac_string_view macName)
+{
+    ensureMaterialized();
+    return rep_->hostName(toUnicodeFilename(macName));
 }
 
 std::unique_ptr<OpenFile> FileItem::open(int8_t permission)

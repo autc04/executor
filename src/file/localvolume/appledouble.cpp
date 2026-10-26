@@ -96,8 +96,11 @@ void AppleDoubleRep::move(const fs::path& newPath)
     fs::path adpathOld = makeADPath(scheme, item_.path());
     fs::path adpathNew = makeADPath(scheme, newPath);
 
-    fs::rename(item_.path(), newPath);
+    // The base checks the destination before renaming the primary, so a
+    // collision leaves the sidecar untouched.
+    FileRep::move(newPath);
 
+    // A companion at a free primary name is orphaned; overwrite it.
     boost::system::error_code ec;
     fs::rename(adpathOld, adpathNew, ec);
 }

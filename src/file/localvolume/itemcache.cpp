@@ -613,7 +613,7 @@ void ItemCache::deleteItem(ItemPtr item)
 
 void ItemCache::renameItem(ItemPtr item, mac_string_view newName)
 {
-    fs::path newPath = item->path().parent_path() / toUnicodeFilename(newName);
+    fs::path newPath = item->path().parent_path() / item->hostName(newName);
     flushDirectoryCache(item->parID());
 
     // Host I/O first, then the mapper: the two cannot be made atomic, and the
@@ -629,9 +629,9 @@ void ItemCache::moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_vi
 
     fs::path newPath = newParent->path();
     if(newName.empty())
-        newPath /= item->path().filename();
+        newPath /= item->path().filename();   // already encoded for its rep
     else
-        newPath /= toUnicodeFilename(newName);
+        newPath /= item->hostName(newName);
 
     // Host I/O first, then the mapper; a tear is reconciled by the inode diff.
     item->moveItem(newPath, newParent->cnid(), newName);

@@ -92,8 +92,11 @@ void BasiliskRep::move(const fs::path& newPath)
     fs::path rsrcNew = newPath.parent_path() / ".rsrc" / newPath.filename();
     fs::path finfNew = newPath.parent_path() / ".finf" / newPath.filename();
 
-    fs::rename(item_.path(), newPath);
+    // The base checks the destination before renaming the primary, so a
+    // collision leaves the companions untouched.
+    FileRep::move(newPath);
 
+    // A companion at a free primary name is orphaned; overwrite it.
     boost::system::error_code ec;
     fs::rename(rsrcOld, rsrcNew, ec);
     fs::rename(finfOld, finfNew, ec);

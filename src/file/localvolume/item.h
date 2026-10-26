@@ -63,6 +63,13 @@ class FileRep
 protected:
     FileItem& item_;
 
+    // Reject a move whose destination is occupied by a different host file. The
+    // File Manager has already checked the guest namespace; this catches host
+    // paths the guest name does not spell out (MacBinary's ".bin"). A
+    // case-only rename on a case-insensitive host, or a rename onto a hard
+    // link, denotes the same file and is allowed.
+    void checkTargetFree(const fs::path& newPath) const;
+
 public:
     explicit FileRep(FileItem& item) : item_(item) {}
     virtual ~FileRep() = default;
@@ -77,6 +84,10 @@ public:
     // Note that DirectoryItem::nameSourceOf hard codes knowledge about which
     // reps may do that (as of this writing, MacBinary only).
     virtual fs::path nameSource(const fs::path& filename) const;
+
+    // The inverse of nameSource: the host filename that stores the guest name
+    // `macFilename`. MacBinary appends a trailing ".bin".
+    virtual fs::path hostName(const fs::path& macFilename) const;
 
     // Host-file mutation. The default handles a single host file; formats that
     // keep sidecars (AppleDouble, Basilisk) override.
@@ -109,6 +120,12 @@ public:
     virtual ~Item();
 
     const fs::path& path() const { return path_; }
+
+    // The host filename a guest name is stored under. This is the inverse of
+    // the name rule a FileItem's rep supplies; a FileItem overrides it and the
+    // default is the plain Mac-to-host conversion. `macName` is non-empty; the
+    // "keep the current filename" move has no guest name to encode.
+    virtual fs::path hostName(mac_string_view macName);
 
     CNID parID() const { return parID_; }
     CNID cnid() const { return cnid_; }
@@ -323,6 +340,10 @@ public:
     // The filename this item's Mac name is derived from (MacBinary drops a
     // trailing ".bin"); materializes to ask the rep.
     fs::path nameSource(const fs::path& filename);
+
+    // The host filename this item's guest name is stored under (MacBinary
+    // adds a trailing ".bin"); materializes to ask the rep.
+    virtual fs::path hostName(mac_string_view macName) override;
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission);
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission);
