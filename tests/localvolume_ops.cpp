@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 
+#ifdef __APPLE__
+#include <sys/xattr.h>
+#endif
+
 using namespace Executor;
 using namespace Executor::Test;
 
@@ -961,17 +965,26 @@ TEST_F(LocalVolumeFixture, RepStalenessTrustsContent)
     EXPECT_EQ(0u, localVolumeStats().factoryProbes.load()); // not re-probed
 }
 
-// *Rep staleness*: a candidate appearing or disappearing does re-run the gauntlet.
-// An AppleDouble upgrade creates its sidecar; taking it away falls back to plain.
+// *Rep staleness*: a probe candidate that disappears does re-run the gauntlet.
+// The upgrade's storage is that candidate: AppleDouble's "%doc" sidecar, or --
+// where the upgrade target is the Mac factory -- the Finder-info xattr on the
+// file itself. Removing it leaves the file plain.
 TEST_F(LocalVolumeFixture, RepStalenessFollowsCandidates)
 {
     ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));
-    ASSERT_EQ(noErr, fmSetType(rootDirID_, "doc", 0x41424344u)); // upgrades to AppleDouble
+    ASSERT_EQ(noErr, fmSetType(rootDirID_, "doc", 0x41424344u)); // a plain file cannot store this
     ASSERT_TRUE(fmGetType(rootDirID_, "doc").has_value());
     ASSERT_EQ(0x41424344u, *fmGetType(rootDirID_, "doc"));
 
-    fs::remove(host("%doc")); // the AppleDouble sidecar
+#ifdef __APPLE__
+    // MacItemFactory, the upgrade target here, keeps Finder info in an xattr on
+    // the file; there is no sidecar to remove.
+    const std::string path = host("doc").string();
+    ASSERT_EQ(0, removexattr(path.c_str(), XATTR_FINDERINFO_NAME));
+#else
+    ASSERT_TRUE(fs::remove(host("%doc"))); // the AppleDouble sidecar
     bumpMtime("");
+#endif
 
     resetLocalVolumeStats();
     auto after = fmGetType(rootDirID_, "doc");
