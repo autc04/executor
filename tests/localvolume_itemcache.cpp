@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 
 extern fs::path ExecutorTestTempDir;
@@ -138,6 +139,105 @@ TEST_F(ItemCachePolicyFixture, DiffKeepsCnidsAndRecoversSameDirectoryRename)
     auto a2 = child(d, "a");
     ASSERT_TRUE(a2);
     EXPECT_EQ(aCnid, a2->cnid());
+}
+
+// A host-side rename over an existing entry is one entry left with the
+// survivor's identity, at a name the deleted record also used. Rename recovery
+// rebinds that name to the survivor (the lower CNID is processed first), and the
+// stale record's removal must not erase the rebinding.
+TEST_F(ItemCachePolicyFixture, OverwriteRenameKeepsSurvivingChildIndex)
+{
+    if(!haveIdentity())
+        GTEST_SKIP() << "host filesystem exposes no stable identities";
+
+    // Create the entries in separate listings: CNIDs are allocated in scan
+    // order, which readdir does not define, so this pins "a" below "b".
+    hostFile("d/a", "a");
+    auto d = realizeDir("d");
+    ASSERT_TRUE(d);
+    ASSERT_TRUE(d->ensureListed());
+    auto a = child(d, "a");
+    ASSERT_TRUE(a);
+
+    hostFile("d/b", "b");
+    bumpMtime("d");
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    auto b = child(d, "b");
+    ASSERT_TRUE(b);
+
+    const CNID aCnid = a->cnid();
+    const CNID bCnid = b->cnid();
+    ASSERT_LT(aCnid, bCnid);
+
+    // POSIX rename replaces "b"; "a"'s identity now lives at "b".
+    fs::rename(host("d/a"), host("d/b"));
+    bumpMtime("d");
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    auto b2 = child(d, "b");
+    ASSERT_TRUE(b2);
+    EXPECT_EQ(aCnid, b2->cnid());
+    EXPECT_FALSE(cache_->realizeByCNID(bCnid));
+
+    // The persisted child index must still reach the survivor, so a later scan
+    // does not mint a new CNID for it. Read the cnid out of the fresh listing
+    // itself: a lookup by name would still find the record through the surviving
+    // Mac-name entry and hide the lost index.
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    ASSERT_EQ(1, d->countItems());
+    auto listed = d->child(1, true);
+    ASSERT_TRUE(listed);
+    EXPECT_EQ(aCnid, listed->cnid());
+}
+
+// Two renames in sequence: "b" to the free name "c", then "a" over "b". Both
+// records are renamed, and the second recovery re-homes onto a name the first
+// recovery just took. Neither may erase the other's child index.
+TEST_F(ItemCachePolicyFixture, RenameChainKeepsBothChildIndexes)
+{
+    if(!haveIdentity())
+        GTEST_SKIP() << "host filesystem exposes no stable identities";
+
+    hostFile("d/a", "a");
+    auto d = realizeDir("d");
+    ASSERT_TRUE(d);
+    ASSERT_TRUE(d->ensureListed());
+    auto a = child(d, "a");
+    ASSERT_TRUE(a);
+
+    hostFile("d/b", "b");
+    bumpMtime("d");
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    auto b = child(d, "b");
+    ASSERT_TRUE(b);
+
+    const CNID aCnid = a->cnid();
+    const CNID bCnid = b->cnid();
+    ASSERT_LT(aCnid, bCnid);
+
+    fs::rename(host("d/b"), host("d/c"));
+    fs::rename(host("d/a"), host("d/b"));
+    bumpMtime("d");
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    auto b2 = child(d, "b");
+    auto c2 = child(d, "c");
+    ASSERT_TRUE(b2);
+    ASSERT_TRUE(c2);
+    EXPECT_EQ(aCnid, b2->cnid());
+    EXPECT_EQ(bCnid, c2->cnid());
+
+    d->clearCache();
+    ASSERT_TRUE(d->ensureListed());
+    ASSERT_EQ(2, d->countItems());
+    std::set<CNID> listedCnids;
+    for(int i = 1; i <= d->countItems(); ++i)
+        if(auto listed = d->child(i, true))
+            listedCnids.insert(listed->cnid());
+    EXPECT_EQ((std::set<CNID> { aCnid, bCnid }), listedCnids);
 }
 
 TEST_F(ItemCachePolicyFixture, DiffDropsRemovedChild)

@@ -96,12 +96,19 @@ private:
 
     // Recursive record delete and move; only ItemCache's delete/move entry
     // points call them. deleteCNIDLocked is recursive, so it stays a member;
-    // the other policy bodies are inlined into their transaction lambdas.
+    // the other policy bodies are inlined into their transaction lambdas. The
+    // old-name child-index erase is conditional (see forgetRecordChild).
     void deleteCNID(CNID cnid);
     void deleteCNIDLocked(CNID cnid);
     void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
         const fs::path& newPosixName);
     void forgetRecordName(const CNIDRecord& record);
+
+    // Erase the record's child-index entry, but only while it still maps to the
+    // record. A reconciliation pass can rebind a name to a surviving CNID
+    // before a stale record is deleted or re-homed (an in-place overwrite), so
+    // an erase by name must not assume the name still denotes its record.
+    void forgetRecordChild(const CNIDRecord& record);
 
     // Construct an identity Item from known host file data, without running the
     // format gauntlet, and register it.
@@ -145,7 +152,9 @@ public:
     // gone; a child with several unmatched occurrences is dropped and each
     // occurrence becomes a new entry. A same-inode record in another directory
     // is never a match. No names are decided. Returns entries in scan order
-    // (kept/renamed first).
+    // (kept/renamed first). Rename recovery rebinds a child-index name, so a
+    // later stale-record removal in the same pass must not erase a rebinding
+    // (forgetRecordChild).
     std::vector<CNIDRecord> mapDirectoryContents(CNID dirID,
         std::vector<DirEntry> entries);
 

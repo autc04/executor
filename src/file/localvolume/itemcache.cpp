@@ -237,7 +237,7 @@ std::vector<CNIDRecord> ItemCache::mapDirectoryContents(CNID dirID,
                 consumed[i] = true;
 
                 forgetRecordName(rec);
-                cnidMapper_->eraseChild(dirID, rec.posixName);
+                forgetRecordChild(rec);
                 rec.macname.reset();   // the Mac name is re-derived
                 rec.posixName = entries[i].posixName;
                 cnidMapper_->put(rec);
@@ -329,6 +329,13 @@ void ItemCache::forgetRecordName(const CNIDRecord& record)
         cnidMapper_->eraseName(record.parID, folded);
 }
 
+void ItemCache::forgetRecordChild(const CNIDRecord& record)
+{
+    if(auto existing = cnidMapper_->getChild(record.parID, record.posixName);
+       existing && existing->cnid == record.cnid)
+        cnidMapper_->eraseChild(record.parID, record.posixName);
+}
+
 void ItemCache::deleteCNID(CNID cnid)
 {
     cnidMapper_->withTransaction([&] {
@@ -343,7 +350,7 @@ void ItemCache::deleteCNIDLocked(CNID cnid)
         return;
 
     forgetRecordName(*record);
-    cnidMapper_->eraseChild(record->parID, record->posixName);
+    forgetRecordChild(*record);
 
     // Collect the children before mutating, so deleting from the index while
     // iterating it is not an issue.
@@ -373,7 +380,7 @@ void ItemCache::moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName,
 
         // Both name maps are keyed by parent, so a move re-homes the entries.
         forgetRecordName(*rec);
-        cnidMapper_->eraseChild(oldParent, rec->posixName);
+        forgetRecordChild(*rec);
 
         rec->parID = targetParent;
         rec->posixName = newPosixName;
