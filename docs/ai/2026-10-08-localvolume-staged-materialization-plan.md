@@ -253,8 +253,9 @@ stripAll(x) | endsWith ".bin" = stripAll(stripBin(x))
   key must stay a **prefix** of every candidate its group can generate; if it is
   longer than the bytes a candidate keeps, two groups that differ only in the
   dropped bytes can mint the same name, and their collision sets are separate.
-  (Indices beyond `maxDisambiguatorDigits` digits would break the bound again;
-  the generator currently does not enforce the cap.)
+  (Indices beyond `maxDisambiguatorDigits` digits would break the bound again,
+  so the generator stops at `#999`: entries that would need a larger index stay
+  unnamed, and so remain invisible to the guest.)
 
 In the code this composition is `hostGroupPrefix(posixName)`; `macNamePrefix`
 is the second stage, applied to a Mac string. The prefix is computed at

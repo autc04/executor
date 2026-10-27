@@ -297,10 +297,14 @@ void ItemCache::nameGroup(CNID parID, const std::vector<NameRequest>& group)
             if(rec->macname)
                 continue;   // already decided; names are sticky
 
-            int index = 0;
-            for(;;)
+            // Stop at the last index whose suffix fits the prefix bound. If every
+            // index is taken, the entry cannot be named without minting a name
+            // that breaks the bound, so it stays unnamed. That makes it invisible:
+            // no name lookup can reach it, and indexed enumeration reads the name
+            // of each entry it returns, so it stops (fnfErr) before this one.
+            for(int index = 0; index <= maxDisambiguatorIndex; index++)
             {
-                mac_string candidate = toMacRomanFilename(req.nameSource, index++);
+                mac_string candidate = toMacRomanFilename(req.nameSource, index);
                 mac_string folded = foldMacName(candidate);
                 if(used.insert(folded).second)
                 {

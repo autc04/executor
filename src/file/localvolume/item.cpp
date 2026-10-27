@@ -19,13 +19,6 @@ using namespace Executor;
 
 namespace
 {
-// A generated disambiguator is "#" plus at most this many digits. A group's
-// truncated prefix must fit in the bytes a candidate keeps: 31 total, minus the
-// ellipsis that marks the truncation, minus the suffix ("#" + digits).
-// Otherwise two groups could generate the same candidate, and neither collision
-// set would see the other.
-constexpr size_t maxDisambiguatorDigits = 3;
-
 bool endsWithBin(const mac_string& s)
 {
     if(s.size() < 4)

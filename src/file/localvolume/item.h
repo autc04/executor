@@ -28,6 +28,19 @@ using ItemPtr = std::shared_ptr<Item>;
 using DirectoryItemPtr = std::shared_ptr<DirectoryItem>;
 using FileItemPtr = std::shared_ptr<FileItem>;
 
+// A generated disambiguator is "#" plus at most this many digits. A group's
+// truncated prefix must fit in the bytes a candidate keeps: 31 total, minus the
+// ellipsis that marks the truncation, minus the suffix ("#" + digits).
+// Otherwise two groups could generate the same candidate, and neither collision
+// set would see the other.
+inline constexpr size_t maxDisambiguatorDigits = 3;
+
+// The largest index that still fits that bound: 0 is the plain name, 1..999
+// give "#1".."#999". Entries that would need a larger index stay unnamed --
+// and so invisible to the guest -- rather than minting a name that breaks the
+// bound.
+inline constexpr int maxDisambiguatorIndex = 999;
+
 // The grouping key for a Mac name: its first 31 bytes, with a trailing ".bin"
 // and/or "#<digits>" disambiguator stripped, truncated to leave room for a
 // generated disambiguator, and case-folded. Two entries can collide iff their
