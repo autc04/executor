@@ -13,12 +13,18 @@
 #include "macbinary.h"
 
 #include "lmdbcnidmapper.h"
+#include "simplecnidmapper.h"
 #include "itemcache.h"
 #include "stats.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <exception>
 #include <map>
 #include <iostream>
+#include <stdexcept>
+
+#include <rsys/paths.h>
 
 #ifdef _WIN32
 #define NOMINMAX 1
@@ -51,13 +57,47 @@ void ExtensionItemFactory::createFile(const fs::path& newPath)
     PlainDataFork data(newPath, PlainDataFork::create);
 }
 
+// Open the persistent CNID store, falling back to the in-memory backend when it
+// cannot be used (permissions, disk full, a corrupt or incompatible database, a
+// reused database directory, ...). Losing persistence is much better than
+// terminating the whole emulator during volume mount.
+static std::unique_ptr<CNIDMapper> createCNIDMapper(const fs::path& root,
+                                                    const mac_string& volumeName)
+{
+    try
+    {
+        return std::make_unique<LMDBCNIDMapper>(root, volumeName);
+    }
+    catch(const std::exception& e)
+    {
+        const fs::path database =
+            ROMlib_DirectoryMap / LMDBCNIDMapper::volumeDirectoryName(root);
+
+        std::fprintf(stderr,
+                     "\n"
+                     "********************************************************************\n"
+                     "* CNID persistence is unavailable for volume \"%s\".\n"
+                     "* Falling back to in-memory CNIDs: file IDs and Mac names will\n"
+                     "* NOT be preserved across runs.\n"
+                     "* Database: %s\n"
+                     "* Error:    %s\n"
+                     "********************************************************************\n"
+                     "\n",
+                     root.string().c_str(), database.string().c_str(), e.what());
+
+        return std::make_unique<SimpleCNIDMapper>(volumeName);
+    }
+}
+
 LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     : Volume(vcb), root(root)
 {
+    const mac_string volumeName = getVolumeName();
+
     itemCache = std::make_unique<ItemCache>(
             root,
-            getVolumeName(),
-            std::make_unique<LMDBCNIDMapper>(root, getVolumeName()),
+            volumeName,
+            createCNIDMapper(root, volumeName),
             static_cast<ItemFactory*>(this)
         );
 
@@ -860,7 +900,18 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
     auto path = fs::canonical(inPath, ec);
     if(ec)
         return {};
-    ItemPtr item = itemCache->realizeByHostPath(path);
+
+    ItemPtr item;
+    try
+    {
+        item = itemCache->realizeByHostPath(path);
+    }
+    catch(const std::runtime_error&)
+    {
+        // A CNID-backend failure must not abort the emulator; report the host
+        // path as unmapped instead.
+        return std::nullopt;
+    }
 
     if(item)
     {
@@ -870,6 +921,10 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
             name = &item->name();
         }
         catch(const OSErrorException&)
+        {
+            return std::nullopt;
+        }
+        catch(const std::runtime_error&)
         {
             return std::nullopt;
         }

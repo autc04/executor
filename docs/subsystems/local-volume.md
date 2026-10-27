@@ -38,8 +38,8 @@ There is one LMDB environment per volume under `$ExecutorDirectoryMap` (default
 `path-...` for any other root. `CNIDMapper` is a deliberately dumb value
 store: it provides records and indexes plus one transaction seam, while the
 reconciliation and naming policy lives in `ItemCache`. `SimpleCNIDMapper`
-implements the same backend interface in memory; it is the reference/alternative
-backend, not a runtime fallback.
+implements the same backend interface in memory; it is the reference backend and
+the runtime fallback when the persistent store cannot be opened.
 
 **Fork storage formats**:
 - **Plain**: data fork is the raw file, no resource fork exists. Can be upgraded
@@ -107,6 +107,12 @@ reference number.
 - **CNID persistence**: LMDB stores CNIDs so that open-by-CNID calls (`PBOpenDF` with
   a directory ID) survive across sessions. If the database is deleted, CNIDs are
   reassigned and any saved FSSpec values stored by applications become stale.
+  If the database cannot be opened at mount time (permissions, disk full, a
+  corrupt or old-schema database, or a directory that belongs to another root),
+  `LocalVolume` prints a prominent warning and mounts with `SimpleCNIDMapper`
+  instead of aborting the emulator; persistence resumes on a later run once the
+  problem is fixed. Failures after mount (LMDB I/O errors, corrupt records)
+  surface as `ioErr` from the failing File Manager operation.
   Identity validation assumes `(dev, ino)` is stable across a restart; on tmpfs or
   overlayfs a fresh mount changes it, and the next re-list resets the persisted
   mapping (Phase 11a accepts this limitation). `--dont-use-inodes` disables
