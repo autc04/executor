@@ -1481,6 +1481,7 @@ TEST_F(LocalVolumeFixture, UnreadableParentHasNoEmptyFSSpecName)
     auto spec = nativePathToFSSpec(host("d/f"));
     fs::permissions(host("d"), fs::perms::owner_all);
 
+    EXPECT_FALSE(spec.has_value()) << "if the parent isn't readable, nativePathToFSSpec shouldn't return anything";
     if(spec)
         EXPECT_GT(spec->name[0], 0) << "an FSSpec must not carry an undecided name";
 }
