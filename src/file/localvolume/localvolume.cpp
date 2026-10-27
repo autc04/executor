@@ -440,7 +440,7 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
         pb->hFileInfo.ioFlLgLen = dsize;
         pb->hFileInfo.ioFlPyLen = dsize;
         pb->hFileInfo.ioFlRLgLen = rsize;
-        pb->hFileInfo.ioFlRLgLen = rsize;
+        pb->hFileInfo.ioFlRPyLen = rsize;
 
         pb->hFileInfo.ioFlMdDat = info.modTime;
         pb->hFileInfo.ioFlCrDat = info.creationTime;
