@@ -11,6 +11,7 @@
 #include "localvolume_test_util.h"
 
 #include <file/file.h>
+#include <file/localvolume/plain.h>
 #include <file/localvolume/stats.h>
 
 #include <cctype>
@@ -1145,6 +1146,22 @@ TEST_F(LocalVolumeFixture, FailedUpgradeKeepsOpenFcbUsable)
     fmClose(refNum);
 }
 #endif
+
+// A fork must report the permission the host actually granted: openCommon turns
+// canWrite() into the FCB's write bit, and upgradeItem() reopens with it.
+TEST_F(LocalVolumeFixture, ForkReportsThePermissionItWasOpenedWith)
+{
+    hostFile("doc", "hi");
+
+    PlainDataFork created(host("other"), PlainDataFork::create);
+    EXPECT_TRUE(created.canWrite());
+
+    PlainDataFork readOnly(host("doc"), fsRdPerm);
+    EXPECT_FALSE(readOnly.canWrite());
+
+    PlainDataFork readWrite(host("doc"), fsRdWrPerm);
+    EXPECT_TRUE(readWrite.canWrite());
+}
 
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with

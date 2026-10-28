@@ -16,6 +16,7 @@ PlainDataFork::PlainDataFork(fs::path path, int8_t permission)
         || permission == fsRdWrShPerm || permission == fsWrDenyPerm)
     {
         fd = open(path.string().c_str(), O_RDWR | O_BINARY, 0644);
+        writable_ = fd >= 0;
     }
 
     if (fd == -1 &&
@@ -36,6 +37,7 @@ PlainDataFork::PlainDataFork(fs::path path, create_t)
     fd = open(path.string().c_str(), O_RDWR | O_CREAT | O_BINARY, 0644);
     if(fd < 0)
         throw hostError(errno);
+    writable_ = true;
     //std::cout << "CREATING FILE: " << fd << " = " << path << std::endl;
 }
 
@@ -65,8 +67,11 @@ size_t PlainDataFork::read(size_t offset, void *p, size_t n)
 {
     lseek(fd, offset, SEEK_SET);
     auto done = ::read(fd, p, n);
-    
-    return done;
+
+    if(done < 0)
+        throw hostError(errno);
+
+    return size_t(done);
 }
 size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 {

@@ -95,6 +95,9 @@ public:
     void setEOF(uint32_t entryId, size_t sz);
     size_t read(uint32_t entryId, size_t offset, void *p, size_t n);
     size_t write(uint32_t entryId, size_t offset, void *p, size_t n);
+
+    // The permission the underlying host file was opened with.
+    bool canWrite() const { return file->canWrite(); }
 };
 
 class AppleSingleDoubleFork : public OpenFile
@@ -109,5 +112,6 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+    virtual bool canWrite() const override { return file->canWrite(); }
 };
 } // namespace Executor

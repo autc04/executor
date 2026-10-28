@@ -39,6 +39,9 @@ public:
     void readFInfo(ItemInfo& info);
     void writeFInfo(const ItemInfo& info);
 
+    // The permission the underlying host file was opened with.
+    bool canWrite() const { return file_->canWrite(); }
+
 private:
     std::unique_ptr<OpenFile> file_;
     uint8_t header_[128];
@@ -69,6 +72,7 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+    virtual bool canWrite() const override { return file->canWrite(); }
 };
 
 class MacBinaryRep : public FileRep

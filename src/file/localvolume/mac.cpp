@@ -13,6 +13,7 @@ using namespace Executor;
 class MacResourceFork : public OpenFile
 {
     int fd;
+    bool writable_ = false;
 public:
     struct create_t {};
     static constexpr create_t create = {};
@@ -25,6 +26,7 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+    virtual bool canWrite() const override { return writable_; }
 };
 
 // NOTE:
@@ -45,6 +47,7 @@ MacResourceFork::MacResourceFork(fs::path path, int8_t permission)
         || permission == fsRdWrShPerm || permission == fsWrDenyPerm)
     {
         fd = open(path.string().c_str(), O_RDWR, 0644);
+        writable_ = fd >= 0;
     }
 
     if (fd == -1 &&
@@ -63,6 +66,7 @@ MacResourceFork::MacResourceFork(fs::path path, create_t)
     fd = open(path.string().c_str(), O_RDWR | O_CREAT, 0644);
     if(fd < 0)
         throw hostError(errno);
+    writable_ = true;
 
         // Note:
         // I'm tempted to initialize type and creator to 0,
@@ -124,14 +128,28 @@ void MacResourceFork::setEOF(size_t sz)
 
 size_t MacResourceFork::read(size_t offset, void *p, size_t n)
 {
-    return fgetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
+    if(n == 0)
+        return 0;
+
+    errno = 0;
+    ssize_t done = fgetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
+    if(done < 0)
+    {
+        if(errno == ENOATTR)
+            return 0;
+        throw hostError(errno);
+    }
+    return size_t(done);
 }
 
 size_t MacResourceFork::write(size_t offset, void *p, size_t n)
 {
+    if(n == 0)
+        return 0;
+
     int success = fsetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
     if(success < 0)
-        throw OSErrorException(ioErr);
+        throw hostError(errno);
     return n;
 }
 
