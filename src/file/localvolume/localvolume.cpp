@@ -326,7 +326,9 @@ void LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
 {
     CNID cnid = item->cnid();
 
-    // Every open FCB for this item reopens its fork once the rep is swapped.
+    // Collect the FCBs that will need their fork reopened. Nothing is touched
+    // yet: a failed upgrade must leave the guest's open refnums working.
+    std::vector<FCBExtension *> affected;
     for(int i = 0; i < NFCB; i++)
     {
         if(ROMlib_fcblocks[i].fdfnum == cnid
@@ -334,32 +336,70 @@ void LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
         {
             FCBExtension& fcbx = fcbExtensions[i];
             assert(fcbx.refNum == i * 94 + 2);
-            fcbx.access = {};
+            affected.push_back(&fcbx);
         }
     }
 
-    // The upgrade targets (AppleDouble, Mac) only *add* the richer encoding's
-    // storage beside the existing data fork, so the host file keeps its inode —
-    // and the item keeps its CNID. Swapping the rep is all that is left.
+    // 1. The fallible host work comes first. createFile throws OSErrorException
+    //    if the new storage cannot be created, before any state changes.
     betterFactory->createFile(item->path());
-    item->rematerialize();
 
-    for(int i = 0; i < NFCB; i++)
+    // 2. Prove that the factory now claims the file. Otherwise the gauntlet
+    //    below would fall through to PlainRep again and the caller's retry would
+    //    throw UpgradeRequiredException a second time.
     {
-        if(ROMlib_fcblocks[i].fdfnum == cnid
-           && ROMlib_fcblocks[i].fcvptr == &vcb)
+        ProbeTrace check;
+        if(!betterFactory->createRepForFile(*itemCache, *item,
+                                            fs::directory_entry(item->path()), check))
+            throw OSErrorException(ioErr);
+    }
+
+    // 3. Take the old forks out of the FCBs but keep them alive, so that a
+    //    failure below can put them back instead of leaving null accesses
+    //    behind. The upgrade source is always PlainRep, whose forks are
+    //    self-contained (PlainDataFork/EmptyFork), so they do not depend on the
+    //    rep being swapped under them.
+    std::vector<std::unique_ptr<OpenFile>> oldAccess;
+    oldAccess.reserve(affected.size());
+    for(FCBExtension *fcbx : affected)
+        oldAccess.push_back(std::move(fcbx->access));
+
+    try
+    {
+        // 4. Swap the rep. The upgrade targets only *add* the richer encoding's
+        //    storage beside the existing data fork, so the host file keeps its
+        //    inode — and the item keeps its CNID.
+        item->rematerialize();
+        if(item->isPlainRep())
+            throw OSErrorException(ioErr);
+
+        // 5. Open every replacement fork before committing any of them, so a
+        //    failure here does not leave the FCB set half upgraded.
+        std::vector<std::unique_ptr<OpenFile>> fresh;
+        fresh.reserve(affected.size());
+        for(FCBExtension *fcbx : affected)
         {
-            FCBExtension& fcbx = fcbExtensions[i];
-            assert(fcbx.refNum == i * 94 + 2);
-            fcbx.file = item;
+            int8_t perm = (fcbx->fcb->fcbMdRByt & WRITEBIT) ? fsRdWrPerm : fsRdPerm;
 
-            int8_t perm = (fcbx.fcb->fcbMdRByt & WRITEBIT) ? fsRdWrPerm : fsRdPerm;
-
-            if(fcbx.fcb->fcbMdRByt & RESOURCEBIT)
-                fcbx.access = item->openRF(perm);
+            if(fcbx->fcb->fcbMdRByt & RESOURCEBIT)
+                fresh.push_back(item->openRF(perm));
             else
-                fcbx.access = item->open(perm);
+                fresh.push_back(item->open(perm));
         }
+
+        // 6. Commit; nothing below can throw.
+        for(size_t j = 0; j < affected.size(); j++)
+        {
+            affected[j]->file = item;
+            affected[j]->access = std::move(fresh[j]);
+        }
+    }
+    catch(...)
+    {
+        for(size_t j = 0; j < affected.size(); j++)
+            if(oldAccess[j])
+                affected[j]->access = std::move(oldAccess[j]);
+        throw;
     }
 }
 
@@ -530,7 +570,17 @@ void LocalVolume::setInfoCommon(const ItemPtr& item, CInfoPBPtr pb, InfoKind inf
         catch(const UpgradeRequiredException&)
         {
             upgradeItem(fitem, upgradedItemFactory);
-            fitem->setInfo(info);
+            try
+            {
+                fitem->setInfo(info);
+            }
+            catch(const UpgradeRequiredException&)
+            {
+                // upgradeItem verified the rep can store this now; if it still
+                // refuses, report the failure instead of letting it escape the
+                // trap boundary.
+                throw OSErrorException(ioErr);
+            }
         }
         // TODO: if(infoKind == InfoKind::CatInfo)) ioFlBkDat
     }
@@ -703,7 +753,16 @@ void LocalVolume::PBWrite(ParmBlkPtr pb)
     catch(const UpgradeRequiredException&)
     {
         upgradeItem(fcbx.file, upgradedItemFactory);
-        n = fcbx.access->write(fcbx.fcb->fcbCrPs, pb->ioParam.ioBuffer, pb->ioParam.ioReqCount);
+        try
+        {
+            n = fcbx.access->write(fcbx.fcb->fcbCrPs, pb->ioParam.ioBuffer, pb->ioParam.ioReqCount);
+        }
+        catch(const UpgradeRequiredException&)
+        {
+            // See setInfoCommon: the verified upgrade should make this
+            // unreachable, but it must not escape the trap boundary.
+            throw OSErrorException(ioErr);
+        }
     }
     
     pb->ioParam.ioActCount = n;
@@ -793,7 +852,14 @@ void LocalVolume::PBSetEOF(ParmBlkPtr pb)
     catch(const UpgradeRequiredException&)
     {
         upgradeItem(fcbx.file, upgradedItemFactory);
-        fcbx.access->setEOF(pb->ioParam.ioMisc);
+        try
+        {
+            fcbx.access->setEOF(pb->ioParam.ioMisc);
+        }
+        catch(const UpgradeRequiredException&)
+        {
+            throw OSErrorException(ioErr);
+        }
     }
 }
 

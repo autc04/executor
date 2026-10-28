@@ -106,6 +106,10 @@ public:
     // keep sidecars (AppleDouble, Basilisk) override.
     virtual void remove();
     virtual void move(const fs::path& newPath);
+
+    // The last-resort representation: a plain data fork with no way to store
+    // metadata. Used to verify that an encoding upgrade actually took effect.
+    virtual bool isPlain() const { return false; }
 };
 
 using FileRepPtr = std::shared_ptr<FileRep>;
@@ -345,6 +349,11 @@ public:
 
     // Build the rep on first use (the format gauntlet). Idempotent.
     void ensureMaterialized();
+
+    // True if the rep the gauntlet selected is the plain fallback. The caller
+    // must have materialized; upgradeItem() checks this after re-running the
+    // gauntlet.
+    bool isPlainRep() const { return rep_ && rep_->isPlain(); }
 
     // Drop the rep and build it again. An encoding upgrade changes what the
     // gauntlet should pick without touching the file's own stamp.

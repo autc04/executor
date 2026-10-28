@@ -46,9 +46,15 @@ void BasiliskItemFactory::createFile(const fs::path& newPath)
     fs::create_directory(parentPath / ".rsrc");
     fs::create_directory(parentPath / ".finf");
 
-    fs::ofstream(parentPath / ".rsrc" / fn, std::ios::binary);
+    fs::ofstream rsrc(parentPath / ".rsrc" / fn, std::ios::binary);
+    if(!rsrc)
+        throw OSErrorException(ioErr);
+
     FInfo info = {};
-    fs::ofstream(parentPath / ".finf" / fn, std::ios::binary).write((char*)&info, sizeof(info));
+    fs::ofstream finf(parentPath / ".finf" / fn, std::ios::binary);
+    finf.write((char*)&info, sizeof(info));
+    if(!finf)
+        throw OSErrorException(ioErr);
 }
 
 std::unique_ptr<OpenFile> BasiliskRep::open(int8_t permission)

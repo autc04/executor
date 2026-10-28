@@ -15,6 +15,8 @@ public:
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
     virtual void getInfo(ItemInfo& info) override;
     virtual void setInfo(const ItemInfo& info) override;
+
+    virtual bool isPlain() const override { return true; }
 };
 
 class PlainDataFork : public OpenFile

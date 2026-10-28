@@ -25,25 +25,30 @@ PlainDataFork::PlainDataFork(fs::path path, int8_t permission)
         fd = open(path.string().c_str(), O_RDONLY | O_BINARY, 0644);
     }
 
+    if(fd < 0)
+        throw hostError(errno);
+
     //std::cout << "ACCESSING FILE: " << fd << " = " << path << std::endl;
 }
 
 PlainDataFork::PlainDataFork(fs::path path, create_t)
 {
     fd = open(path.string().c_str(), O_RDWR | O_CREAT | O_BINARY, 0644);
+    if(fd < 0)
+        throw hostError(errno);
     //std::cout << "CREATING FILE: " << fd << " = " << path << std::endl;
 }
 
 PlainDataFork::~PlainDataFork()
 {
-    if(fd > 0)
+    if(fd >= 0)
         close(fd);
     //std::cout << "CLOSING FILE: " << fd << std::endl;
 }
 
 size_t PlainDataFork::getEOF()
 {
-    if(fd <= 0)
+    if(fd < 0)
         return -1;
     return lseek(fd, 0, SEEK_END);
 }
@@ -67,8 +72,11 @@ size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 {
     lseek(fd, offset, SEEK_SET);
     auto done = ::write(fd, p, n);
-    
-    if(done != n)
+
+    if(done < 0)
+        throw hostError(errno);
+
+    if((size_t)done != n)
     {
         std::cout << "short write: " << done << " of " << n << " ; errno = " << errno << std::endl;
     }

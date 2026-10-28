@@ -130,8 +130,12 @@ reference number.
   sidecar/xattr backends (AppleDouble, Basilisk, Mac) and just before the plain
   fallback; otherwise a `._foo.bin` companion would never be seen. See
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`.
-- **`upgradeItem`**: when a plain item's sidecar is discovered to contain valid
-  AppleDouble data, a richer `FileRep` is installed on the item in place so
-  subsequent opens use the richer format.
+- **`upgradeItem`**: when an operation needs metadata the plain rep cannot
+  store, the richer rep's storage is created first, the gauntlet is re-run and
+  checked to have produced a non-plain rep, and only then are the open FCBs
+  switched over. The old forks are kept alive until their replacements are open,
+  so a failed upgrade leaves the guest's refnums usable. Failures surface as
+  ordinary File Manager errors. See
+  `docs/ai/2026-10-28-localvolume-upgrade-failure.md`.
 - The `LocalVolume` constructor takes a `VCB&` reference; the VCB must remain valid
   for the lifetime of the volume object.

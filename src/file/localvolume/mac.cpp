@@ -53,11 +53,16 @@ MacResourceFork::MacResourceFork(fs::path path, int8_t permission)
     {
         fd = open(path.string().c_str(), O_RDONLY, 0644);
     }
+
+    if(fd < 0)
+        throw hostError(errno);
 }
 
 MacResourceFork::MacResourceFork(fs::path path, create_t)
 {
     fd = open(path.string().c_str(), O_RDWR | O_CREAT, 0644);
+    if(fd < 0)
+        throw hostError(errno);
 
         // Note:
         // I'm tempted to initialize type and creator to 0,
@@ -66,7 +71,13 @@ MacResourceFork::MacResourceFork(fs::path path, create_t)
     ItemInfo info;
     info.file.info.fdType = "BINA"_4;
     info.file.info.fdCreator = "EXEC"_4;
-    fsetxattr(fd, XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+    if(fsetxattr(fd, XATTR_FINDERINFO_NAME, &info, 32, 0, 0) != 0)
+    {
+        int err = errno;
+        close(fd);
+        fd = -1;
+        throw hostError(err);
+    }
 }
 
 MacResourceFork::~MacResourceFork()

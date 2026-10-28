@@ -1102,6 +1102,50 @@ TEST_F(LocalVolumeFixture, UpgradePreservesCnidAndName)
     EXPECT_EQ(1, *fmChildCount(rootDirID_));
 }
 
+#ifndef __APPLE__
+// If the sidecar cannot be created, the upgrade fails with an ordinary File
+// Manager error and the file keeps its plain rep. The failure must not escape
+// as UpgradeRequiredException (terminate) and must not leave the item claiming
+// a format whose storage does not exist.
+//
+// The upgrade target is the Mac factory on Apple hosts, whose storage is an
+// xattr rather than a sidecar, so this failure cannot be provoked that way.
+TEST_F(LocalVolumeFixture, FailedUpgradeReportsErrorAndLeavesPlainRep)
+{
+    ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));
+
+    // The AppleDouble sidecar path exists, but as a directory: creating the
+    // sidecar file fails with EISDIR -> ioErr.
+    ASSERT_TRUE(fs::create_directory(host("%doc")));
+
+    const uint32_t newType = 0x41424344u; // 'ABCD'
+    EXPECT_EQ(ioErr, fmSetType(rootDirID_, "doc", newType));
+
+    EXPECT_EQ(0x54455854u, *fmGetType(rootDirID_, "doc")); // still the plain default
+    EXPECT_EQ((std::set<std::string> { "doc" }), namesOf(fmList(rootDirID_)));
+    EXPECT_TRUE(fs::is_directory(host("%doc")));
+}
+
+// The failed upgrade must leave the guest's already-open refnums usable: the
+// old fork is only dropped once its replacement has been opened.
+TEST_F(LocalVolumeFixture, FailedUpgradeKeepsOpenFcbUsable)
+{
+    ASSERT_EQ(noErr, fmCreateFile(rootDirID_, "doc", nullptr));
+    short refNum = fmOpen(rootDirID_, "doc", fsRdWrPerm);
+    ASSERT_GE(refNum, 0);
+
+    ASSERT_TRUE(fs::create_directory(host("%doc")));
+    EXPECT_EQ(ioErr, fmSetType(rootDirID_, "doc", 0x41424344u));
+
+    // PBRead goes through the FCB's access object (PBSetFPos reads its EOF), so
+    // a nulled access would show up here.
+    ASSERT_TRUE(fmFCBInfo(refNum).has_value());
+    fmSetFPos(refNum, 0);
+    EXPECT_EQ(std::string(), fmRead(refNum, 16));
+    fmClose(refNum);
+}
+#endif
+
 // --------------------------------------------------------------------------
 // Forward-looking (target behaviour of the refactor). Run with
 //   --gtest_also_run_disabled_tests

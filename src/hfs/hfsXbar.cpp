@@ -178,6 +178,8 @@ OSErr handleExceptions(Volume& v, void (Volume::*member)(PB*), PB* pb)
         // corrupt stored records. These are runtime errors, not programmer
         // errors, so fail the operation with ioErr instead of letting the
         // exception unwind past the trap boundary and terminate the emulator.
+        // UpgradeRequiredException derives from runtime_error too, so a format
+        // upgrade LocalVolume could not carry out fails the same way.
         return ioErr;
     }
 }

@@ -45,11 +45,30 @@ FileRepPtr AppleDoubleItemFactory::createRepForFile(ItemCache& itemcache, FileIt
 
 void AppleDoubleItemFactory::createFile(const fs::path& path)
 {
-    fs::path adpath = makeADPath(AppleDoubleScheme::percent, path);
-
+    // An upgrade may only add a sidecar to a file we could write anyway: a
+    // read-only file must not silently acquire a resource fork. Opening the
+    // primary is therefore a deliberate write-access test. There is no O_TRUNC,
+    // so an existing host file is not modified by this.
     PlainDataFork data(path, PlainDataFork::create);
-    AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(adpath, PlainDataFork::create),
-                                AppleSingleDoubleFile::create_double);
+
+    fs::path adpath = makeADPath(AppleDoubleScheme::percent, path);
+    bool existed = fs::exists(adpath);
+    try
+    {
+        AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(adpath, PlainDataFork::create),
+                                    AppleSingleDoubleFile::create_double);
+    }
+    catch(...)
+    {
+        // An empty regular file would still be accepted as an AppleDouble
+        // container by the gauntlet, so do not leave a half-written one behind.
+        if(!existed)
+        {
+            boost::system::error_code ec;
+            fs::remove(adpath, ec);
+        }
+        throw;
+    }
 }
 
 std::shared_ptr<AppleSingleDoubleFile> AppleDoubleRep::access(int8_t permission)
@@ -123,8 +142,21 @@ FileRepPtr AppleSingleItemFactory::createRepForFile(ItemCache& itemcache, FileIt
 
 void AppleSingleItemFactory::createFile(const fs::path& path)
 {
-    AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(path, PlainDataFork::create),
-                                AppleSingleDoubleFile::create_single);
+    bool existed = fs::exists(path);
+    try
+    {
+        AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(path, PlainDataFork::create),
+                                    AppleSingleDoubleFile::create_single);
+    }
+    catch(...)
+    {
+        if(!existed)
+        {
+            boost::system::error_code ec;
+            fs::remove(path, ec);
+        }
+        throw;
+    }
 }
 
 
@@ -176,18 +208,24 @@ AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile, cr
     : file(std::move(aFile))
 {
     GUEST<uint64_t> magicAndVersion = 0x0005160000020000;
-    file->write(0, &magicAndVersion, 8);
+    if(file->write(0, &magicAndVersion, sizeof(magicAndVersion)) != sizeof(magicAndVersion))
+        throw OSErrorException(ioErr);
+
     uint16_t zero = 0;
-    file->write(24, &zero, 2);
+    if(file->write(24, &zero, sizeof(zero)) != sizeof(zero))
+        throw OSErrorException(ioErr);
 }
 
 AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile, create_double_t)
     : file(std::move(aFile))
 {
     GUEST<uint64_t> magicAndVersion = 0x0005160700020000;
-    file->write(0, &magicAndVersion, 8);
+    if(file->write(0, &magicAndVersion, sizeof(magicAndVersion)) != sizeof(magicAndVersion))
+        throw OSErrorException(ioErr);
+
     uint16_t zero = 0;
-    file->write(24, &zero, 2);
+    if(file->write(24, &zero, sizeof(zero)) != sizeof(zero))
+        throw OSErrorException(ioErr);
 }
 
 AppleSingleDoubleFile::~AppleSingleDoubleFile()
