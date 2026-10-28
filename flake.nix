@@ -32,12 +32,33 @@
         # resolves to the exact same derivation.
         winSdl3 = winPkgs.sdl3.override { traySupport = false; };
 
+        # nixpkgs' Qt 6 does not support a MinGW host as-is: qtbase pulls in
+        # libglvnd (POSIX-only), and its system HarfBuzz/libjpeg dependencies
+        # cannot be cross-compiled here (Harfbuzz drags in glib, which needs a
+        # target Python and libsysprof-capture).  Executor only needs QtBase's
+        # Gui module, and Qt can use its bundled HarfBuzz/libjpeg, so drop
+        # those plus the Linux-only feature flags.
+        winQtBase = winPkgs.qt6.qtbase.overrideAttrs (old: {
+          propagatedBuildInputs = builtins.filter
+            (x: !(builtins.elem (x.pname or "")
+              [ "libglvnd" "harfbuzz" "libjpeg-turbo"
+                "libxml2" "libxslt" ]))
+            (old.propagatedBuildInputs or [ ]);
+          cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+            "-DQT_FEATURE_libproxy=OFF"
+            "-DQT_FEATURE_sctp=OFF"
+            "-DQT_FEATURE_system_harfbuzz=OFF"
+            "-DQT_FEATURE_system_jpeg=OFF"
+          ];
+        });
+
         # syn68k ships its own instruction generator (`syngen`) as part of
         # the build and runs it to produce C sources.  In a cross build that
         # executable is a Windows binary, so tell CMake to run it through
         # Wine (CMAKE_CROSSCOMPILING_EMULATOR does this for custom commands
         # that reference an executable target).
-        mkWindowsPackage = { frontEnd, buildInputs ? [ ], runtimeDlls ? [ ] }:
+        mkWindowsPackage = { frontEnd, buildInputs ? [ ], extraCmakeFlags ? [ ],
+                             runtimeFiles ? [ ] }:
           winPkgs.stdenv.mkDerivation {
             pname = "executor2000-windows-${frontEnd}";
             version = "0.1.0";
@@ -52,6 +73,9 @@
             ];
             buildInputs = [ winBoost ] ++ buildInputs;
             hardeningDisable = [ "all" ];
+            # The Qt setup hook wants an explicit choice; its wrapper is an
+            # ELF-script mechanism and cannot wrap a Windows executable.
+            dontWrapQtApps = true;
             cmakeFlags = [
               "-DFRONT_ENDS=${frontEnd}"
               "-DCMAKE_BUILD_TYPE=Release"
@@ -60,7 +84,7 @@
               # should not need libstdc++/libgcc/libwinpthread DLLs either.
               "-DCMAKE_EXE_LINKER_FLAGS=-static"
               "-DCMAKE_CROSSCOMPILING_EMULATOR=${pkgs.wine64}/bin/wine64"
-            ];
+            ] ++ extraCmakeFlags;
 
             # Wine runs the cross-compiled generator programs (`syngen`,
             # `powergenerator`) during the build.  It needs a writable prefix,
@@ -88,7 +112,12 @@
               runHook preInstall
               mkdir -p $out/bin
               cp executor.exe $out/bin/
-              ${pkgs.lib.concatMapStrings (dll: "cp ${dll} $out/bin/\n") runtimeDlls}
+              ${pkgs.lib.concatMapStrings
+                ({ src, dest ? "bin" }: ''
+                  mkdir -p "$out/${dest}"
+                  cp ${src} "$out/${dest}/"
+                '')
+                runtimeFiles}
               runHook postInstall
             '';
           };
@@ -140,9 +169,42 @@
           windows-sdl2 = mkWindowsPackage {
             frontEnd = "sdl2";
             buildInputs = [ winPkgs.SDL2 ];
-            runtimeDlls = [ "${winSdl3.out}/bin/SDL3.dll" ];
+            runtimeFiles = [ { src = "${winSdl3.out}/bin/SDL3.dll"; } ];
           };
-          windows = self'.packages.windows-sdl2;
+            windows-qt6 = mkWindowsPackage {
+              frontEnd = "qt";
+              buildInputs = [ winQtBase ];
+              extraCmakeFlags = [
+                # moc/rcc/uic etc. must run on the build machine.
+                "-DQT_HOST_PATH=${pkgs.qt6.qtbase}"
+              ];
+              runtimeFiles = [
+                # Qt modules used by the front end.
+                { src = "${winQtBase}/bin/Qt6Core.dll"; }
+                { src = "${winQtBase}/bin/Qt6Gui.dll"; }
+                # Their non-system dependencies.
+                { src = "${winQtBase}/bin/libmcfgthread-2.dll"; }
+                { src = "${winQtBase}/bin/libstdc++-6.dll"; }
+                { src = "${winQtBase}/bin/libgcc_s_seh-1.dll"; }
+                { src = "${winQtBase}/bin/libzstd.dll"; }
+                { src = "${winQtBase}/bin/libb2-1.dll"; }
+                { src = "${winQtBase}/bin/libpcre2-16-0.dll"; }
+                { src = "${winQtBase}/bin/zlib1.dll"; }
+                { src = "${winQtBase}/bin/libdouble-conversion.dll"; }
+                { src = "${winQtBase}/bin/libpng16-16.dll"; }
+                # Qt appends "platforms" to the application directory (which it
+                # adds to its library paths), so these belong in <exe dir>/platforms.
+                # qoffscreen/qminimal let the build be smoke-tested without a
+                # display.
+                { src = "${winQtBase}/lib/qt-6/plugins/platforms/qwindows.dll";
+                  dest = "bin/platforms"; }
+                { src = "${winQtBase}/lib/qt-6/plugins/platforms/qoffscreen.dll";
+                  dest = "bin/platforms"; }
+                { src = "${winQtBase}/lib/qt-6/plugins/platforms/qminimal.dll";
+                  dest = "bin/platforms"; }
+              ];
+            };
+            windows = self'.packages.windows-qt6;
         };
 
         devShells.default = pkgs.mkShell {
