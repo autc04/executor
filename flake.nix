@@ -17,8 +17,9 @@
         [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       perSystem = { config, self', inputs', pkgs, system, ... }:
       let
-        # 64-bit Windows cross build with MinGW-w64.
-        winPkgs = pkgs.pkgsCross.mingwW64;
+        # 64-bit Windows cross build with MinGW-w64, using UCRT rather than
+        # the legacy MSVCRT runtime (matches MSYS2 and Windows 10+).
+        winPkgs = pkgs.pkgsCross.ucrt64;
 
         # nixpkgs' MinGW Boost build fails on Boost.Stacktrace's
         # `from_exception` backend, which includes the POSIX-only <dlfcn.h>.

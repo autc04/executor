@@ -15,8 +15,15 @@ plugins.
 
 ## How the build works
 
-- `pkgsCross.mingwW64.stdenv` provides the target toolchain. Native `cmake`,
-  `ninja`, `bison`, `perl` and `ruby` come from the host package set.
+- `pkgsCross.ucrt64.stdenv` provides the target toolchain: the
+  `x86_64-w64-mingw32` triple with the UCRT runtime rather than the legacy
+  MSVCRT one (matching MSYS2 and Windows 10+). Native `cmake`, `ninja`, `bison`,
+  `perl` and `ruby` come from the host package set.
+- **UCRT runtime:** the produced binaries import `ucrtbase.dll` and the
+  `api-ms-win-crt-*` API sets instead of `msvcrt.dll`. These are part of
+  Windows 10+; on older Windows the UCRT redistributable is required. The C++
+  and threading runtimes (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`,
+  `libmcfgthread-2.dll`) are still MinGW DLLs and have to be shipped.
 - **Submodules must be part of the flake source.** The flake sets
   `inputs.self.submodules = true`; otherwise the git fetcher copies only the
   superproject's tracked files and CMake fails with
@@ -41,7 +48,8 @@ plugins.
 - **Qt 6:** nixpkgs' Qt 6 does not support a MinGW host out of the box. qtbase
   pulls in libglvnd (POSIX-only), and its system HarfBuzz/libjpeg dependencies
   cannot be cross-compiled (HarfBuzz → glib → target Python and
-  libsysprof-capture; libjpeg-turbo's SIMD/12-bit code fails on MinGW). Qt also
+  libsysprof-capture; libjpeg-turbo's SIMD/12-bit code fails on MinGW, with
+  MSVCRT and UCRT alike). Qt also
   propagates libxml2/libxslt, which drag in shared-only libiconv and break the
   `-static` link above. Executor only needs QtBase's Gui module, and Qt can use
   its bundled HarfBuzz/libjpeg, so the flake drops those inputs and disables
