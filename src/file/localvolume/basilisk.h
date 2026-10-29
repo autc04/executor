@@ -9,22 +9,22 @@ class BasiliskItemFactory : public ItemFactory
 {
 public:
     virtual bool isHidden(const fs::directory_entry &e) override;
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) override;
+    virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
+        const fs::directory_entry& e, ProbeTrace& trace) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 
-class BasiliskFileItem : public FileItem
+class BasiliskRep : public FileRep
 {
 public:
-    using FileItem::FileItem;
+    explicit BasiliskRep(FileItem& item) : FileRep(item) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
 
-    virtual void deleteItem() override;
-    virtual void moveItem(const fs::path& newPath, mac_string_view newName) override;
+    virtual void remove() override;
+    virtual void move(const fs::path& newPath) override;
 };
 } // namespace Executor

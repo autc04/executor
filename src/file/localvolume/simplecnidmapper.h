@@ -2,31 +2,43 @@
 
 #include "cnidmapper.h"
 #include <map>
+#include <string>
 #include <unordered_map>
 
 namespace Executor
 {
 
+// The in-memory reference backend. It stores records, the parent-keyed posix
+// name index and the parent-keyed Mac name index; all policy lives in
+// ItemCache.
 class SimpleCNIDMapper : public CNIDMapper
 {
     CNID nextCNID_ = 3;
 
-    struct StoredMapping
-    {
-        CNID parID;
-        CNID cnid;
-        fs::path path;
-        mac_string macname;
-    };
-    std::unordered_map<CNID, StoredMapping> mappings_;
-    std::unordered_map<CNID, std::vector<CNID>> directories_; 
-public:
-    explicit SimpleCNIDMapper(fs::path root, mac_string volumeName);
+    std::unordered_map<CNID, Mapping> mappings_;
 
-    virtual std::vector<Mapping> mapDirectoryContents(CNID dirID, std::vector<fs::directory_entry> realPaths) override;
-    virtual std::optional<Mapping> lookupCNID(CNID cnid) override;
-    virtual void deleteCNID(CNID cnid) override;
-    virtual void moveCNID(CNID cnid, CNID newParent, mac_string_view newMacName, std::function<fs::path()> fsop) override;
+    // parID -> (host name -> child CNID): a directory's child set and the
+    // (parID, posixName) -> cnid lookup.
+    std::unordered_map<CNID, std::map<fs::path, CNID>> posixNames_;
+
+    // parID -> (case-folded Mac name -> cnid), populated at NameResolve.
+    std::unordered_map<CNID, std::map<mac_string, CNID>> names_;
+
+public:
+    explicit SimpleCNIDMapper(mac_string volumeName);
+
+    virtual std::optional<Mapping> get(CNID cnid) override;
+    virtual std::optional<Mapping> getChild(CNID parID, const fs::path& posixName) override;
+    virtual std::vector<std::pair<fs::path, CNID>> getChildren(CNID parID) override;
+    virtual std::optional<CNID> getName(CNID parID, mac_string_view foldedMacName) override;
+
+    virtual void put(const Mapping& record) override;
+    virtual void erase(CNID cnid) override;
+    virtual void putChild(CNID parID, const fs::path& posixName, CNID cnid) override;
+    virtual void eraseChild(CNID parID, const fs::path& posixName) override;
+    virtual void putName(CNID parID, mac_string_view foldedMacName, CNID cnid) override;
+    virtual void eraseName(CNID parID, mac_string_view foldedMacName) override;
+    virtual CNID allocate() override;
 };
 
-}
+} // namespace Executor

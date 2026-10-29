@@ -14,6 +14,8 @@
 #include <base/cpu.h>
 #include <file/volume.h>
 
+#include <stdexcept>
+
 using namespace Executor;
 
 /*
@@ -169,6 +171,16 @@ OSErr handleExceptions(Volume& v, void (Volume::*member)(PB*), PB* pb)
     catch(const OSErrorException& e)
     {
         return e.code;
+    }
+    catch(const std::runtime_error&)
+    {
+        // The CNID mapper throws for backend I/O failures (LMDB errors) and for
+        // corrupt stored records. These are runtime errors, not programmer
+        // errors, so fail the operation with ioErr instead of letting the
+        // exception unwind past the trap boundary and terminate the emulator.
+        // UpgradeRequiredException derives from runtime_error too, so a format
+        // upgrade LocalVolume could not carry out fails the same way.
+        return ioErr;
     }
 }
 

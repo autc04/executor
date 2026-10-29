@@ -1,15 +1,44 @@
 #pragma once
 
 #include <stdlib.h>
+#include <cerrno>
 #include <FileMgr.h>
 
 namespace Executor
 {
-class UpgradeRequiredException : std::runtime_error
+// Not an error the operation can act on: the current format cannot store what
+// was asked of it and LocalVolume has to upgrade it. Public inheritance keeps an
+// unhandled one from escaping the trap boundary as an uncaught exception.
+class UpgradeRequiredException : public std::runtime_error
 {
 public:
     UpgradeRequiredException() : std::runtime_error("file metadata representation update required") {}
 };
+
+// Translate a host errno from a failed open/write into the File Manager's
+// vocabulary. Reps use this instead of constructing an object backed by an
+// invalid descriptor.
+inline OSErrorException hostError(int err)
+{
+    switch(err)
+    {
+        case ENOSPC:
+        case EFBIG:
+#ifdef EDQUOT
+        case EDQUOT:
+#endif
+            return OSErrorException(dskFulErr);
+        case EROFS:
+            return OSErrorException(wPrErr);
+        case EACCES:
+        case EPERM:
+            return OSErrorException(permErr);
+        case ENOENT:
+            return OSErrorException(fnfErr);
+        default:
+            return OSErrorException(ioErr);
+    }
+}
 
 class OpenFile
 {

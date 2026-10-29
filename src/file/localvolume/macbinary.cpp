@@ -393,47 +393,63 @@ size_t MacBinaryFork::write(size_t offset, void *p, size_t n)
     return file->write(fork, offset, p, n);
 }
 
-std::shared_ptr<MacBinaryFile> MacBinaryFileItem::access(int8_t permission)
+std::shared_ptr<MacBinaryFile> MacBinaryRep::access(int8_t permission)
 {
     std::shared_ptr<MacBinaryFile> p;
     if((p = openedFile.lock()))
         return p;
 
-    p = std::make_shared<MacBinaryFile>(std::make_unique<PlainDataFork>(path(), permission));
+    p = std::make_shared<MacBinaryFile>(std::make_unique<PlainDataFork>(item_.path(), permission));
     openedFile = p;
     return p;
 }
 
-std::unique_ptr<OpenFile> MacBinaryFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> MacBinaryRep::open(int8_t permission)
 {
     return std::make_unique<MacBinaryFork>(access(permission), MacBinaryFile::Fork::data);
 }
 
-std::unique_ptr<OpenFile> MacBinaryFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> MacBinaryRep::openRF(int8_t permission)
 {
     return std::make_unique<MacBinaryFork>(access(permission), MacBinaryFile::Fork::resource);
 }
 
-ItemInfo MacBinaryFileItem::getInfo()
+void MacBinaryRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->readFInfo(info);
-    return info;
 }
 
-void MacBinaryFileItem::setInfo(ItemInfo info)
+void MacBinaryRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
     access(fsRdWrPerm)->writeFInfo(info);
 }
 
-ItemPtr MacBinaryItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+fs::path MacBinaryRep::nameSource(const fs::path& filename) const
 {
-    if(!fs::is_regular_file(e.path()))
-        return nullptr;
-    if(!isMacBinaryFile(e.path()))
-        return nullptr;
+    // Present "foo.bin" to the guest as "foo".
+    return filename.stem();
+}
 
-    return std::make_shared<MacBinaryFileItem>(itemcache, parID, cnid, e.path(), macname);
+fs::path MacBinaryRep::hostName(const fs::path& macFilename) const
+{
+    // Store the guest's "foo" as "foo.bin"; the inverse of nameSource. An
+    // empty name is the "keep the current filename" move, which never encodes.
+    if(macFilename.empty())
+        return macFilename;
+
+    fs::path stored = macFilename;
+    stored += ".bin";
+    return stored;
+}
+
+FileRepPtr MacBinaryItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
+{
+    if(!isMacBinaryFile(e.path()))
+        return {};
+
+    // The choice rests on the file's content; assert it unchanged, but never re-read
+    // the header to check.
+    trace.push_back(UnchangedFileObservation { e.path(), statFile(e.path()) });
+    return std::make_shared<MacBinaryRep>(item);
 }

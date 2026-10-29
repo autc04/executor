@@ -6,22 +6,24 @@
 
 namespace Executor
 {
-class PlainFileItem : public FileItem
+class PlainRep : public FileRep
 {
 public:
-    using FileItem::FileItem;
-
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    explicit PlainRep(FileItem& item) : FileRep(item) {}
 
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
+
+    virtual bool isPlain() const override { return true; }
 };
 
 class PlainDataFork : public OpenFile
 {
 protected:
     int fd;
+    bool writable_ = false;
 
 public:
     struct create_t {};
@@ -35,5 +37,7 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+
+    virtual bool canWrite() const override { return writable_; }
 };
 } // namespace Executor

@@ -16,6 +16,7 @@ PlainDataFork::PlainDataFork(fs::path path, int8_t permission)
         || permission == fsRdWrShPerm || permission == fsWrDenyPerm)
     {
         fd = open(path.string().c_str(), O_RDWR | O_BINARY, 0644);
+        writable_ = fd >= 0;
     }
 
     if (fd == -1 &&
@@ -25,25 +26,31 @@ PlainDataFork::PlainDataFork(fs::path path, int8_t permission)
         fd = open(path.string().c_str(), O_RDONLY | O_BINARY, 0644);
     }
 
+    if(fd < 0)
+        throw hostError(errno);
+
     //std::cout << "ACCESSING FILE: " << fd << " = " << path << std::endl;
 }
 
 PlainDataFork::PlainDataFork(fs::path path, create_t)
 {
     fd = open(path.string().c_str(), O_RDWR | O_CREAT | O_BINARY, 0644);
+    if(fd < 0)
+        throw hostError(errno);
+    writable_ = true;
     //std::cout << "CREATING FILE: " << fd << " = " << path << std::endl;
 }
 
 PlainDataFork::~PlainDataFork()
 {
-    if(fd > 0)
+    if(fd >= 0)
         close(fd);
     //std::cout << "CLOSING FILE: " << fd << std::endl;
 }
 
 size_t PlainDataFork::getEOF()
 {
-    if(fd <= 0)
+    if(fd < 0)
         return -1;
     return lseek(fd, 0, SEEK_END);
 }
@@ -60,15 +67,21 @@ size_t PlainDataFork::read(size_t offset, void *p, size_t n)
 {
     lseek(fd, offset, SEEK_SET);
     auto done = ::read(fd, p, n);
-    
-    return done;
+
+    if(done < 0)
+        throw hostError(errno);
+
+    return size_t(done);
 }
 size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 {
     lseek(fd, offset, SEEK_SET);
     auto done = ::write(fd, p, n);
-    
-    if(done != n)
+
+    if(done < 0)
+        throw hostError(errno);
+
+    if((size_t)done != n)
     {
         std::cout << "short write: " << done << " of " << n << " ; errno = " << errno << std::endl;
     }
@@ -109,18 +122,18 @@ size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 #endif
 
 
-std::unique_ptr<OpenFile> PlainFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> PlainRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path_, permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> PlainFileItem::openRF(int8_t permission)
+
+std::unique_ptr<OpenFile> PlainRep::openRF(int8_t permission)
 {
     return std::make_unique<EmptyFork>();
 }
 
-ItemInfo PlainFileItem::getInfo()
+void PlainRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     info.file.info = {
         "TEXT"_4,
         "ttxt"_4,
@@ -128,12 +141,10 @@ ItemInfo PlainFileItem::getInfo()
         { 0, 0 }, // fdLocation
         0 // fdFldr
     };
-    return info;
 }
 
-void PlainFileItem::setInfo(ItemInfo info)
+void PlainRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
     if(info.file.info.fdType != "TEXT"_4)
         throw UpgradeRequiredException();
 }

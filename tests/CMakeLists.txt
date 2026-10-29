@@ -41,6 +41,12 @@ set(NATIVE_TEST_SOURCES
         sane.cpp
         localvolume_macbinary.cpp
         responsiveness.cpp
+        # ItemCache CNID policy, using the in-memory backend and public APIs.
+        localvolume_itemcache.cpp
+        # FileManager-vs-host sequences against the mounted-'/' LocalVolume.
+        localvolume_ops.cpp
+        # Low-level CNID backend contract, plus LMDB persistence/transactions.
+        localvolume_cnidmap.cpp
         # Native-only: drives the .IPP driver through the Device Manager.
         # The dual-mode ABI comparison against Apple's headers belongs in
         # TEST_SOURCES later, once the Retro68 side has MacTCP.h.

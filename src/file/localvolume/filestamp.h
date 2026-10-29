@@ -1,0 +1,85 @@
+#pragma once
+
+#include <rsys/filesystem.h>
+
+#include <cstdint>
+#include <system_error>
+
+namespace Executor
+{
+
+// A cheap change/identity stamp for a host file or directory: its last-write
+// time (native resolution) and size, captured in a single stat. Two stamps
+// compare equal only when both are valid and agree on both fields; an invalid
+// stamp (the stat failed) never compares equal, so validation fails safe.
+//
+// Deliberately not built from boost::filesystem::last_write_time(), whose
+// std::time_t result is only second-resolution and would miss same-second
+// changes. See docs/ai/2026-10-08-localvolume-staged-materialization-plan.md
+// (Caching).
+struct FileStamp
+{
+    std::uint64_t mtime = 0; // nanoseconds since the Unix epoch
+    std::uint64_t size = 0;
+    bool valid = false;
+};
+
+bool operator==(const FileStamp& a, const FileStamp& b);
+inline bool operator!=(const FileStamp& a, const FileStamp& b) { return !(a == b); }
+
+// The host file's identity, as opposed to its change stamp: the (device, inode)
+// pair a CNID's binding is keyed by. `valid` is false when the host does not
+// expose a usable inode (or gives inode 0); callers then fall back to name-keyed
+// matching. There is no link count: a CNID denotes a binding, and several
+// bindings may share one inode (hard links). See *Binding staleness* in the plan.
+struct FileIdentity
+{
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    bool valid = false;
+};
+
+// Set once at startup by --dont-use-inodes. When true, statPath() reports no
+// usable host identity, so comparisons fall back to the name+kind behavior
+// already used for inode-less filesystems: sameIdentity() reports "same" and
+// the diff's inode pairing is skipped.
+extern bool dontUseInodes;
+
+// True when two identities denote the same host file. If either is unusable we
+// cannot tell, and report "same" so the caller falls back to the path.
+inline bool sameIdentity(const FileIdentity& a, const FileIdentity& b)
+{
+    if(!a.valid || !b.valid)
+        return true;
+    return a.device == b.device && a.inode == b.inode;
+}
+
+// Everything one raw stat yields that the item model needs: the change stamp,
+// the identity, and the kind. A single stat serves all three, so callers need
+// not stat twice.
+struct PathStat
+{
+    FileStamp stamp;
+    FileIdentity identity;
+    bool isDirectory = false;
+    bool isRegular = false;
+    bool exists = false;
+
+    // Set when the stat failed for a reason other than "not found". `exists` is
+    // false for both a missing path and a failed stat; callers that must not
+    // confuse the two check this first.
+    std::error_code error;
+};
+
+// stat the path (following symlinks); `stamp.valid` and `identity.valid` are
+// false, and `exists` is false, if it could not be stat'd. A missing path
+// leaves `error` clear; any other failure sets it. Identity is reported only
+// when the path's own filesystem provides stable (dev, ino) values (Phase 11c)
+// and --dont-use-inodes is not set. One LocalVolume may span several devices,
+// so the decision is per filesystem instance, not per volume.
+PathStat statPath(const fs::path& path);
+
+// The change stamp alone (a convenience wrapper around statPath).
+FileStamp statFile(const fs::path& path);
+
+} // namespace Executor

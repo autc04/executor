@@ -408,7 +408,7 @@ void Executor::InitPaths()
 
     ROMlib_ConfigurationFolder = initpath("Configuration", "~/.executor/Configuration");
     ROMlib_SystemFolder = initpath("SystemFolder", "~/.executor/System Folder");
-    ROMlib_DirectoryMap = initpath("ExecutorDirectoryMap", "~/.executor/cnidmap");
+    ROMlib_DirectoryMap = initpath("ExecutorDirectoryMap", "~/.executor/cnidmap1");
     ROMlib_MacVolumes = initpath("MacVolumes", "~/.executor/images");
     ROMlib_ScreenDumpFile = initpath("ScreenDumpFile", "/tmp/excscrn*.tif");
     ROMlib_OffsetFile = initpath("OffsetFile", "~/.executor/offset_file");

@@ -13,6 +13,7 @@ using namespace Executor;
 class MacResourceFork : public OpenFile
 {
     int fd;
+    bool writable_ = false;
 public:
     struct create_t {};
     static constexpr create_t create = {};
@@ -25,6 +26,7 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+    virtual bool canWrite() const override { return writable_; }
 };
 
 // NOTE:
@@ -45,6 +47,7 @@ MacResourceFork::MacResourceFork(fs::path path, int8_t permission)
         || permission == fsRdWrShPerm || permission == fsWrDenyPerm)
     {
         fd = open(path.string().c_str(), O_RDWR, 0644);
+        writable_ = fd >= 0;
     }
 
     if (fd == -1 &&
@@ -53,11 +56,17 @@ MacResourceFork::MacResourceFork(fs::path path, int8_t permission)
     {
         fd = open(path.string().c_str(), O_RDONLY, 0644);
     }
+
+    if(fd < 0)
+        throw hostError(errno);
 }
 
 MacResourceFork::MacResourceFork(fs::path path, create_t)
 {
     fd = open(path.string().c_str(), O_RDWR | O_CREAT, 0644);
+    if(fd < 0)
+        throw hostError(errno);
+    writable_ = true;
 
         // Note:
         // I'm tempted to initialize type and creator to 0,
@@ -66,7 +75,13 @@ MacResourceFork::MacResourceFork(fs::path path, create_t)
     ItemInfo info;
     info.file.info.fdType = "BINA"_4;
     info.file.info.fdCreator = "EXEC"_4;
-    fsetxattr(fd, XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+    if(fsetxattr(fd, XATTR_FINDERINFO_NAME, &info, 32, 0, 0) != 0)
+    {
+        int err = errno;
+        close(fd);
+        fd = -1;
+        throw hostError(err);
+    }
 }
 
 MacResourceFork::~MacResourceFork()
@@ -113,30 +128,50 @@ void MacResourceFork::setEOF(size_t sz)
 
 size_t MacResourceFork::read(size_t offset, void *p, size_t n)
 {
-    return fgetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
+    if(n == 0)
+        return 0;
+
+    errno = 0;
+    ssize_t done = fgetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
+    if(done < 0)
+    {
+        if(errno == ENOATTR)
+            return 0;
+        throw hostError(errno);
+    }
+    return size_t(done);
 }
 
 size_t MacResourceFork::write(size_t offset, void *p, size_t n)
 {
+    if(n == 0)
+        return 0;
+
     int success = fsetxattr(fd, XATTR_RESOURCEFORK_NAME, p, n, offset, 0);
     if(success < 0)
-        throw OSErrorException(ioErr);
+        throw hostError(errno);
     return n;
 }
 
-ItemPtr MacItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr MacItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
-    {
-        const char *fn = e.path().string().c_str();
-        if(getxattr(fn, XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0
-            || getxattr(fn, XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0)
-        {
-            return std::make_shared<MacFileItem>(itemcache, parID, cnid, e.path(), macname);
-        }
-    }
-    return nullptr;
+    std::string fn = e.path().string();
+    bool finderInfo = getxattr(fn.c_str(), XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) > 0;
+    bool rsrcFork = getxattr(fn.c_str(), XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) > 0;
+
+    if(finderInfo)
+        trace.push_back(AttributeExistsObservation { e.path(), XATTR_FINDERINFO_NAME });
+    else
+        trace.push_back(AttributeDoesntExistObservation { e.path(), XATTR_FINDERINFO_NAME });
+    if(rsrcFork)
+        trace.push_back(AttributeExistsObservation { e.path(), XATTR_RESOURCEFORK_NAME });
+    else
+        trace.push_back(AttributeDoesntExistObservation { e.path(), XATTR_RESOURCEFORK_NAME });
+
+    if(finderInfo || rsrcFork)
+        return std::make_shared<MacRep>(item);
+    return {};
 }
 
 void MacItemFactory::createFile(const fs::path& path)
@@ -144,28 +179,24 @@ void MacItemFactory::createFile(const fs::path& path)
     MacResourceFork data(path, MacResourceFork::create);
 }
 
-std::unique_ptr<OpenFile> MacFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> MacRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path(), permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> MacFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> MacRep::openRF(int8_t permission)
 {
-    return std::make_unique<MacResourceFork>(path(), permission);
-}
-
-ItemInfo MacFileItem::getInfo()
-{
-    ItemInfo info = FileItem::getInfo();
-    getxattr(path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
-
-    return info;
+    return std::make_unique<MacResourceFork>(item_.path(), permission);
 }
 
-void MacFileItem::setInfo(ItemInfo info)
+void MacRep::getInfo(ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    setxattr(path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
-    
+    getxattr(item_.path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+}
+
+void MacRep::setInfo(const ItemInfo& info)
+{
+    setxattr(item_.path().string().c_str(), XATTR_FINDERINFO_NAME, &info, 32, 0, 0);
+
     // TODO: errors
 }
 #endif

@@ -1,424 +1,615 @@
 #include "lmdbcnidmapper.h"
-#include <file/file.h>
-#include <OSUtil.h>
+
 #include <rsys/paths.h>
 
 #include <algorithm>
-#include <iostream>
-#include <set>
+#include <cassert>
+#include <cctype>
+#include <cstring>
+#include <stdexcept>
+#include <utility>
 
 using namespace Executor;
 
-class LMDBCNIDMapper::BinMapping
+namespace
 {
-    std::vector<char> data_;
-    lmdb::val val_;
-    CNID cnid;
-    lmdb::val cnidval_;
-public:
-    BinMapping(const LMDBCNIDMapper::StoredMapping& mapping);
+constexpr std::uint32_t kSchemaVersion = 1;
 
-    lmdb::val& val() { return val_; }
-    lmdb::val& cnidval() { return cnidval_; }
-};
+// The stored record is a versioned byte string, not a host-endian struct, so the
+// database stays portable between builds on the same machine and cannot be
+// misread if a field is added later. Integers are big-endian, and a fixed
+// 4-byte parent id prefixes every index key so a directory's children are a
+// contiguous cursor range.
+using Bytes = std::string;
 
-LMDBCNIDMapper::StoredMapping LMDBCNIDMapper::decodeMapping(CNID cnid, lmdb::val val)
+void appendBE(Bytes& out, std::uint64_t value, int bytes)
 {
-    char *data = val.data();
-    CNID parId = *reinterpret_cast<CNID*>(data);
-    data += sizeof(CNID);
-    uint8_t macNameLen = *reinterpret_cast<uint8_t*>(data);
-    data++;
-    mac_string macName(reinterpret_cast<unsigned char*>(data), macNameLen);
-    data += macNameLen;
-    uint16_t pathLen = *reinterpret_cast<uint16_t*>(data);
-    data += sizeof(uint16_t);
-    std::string pathString(data, pathLen);
-
-    return StoredMapping {
-        parId, cnid,
-        fs::path(std::move(pathString)),
-        std::move(macName)
-    };
+    for(int i = bytes - 1; i >= 0; --i)
+        out.push_back(static_cast<char>((value >> (8 * i)) & 0xff));
 }
 
-LMDBCNIDMapper::BinMapping::BinMapping(const StoredMapping& mapping)
-    : data_(sizeof(CNID) + 1 + mapping.macname.size() + 2 + mapping.path.string().size())
-    , val_(data_.data(), data_.size())
-    , cnid(mapping.cnid)
-    , cnidval_(&cnid, sizeof(CNID))
+std::uint64_t readBE(const char*& p, const char* end, int bytes)
 {
-    char *data = data_.data();
-    *reinterpret_cast<CNID*>(data) = mapping.parID;
-    data += sizeof(CNID);
-    *reinterpret_cast<uint8_t*>(data) = mapping.macname.size();
-    data++;
-    memcpy(data, mapping.macname.data(), mapping.macname.size());
-    data += mapping.macname.size();
-    *reinterpret_cast<uint16_t*>(data) = mapping.path.string().size();
-    data += sizeof(uint16_t);
-    memcpy(data, mapping.path.string().data(), mapping.path.string().size());
+    if(end - p < bytes)
+        throw std::runtime_error("corrupt CNID record");
+
+    std::uint64_t value = 0;
+    for(int i = 0; i < bytes; ++i)
+        value = (value << 8) | static_cast<unsigned char>(*p++);
+    return value;
 }
 
+Bytes encodeCNID(CNID cnid)
+{
+    Bytes out;
+    appendBE(out, static_cast<std::uint32_t>(cnid), 4);
+    return out;
+}
+
+CNID readCNID(const char *data, std::size_t size)
+{
+    const char *p = data;
+    return static_cast<CNID>(readBE(p, data + size, 4));
+}
+
+// Config values are stored big-endian like the records, so the handful of
+// scalars in the config DB have one representation.
+void putConfigU32(lmdb::txn& txn, lmdb::dbi& db, const char* key,
+                  std::uint32_t value)
+{
+    const Bytes keyBytes(key, std::strlen(key));
+    Bytes valueBytes;
+    appendBE(valueBytes, value, 4);
+    lmdb::val k{keyBytes.data(), keyBytes.size()};
+    lmdb::val v{valueBytes.data(), valueBytes.size()};
+    db.put(txn, k, v);
+}
+
+std::optional<std::uint32_t> getConfigU32(lmdb::txn& txn, lmdb::dbi& db,
+                                          const char* key)
+{
+    const Bytes keyBytes(key, std::strlen(key));
+    lmdb::val k{keyBytes.data(), keyBytes.size()};
+    lmdb::val v;
+    if(!db.get(txn, k, v) || v.size() < 4)
+        return {};
+
+    const char *p = v.data();
+    return static_cast<std::uint32_t>(readBE(p, v.data() + v.size(), 4));
+}
+
+Bytes parentPrefix(CNID parID)
+{
+    return encodeCNID(parID);
+}
+
+Bytes posixKey(CNID parID, const fs::path& name)
+{
+    Bytes key = parentPrefix(parID);
+    key += name.string();
+    return key;
+}
+
+Bytes nameKey(CNID parID, mac_string_view folded)
+{
+    Bytes key = parentPrefix(parID);
+    key.append(reinterpret_cast<const char *>(folded.data()), folded.size());
+    return key;
+}
+
+Bytes cnidKey(CNID cnid)
+{
+    return encodeCNID(cnid);
+}
+
+Bytes encodeRecord(const CNIDRecord& rec)
+{
+    Bytes out;
+
+    appendBE(out, static_cast<std::uint32_t>(rec.parID), 4);
+
+    std::uint8_t flags = (rec.isDir ? 1 : 0) | (rec.macname ? 2 : 0);
+    out.push_back(static_cast<char>(flags));
+
+    const std::string name = rec.posixName.string();
+    appendBE(out, name.size(), 2);
+    out += name;
+
+    if(rec.macname)
+    {
+        appendBE(out, rec.macname->size(), 2);
+        out.append(reinterpret_cast<const char *>(rec.macname->data()),
+                   rec.macname->size());
+    }
+
+    appendBE(out, rec.identity.device, 8);
+    appendBE(out, rec.identity.inode, 8);
+    out.push_back(rec.identity.valid ? 1 : 0);
+
+    return out;
+}
+
+CNIDRecord decodeRecord(CNID cnid, const char *data, std::size_t size)
+{
+    const char *p = data;
+    const char* end = data + size;
+    CNIDRecord rec;
+
+    rec.cnid = cnid;
+    rec.parID = static_cast<CNID>(readBE(p, end, 4));
+
+    if(p == end)
+        throw std::runtime_error("corrupt CNID record");
+    const std::uint8_t flags = static_cast<unsigned char>(*p++);
+    rec.isDir = (flags & 1) != 0;
+
+    const std::uint64_t nameLen = readBE(p, end, 2);
+    if(static_cast<std::size_t>(end - p) < nameLen)
+        throw std::runtime_error("corrupt CNID record");
+    rec.posixName = fs::path(std::string(p, static_cast<std::size_t>(nameLen)));
+    p += nameLen;
+
+    if(flags & 2)
+    {
+        const std::uint64_t macLen = readBE(p, end, 2);
+        if(static_cast<std::size_t>(end - p) < macLen)
+            throw std::runtime_error("corrupt CNID record");
+        rec.macname = mac_string(reinterpret_cast<const unsigned char *>(p),
+                                 static_cast<std::size_t>(macLen));
+        p += macLen;
+    }
+
+    rec.identity.device = readBE(p, end, 8);
+    rec.identity.inode = readBE(p, end, 8);
+    if(p == end)
+        throw std::runtime_error("corrupt CNID record");
+    rec.identity.valid = static_cast<unsigned char>(*p++) != 0;
+
+    return rec;
+}
+
+// Run `f`, retrying after a map-size change. A map-full error aborts the
+// transaction, so the callback is re-run from a clean state; MDB_MAP_RESIZED
+// means another process grew the map, so the environment adopts the new size
+// and the callback is re-run. This wraps both write transactions and read-only
+// lookups.
+template<class F>
+auto withMapRetry(lmdb::env& env, const F& f) -> decltype(f())
+{
+    for(;;)
+    {
+        try
+        {
+            return f();
+        }
+        catch(const lmdb::map_full_error &)
+        {
+            MDB_envinfo info;
+            lmdb::env_info(env, &info);
+            env.set_mapsize(info.me_mapsize * 2);
+        }
+        catch(const lmdb::error& e)
+        {
+            if(e.code() == MDB_MAP_RESIZED)
+            {
+                env.set_mapsize(0);
+                continue;
+            }
+            throw;
+        }
+    }
+}
+} // namespace
+
+fs::path LMDBCNIDMapper::volumeDirectoryName(const fs::path& root)
+{
+    std::string name = root.string();
+
+    // Normalize away trailing separators and a Windows trailing colon:
+    // "/" -> "", "C:/" -> "C", "C:\\" -> "C".
+    while(!name.empty() && (name.back() == '/' || name.back() == '\\'))
+        name.pop_back();
+    if(!name.empty() && name.back() == ':')
+        name.pop_back();
+
+    if(name.empty())
+        return "root";
+
+    // A bare drive letter is a Windows drive root.
+    if(name.size() == 1 && std::isalpha(static_cast<unsigned char>(name[0])))
+        return fs::path(std::string("drive-")
+                        + static_cast<char>(std::toupper(static_cast<unsigned char>(name[0]))));
+
+    // Anything else: a readable, separator-free name. The stored root check
+    // catches the (currently unreachable) case of two roots sanitizing alike.
+    std::string readable;
+    bool pendingDash = false;
+    for(char c : name)
+    {
+        if(c == '/' || c == '\\' || c == ':')
+        {
+            pendingDash = !readable.empty();
+            continue;
+        }
+
+        if(pendingDash)
+        {
+            readable.push_back('-');
+            pendingDash = false;
+        }
+        readable.push_back(c);
+    }
+
+    if(readable.empty())
+        return "root";
+    return fs::path("path-" + readable);
+}
 
 LMDBCNIDMapper::LMDBCNIDMapper(fs::path root, mac_string volumeName)
     : env_(lmdb::env::create())
 {
-    fs::create_directories(ROMlib_DirectoryMap);
-    env_.set_max_dbs(3);
-    env_.open(ROMlib_DirectoryMap.string().c_str());
+    // One environment per volume, under the configured directory-map folder.
+    const fs::path envPath = ROMlib_DirectoryMap / volumeDirectoryName(root);
+    fs::create_directories(envPath);
 
-    auto txn = lmdb::txn::begin(env_);
-    config_ = lmdb::dbi::open(txn, "config", MDB_CREATE);
-    mappings_ = lmdb::dbi::open(txn, "mappings", MDB_CREATE | MDB_INTEGERKEY);
-    directories_ = lmdb::dbi::open(txn, "directories", MDB_CREATE | MDB_INTEGERKEY);
-    
-    BinMapping rootMapping({
-        1, 2,
-        root,
-        volumeName
-    });
-    
-    mappings_.put(txn, rootMapping.cnidval(), rootMapping.val());
+    env_.set_max_dbs(4);
+    // A generous mapping avoids growth in normal use (it is virtual address
+    // space, not allocation). Growth is still handled if it runs out.
+    env_.set_mapsize(std::size_t{256} * 1024 * 1024);
+    env_.open(envPath.string().c_str());
 
-    txn.commit();
-}
-
-template <class F>
-auto growMapIfNecessary(lmdb::env& env, const F& f) -> decltype(f())
-{
-    try
-    {
-        return f();
-    }
-    catch(const lmdb::map_full_error&)
-    {
-        MDB_envinfo stat;
-        lmdb::env_info(env, &stat);
-        env.set_mapsize(stat.me_mapsize * 2);
-        return growMapIfNecessary(env, f);
-    }
-}
-
-LMDBCNIDMapper::~LMDBCNIDMapper()
-{
-}
-
-std::optional<LMDBCNIDMapper::StoredMapping> LMDBCNIDMapper::getMapping(lmdb::txn& txn, CNID cnid)
-{
-    lmdb::val mapping;
-
-    if(mappings_.get(txn, lmdb::val(&cnid, sizeof(cnid)), mapping))
-        return decodeMapping(cnid, mapping);
-    else
-        return {};
-}
-
-void LMDBCNIDMapper::setMapping(lmdb::txn& txn, StoredMapping m)
-{
-    BinMapping binMapping{m};
-    mappings_.put(txn, binMapping.cnidval(), binMapping.val());
-}
-
-void LMDBCNIDMapper::deleteMapping(lmdb::txn& txn, CNID cnid)
-{
-    // TODO
-}
-
-std::vector<CNID> LMDBCNIDMapper::getDirectory(lmdb::txn& txn, CNID cnid)
-{
-    lmdb::val cachedContents;
-    
-    directories_.get(txn, lmdb::val(&cnid, sizeof(cnid)), cachedContents);
-
-    auto cacheBegin = cachedContents.data<CNID>();
-    auto cacheEnd = cacheBegin + cachedContents.size() / sizeof(CNID);
-
-    return { cacheBegin, cacheEnd };
-}
-
-void LMDBCNIDMapper::setDirectory(lmdb::txn& txn, CNID cnid, const std::vector<CNID>& contents)
-{
-    lmdb::val contentVal = lmdb::val(contents.data(), contents.size() * sizeof(CNID));    
-    directories_.put(txn, lmdb::val(&cnid, sizeof(cnid)), contentVal);
-}
-
-std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::updateDirectoryContents(CNID dirID,
-        std::vector<fs::directory_entry> sortedRealDirEntries)
-{
-    return growMapIfNecessary(env_, [this, dirID, sortedRealDirEntries] {
+    withMapRetry(env_, [&]
+                 {
         auto txn = lmdb::txn::begin(env_);
+        config_ = lmdb::dbi::open(txn, "config", MDB_CREATE);
+        mappings_ = lmdb::dbi::open(txn, "mappings", MDB_CREATE);
+        posixNames_ = lmdb::dbi::open(txn, "posixNames", MDB_CREATE);
+        names_ = lmdb::dbi::open(txn, "names", MDB_CREATE);
 
-        auto directoryContents = getDirectory(txn, dirID);
-
-        std::vector<StoredMapping> mappings;
-        mappings.reserve(directoryContents.size());
-
-        for(CNID cnid : directoryContents)
+        std::uint32_t schema = 0;
+        if(auto stored = getConfigU32(txn, config_, "schema"))
+            schema = *stored;
+        else
         {
-            if(auto optMapping = getMapping(txn, cnid))
-                mappings.push_back(std::move(*optMapping));
+            schema = kSchemaVersion;
+            putConfigU32(txn, config_, "schema", schema);
+        }
+        if(schema != kSchemaVersion)
+            throw std::runtime_error("unsupported CNID database schema");
+
+        // The environment is per volume, so a different root here means a hash
+        // collision or a reused folder; refuse rather than mix CNIDs.
+        lmdb::val rootKey { "root", 4 };
+        lmdb::val rootValue;
+        const std::string rootString = root.string();
+        if(config_.get(txn, rootKey, rootValue))
+        {
+            if(std::string(rootValue.data(), rootValue.size()) != rootString)
+                throw std::runtime_error("CNID database belongs to a different volume");
+        }
+        else
+        {
+            lmdb::val value { rootString.data(), rootString.size() };
+            config_.put(txn, rootKey, value);
         }
 
-        std::vector<CNID> newContents;
-        newContents.reserve(sortedRealDirEntries.size());
-        
-        CNID newCNID;
+        if(!getMapping(txn, 2))
         {
-            auto cursor = lmdb::cursor::open(txn, mappings_);
-            lmdb::val cnidval;
-            if(cursor.get(cnidval, MDB_LAST))
-                newCNID = *cnidval.data<CNID>() + 1;
-            else
-                newCNID = 3;
+            CNIDRecord rootRecord;
+            rootRecord.parID = 1;
+            rootRecord.cnid = 2;
+            rootRecord.macname = volumeName;
+            rootRecord.isDir = true;
+            putMapping(txn, rootRecord);
         }
 
-        std::set<mac_string> usedNames;
+        std::uint32_t nextCNID = 3;
+        if(auto stored = getConfigU32(txn, config_, "nextCNID"))
+            nextCNID = *stored;
+        else
+            putConfigU32(txn, config_, "nextCNID", nextCNID);
 
-        auto cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
-        for(auto& entry : sortedRealDirEntries)
-        {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path())
-                ++cachedMappingIt;
-
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path())
-            {
-                mac_string nameUpr = cachedMappingIt->macname;
-                ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-                usedNames.emplace(std::move(nameUpr));
-                ++cachedMappingIt;
-            }
-        }
-
-        std::vector<Mapping> dirMappings;
-        dirMappings.reserve(sortedRealDirEntries.size());
-
-        cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
-        for(auto& entry : sortedRealDirEntries)
-        {
-            while(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path < entry.path())
-            {
-                // discard mapping
-                deleteCNID(txn, cachedMappingIt->cnid);
-                ++cachedMappingIt;
-            }
-
-            if(cachedMappingIt != cachedMappingEnd && cachedMappingIt->path == entry.path())
-            {
-                // use existing mapping
-                dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, std::move(entry), cachedMappingIt->macname});
-                newContents.push_back(cachedMappingIt->cnid);
-
-                ++cachedMappingIt;
-            }
-            else
-            {
-                // new mapping
-                mac_string macname;
-                const fs::path& name = entry.path().filename();
-                int index = 0;
-
-                bool nameIsFree;
-                do
-                {
-                    macname = toMacRomanFilename(name, index++);
-                    mac_string nameUpr = macname;
-                    ROMlib_UprString(nameUpr.data(), false, nameUpr.size());
-                    nameIsFree = usedNames.emplace(std::move(nameUpr)).second;
-                } while(!nameIsFree);
-
-                assert(macname.size());
-
-                Mapping newMapping {
-                    dirID, newCNID++,
-                    std::move(entry),
-                    std::move(macname)
-                };
-                dirMappings.push_back(newMapping);
-                newContents.push_back(newMapping.cnid);
-
-                setMapping(txn, {
-                    newMapping.parID, newMapping.cnid,
-                    newMapping.entry.path(),
-                    std::move(newMapping.macname)
-                });
-            }
-        }
-
-        setDirectory(txn, dirID, newContents);
-
-        txn.commit();
-
-        return dirMappings;
-    });
+        txn.commit(); });
 }
 
+LMDBCNIDMapper::~LMDBCNIDMapper() = default;
 
-std::vector<CNIDMapper::Mapping> LMDBCNIDMapper::mapDirectoryContents(CNID dirID,
-        std::vector<fs::directory_entry> realDirEntries)
+std::optional<CNIDRecord> LMDBCNIDMapper::getMapping(lmdb::txn& txn, CNID cnid)
 {
-    auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
-    auto directoryContents = getDirectory(txn, dirID);
-    std::sort(realDirEntries.begin(), realDirEntries.end());
+    Bytes keyBytes = cnidKey(cnid);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value;
 
-    if(directoryContents.size() != realDirEntries.size())
-    {
-        txn.abort();
-        return updateDirectoryContents(dirID, realDirEntries);
-    }
-
-    std::vector<StoredMapping> mappings;
-    mappings.reserve(realDirEntries.size());
-
-    {
-        auto cachedIt = directoryContents.begin(), cachedEnd = directoryContents.end();
-        auto realIt = realDirEntries.begin();
-        for(;cachedIt != cachedEnd; ++cachedIt, ++realIt)
-        {
-            auto optMapping = getMapping(txn, *cachedIt);
-
-            if(!optMapping || optMapping->path != realIt->path())
-            {
-                txn.abort();
-                return updateDirectoryContents(dirID, realDirEntries);
-            }
-
-            mappings.push_back(std::move(*optMapping));
-        }
-    }
-
-    std::vector<Mapping> dirMappings;
-    dirMappings.reserve(mappings.size());
-
-    {
-        auto cachedMappingIt = mappings.begin(), cachedMappingEnd = mappings.end();
-        auto realIt = realDirEntries.begin();
-        for(;cachedMappingIt != cachedMappingEnd; ++cachedMappingIt, ++realIt)
-        {
-            dirMappings.push_back({cachedMappingIt->parID, cachedMappingIt->cnid, std::move(*realIt), cachedMappingIt->macname});
-        }
-    }
-    
-    return dirMappings;
-}
-
-std::optional<CNIDMapper::Mapping> LMDBCNIDMapper::lookupCNID(CNID cnid)
-{
-    return growMapIfNecessary(env_, [this, cnid]() -> std::optional<CNIDMapper::Mapping> {
-        for(int pass = 0; pass < 2; pass++)
-        {
-            auto txn = lmdb::txn::begin(env_, nullptr, pass ? MDB_RDONLY : 0);
-
-            auto mapping = getMapping(txn, cnid);
-
-            if(!mapping)
-                return {};
-                
-            if(fs::exists(mapping->path))
-            {
-                try
-                {
-                    return Mapping {
-                        mapping->parID,
-                        mapping->cnid,
-                        fs::directory_entry(mapping->path),
-                        mapping->macname
-                    };
-                }
-                catch(const fs::filesystem_error&)
-                {
-                    // file no longer exists,
-                    // pass through
-                }
-            }
-                
-            if(pass)
-            {
-                deleteCNID(txn, cnid);
-                txn.commit();
-            }
-        }
+    if(!mappings_.get(txn, key, value))
         return {};
-    });
+
+    return decodeRecord(cnid, value.data(), value.size());
 }
 
-void LMDBCNIDMapper::deleteCNID(lmdb::txn& txn, CNID cnid)
+void LMDBCNIDMapper::putMapping(lmdb::txn& txn, const CNIDRecord& rec)
 {
-    auto mapping = getMapping(txn, cnid);
-    if(!mapping)
+    Bytes keyBytes = cnidKey(rec.cnid);
+    Bytes valueBytes = encodeRecord(rec);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value{valueBytes.data(), valueBytes.size()};
+
+    mappings_.put(txn, key, value);
+}
+
+CNID LMDBCNIDMapper::allocateCNID(lmdb::txn& txn)
+{
+    const std::uint32_t next = getConfigU32(txn, config_, "nextCNID").value_or(3);
+    putConfigU32(txn, config_, "nextCNID", next + 1);
+    return static_cast<CNID>(next);
+}
+
+std::optional<CNID> LMDBCNIDMapper::getPosixName(lmdb::txn& txn, CNID parID,
+                                                 const fs::path& name)
+{
+    Bytes keyBytes = posixKey(parID, name);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value;
+
+    if(!posixNames_.get(txn, key, value))
+        return {};
+
+    return readCNID(value.data(), value.size());
+}
+
+void LMDBCNIDMapper::putPosixName(lmdb::txn& txn, CNID parID,
+                                  const fs::path& name, CNID cnid)
+{
+    Bytes keyBytes = posixKey(parID, name);
+    Bytes valueBytes = encodeCNID(cnid);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value{valueBytes.data(), valueBytes.size()};
+
+    posixNames_.put(txn, key, value);
+}
+
+void LMDBCNIDMapper::delPosixName(lmdb::txn& txn, CNID parID,
+                                  const fs::path& name)
+{
+    Bytes keyBytes = posixKey(parID, name);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+
+    posixNames_.del(txn, key);
+}
+
+std::vector<std::pair<fs::path, CNID>> LMDBCNIDMapper::getChildren(
+    lmdb::txn& txn, CNID parID)
+{
+    std::vector<std::pair<fs::path, CNID>> children;
+    const Bytes prefix = parentPrefix(parID);
+
+    auto cursor = lmdb::cursor::open(txn, posixNames_);
+    lmdb::val key{prefix.data(), prefix.size()};
+    lmdb::val value;
+
+    bool found = cursor.get(key, value, MDB_SET_RANGE);
+    while(found)
+    {
+        if(key.size() < prefix.size()
+           || std::memcmp(key.data(), prefix.data(), prefix.size()) != 0)
+            break;
+
+        children.emplace_back(
+            fs::path(std::string(key.data() + prefix.size(),
+                                 key.size() - prefix.size())),
+            readCNID(value.data(), value.size()));
+
+        found = cursor.get(key, value, MDB_NEXT);
+    }
+
+    return children;
+}
+
+std::optional<CNID> LMDBCNIDMapper::getName(lmdb::txn& txn, CNID parID,
+                                            mac_string_view folded)
+{
+    Bytes keyBytes = nameKey(parID, folded);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value;
+
+    if(!names_.get(txn, key, value))
+        return {};
+
+    return readCNID(value.data(), value.size());
+}
+
+void LMDBCNIDMapper::putName(lmdb::txn& txn, CNID parID, mac_string_view folded,
+                             CNID cnid)
+{
+    Bytes keyBytes = nameKey(parID, folded);
+    Bytes valueBytes = encodeCNID(cnid);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+    lmdb::val value{valueBytes.data(), valueBytes.size()};
+
+    names_.put(txn, key, value);
+}
+
+void LMDBCNIDMapper::delName(lmdb::txn& txn, CNID parID, mac_string_view folded)
+{
+    Bytes keyBytes = nameKey(parID, folded);
+    lmdb::val key{keyBytes.data(), keyBytes.size()};
+
+    names_.del(txn, key);
+}
+
+std::optional<CNIDRecord> LMDBCNIDMapper::get(CNID cnid)
+{
+    if(activeTxn_)
+        return getMapping(*activeTxn_, cnid);
+
+    return withMapRetry(env_, [&]() -> std::optional<CNIDRecord>
+                        {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+        return getMapping(txn, cnid); });
+}
+
+std::optional<CNIDRecord> LMDBCNIDMapper::getChild(CNID parID,
+                                                   const fs::path& posixName)
+{
+    if(activeTxn_)
+    {
+        if(auto cnid = getPosixName(*activeTxn_, parID, posixName))
+            return getMapping(*activeTxn_, *cnid);
+        return {};
+    }
+
+    return withMapRetry(env_, [&]() -> std::optional<CNIDRecord>
+                        {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+        if(auto cnid = getPosixName(txn, parID, posixName))
+            return getMapping(txn, *cnid);
+        return {}; });
+}
+
+std::vector<std::pair<fs::path, CNID>> LMDBCNIDMapper::getChildren(CNID parID)
+{
+    if(activeTxn_)
+        return getChildren(*activeTxn_, parID);
+
+    return withMapRetry(env_, [&]
+                        {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+        return getChildren(txn, parID); });
+}
+
+std::optional<CNID> LMDBCNIDMapper::getName(CNID parID,
+                                            mac_string_view foldedMacName)
+{
+    if(activeTxn_)
+        return getName(*activeTxn_, parID, foldedMacName);
+
+    return withMapRetry(env_, [&]() -> std::optional<CNID>
+                        {
+        auto txn = lmdb::txn::begin(env_, nullptr, MDB_RDONLY);
+        return getName(txn, parID, foldedMacName); });
+}
+
+void LMDBCNIDMapper::put(const CNIDRecord& record)
+{
+    if(activeTxn_)
+    {
+        putMapping(*activeTxn_, record);
         return;
-    
-    CNID parID = mapping->parID;
+    }
 
-    auto cachedContents = getDirectory(txn, parID);
-
-    cachedContents.erase(
-        std::remove(cachedContents.begin(), cachedContents.end(), cnid),
-        cachedContents.end());
-
-    setDirectory(txn, parID, cachedContents);
-
-    deleteMapping(txn, cnid);
-
-    // deleteCNID is only invoked for empty directories by ItemCacher,
-    // but mapDirectoryContents and lookupCNID above also invoke it
-    // on files and directories that have been deleted or moved by other programs.
-    for(CNID child : getDirectory(txn, cnid))
-        deleteCNID(txn, child);
-    directories_.del(txn, lmdb::val(&cnid, sizeof(cnid)));
+    withMapRetry(env_, [&]
+                 {
+        auto txn = lmdb::txn::begin(env_);
+        putMapping(txn, record);
+        txn.commit(); });
 }
 
-void LMDBCNIDMapper::deleteCNID(CNID cnid)
+void LMDBCNIDMapper::erase(CNID cnid)
 {
-    growMapIfNecessary(env_, [this, cnid] {
+    if(activeTxn_)
+    {
+        Bytes keyBytes = cnidKey(cnid);
+        lmdb::val key{keyBytes.data(), keyBytes.size()};
+        mappings_.del(*activeTxn_, key);
+        return;
+    }
+
+    withMapRetry(env_, [&]
+                 {
         auto txn = lmdb::txn::begin(env_);
-        deleteCNID(txn, cnid);
+        Bytes keyBytes = cnidKey(cnid);
+        lmdb::val key { keyBytes.data(), keyBytes.size() };
+        mappings_.del(txn, key);
+        txn.commit(); });
+}
+
+void LMDBCNIDMapper::putChild(CNID parID, const fs::path& posixName, CNID cnid)
+{
+    if(activeTxn_)
+    {
+        putPosixName(*activeTxn_, parID, posixName, cnid);
+        return;
+    }
+
+    withMapRetry(env_, [&]
+                 {
+        auto txn = lmdb::txn::begin(env_);
+        putPosixName(txn, parID, posixName, cnid);
+        txn.commit(); });
+}
+
+void LMDBCNIDMapper::eraseChild(CNID parID, const fs::path& posixName)
+{
+    if(activeTxn_)
+    {
+        delPosixName(*activeTxn_, parID, posixName);
+        return;
+    }
+
+    withMapRetry(env_, [&]
+                 {
+        auto txn = lmdb::txn::begin(env_);
+        delPosixName(txn, parID, posixName);
+        txn.commit(); });
+}
+
+void LMDBCNIDMapper::putName(CNID parID, mac_string_view foldedMacName, CNID cnid)
+{
+    if(activeTxn_)
+    {
+        putName(*activeTxn_, parID, foldedMacName, cnid);
+        return;
+    }
+
+    withMapRetry(env_, [&]
+                 {
+        auto txn = lmdb::txn::begin(env_);
+        putName(txn, parID, foldedMacName, cnid);
+        txn.commit(); });
+}
+
+void LMDBCNIDMapper::eraseName(CNID parID, mac_string_view foldedMacName)
+{
+    if(activeTxn_)
+    {
+        delName(*activeTxn_, parID, foldedMacName);
+        return;
+    }
+
+    withMapRetry(env_, [&]
+                 {
+        auto txn = lmdb::txn::begin(env_);
+        delName(txn, parID, foldedMacName);
+        txn.commit(); });
+}
+
+CNID LMDBCNIDMapper::allocate()
+{
+    if(activeTxn_)
+        return allocateCNID(*activeTxn_);
+
+    return withMapRetry(env_, [&]
+                        {
+        auto txn = lmdb::txn::begin(env_);
+        CNID cnid = allocateCNID(txn);
         txn.commit();
-    });
+        return cnid; });
 }
-void LMDBCNIDMapper::moveCNID(CNID cnid, CNID newParentOrZero, mac_string_view newMacName, std::function<fs::path()> fsop)
+
+void LMDBCNIDMapper::withTransaction(const std::function<void()>& f)
 {
-    growMapIfNecessary(env_, [=] {
+    assert(activeTxn_ == nullptr);
+
+    withMapRetry(env_, [&]
+                 {
         auto txn = lmdb::txn::begin(env_);
 
-        auto mapping = getMapping(txn, cnid);
-        if(!mapping)
-            return;
-
-        CNID oldParent = mapping->parID;
-        CNID newParent = newParentOrZero ? newParentOrZero : oldParent;
-        if(oldParent == newParent && newMacName.empty())
-            return;
-
-        fs::path newPath = fsop();
-
-        mapping->path = newPath;
-        mapping->parID = newParent;
-        if(!newMacName.empty())
-            mapping->macname = newMacName;
-
-        setMapping(txn, *mapping);
-
-        auto cachedContents = getDirectory(txn, oldParent);
-        cachedContents.erase(
-            std::remove(cachedContents.begin(), cachedContents.end(), cnid),
-            cachedContents.end());
-
-        if(newParent != oldParent)
+        struct ActiveTxn
         {
-            setDirectory(txn, oldParent, cachedContents);
-            cachedContents = getDirectory(txn, newParent);
-        }
+            lmdb::txn*& slot;
+            ~ActiveTxn() { slot = nullptr; }
+        } active { activeTxn_ };
+        activeTxn_ = &txn;
 
-        cachedContents.insert(
-            std::upper_bound(cachedContents.begin(), cachedContents.end(), cnid,
-                [&](CNID a, CNID b) {
-                    return getMapping(txn, a)->path < getMapping(txn, b)->path;
-                }),
-            cnid);
-
-        setDirectory(txn, newParent, cachedContents);
-
-        txn.commit();
-    });
+        f();
+        txn.commit(); });
 }

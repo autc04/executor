@@ -5,13 +5,13 @@
 
 namespace Executor
 {
-class MacFileItem : public FileItem
+class MacRep : public FileRep
 {
 public:
-    using FileItem::FileItem;
+    explicit MacRep(FileItem& item) : FileRep(item) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
 };
@@ -19,8 +19,8 @@ public:
 
 class MacItemFactory : public ItemFactory
 {
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) override;
+    virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
+        const fs::directory_entry& e, ProbeTrace& trace) override;
     virtual void createFile(const fs::path& newPath) override;
 };
 }

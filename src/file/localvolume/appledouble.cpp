@@ -27,147 +27,168 @@ bool AppleDoubleItemFactory::isHidden(const fs::directory_entry& e)
     return false;
 }
 
-ItemPtr AppleDoubleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr AppleDoubleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
+    for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
     {
-        for(auto scheme : { AppleDoubleScheme::percent, AppleDoubleScheme::dotunderscore })
+        fs::path ad = makeADPath(scheme, e.path());
+        if(fs::is_regular_file(ad))
         {
-            if(fs::is_regular_file(makeADPath(scheme, e.path())))
-                return std::make_shared<AppleDoubleFileItem>(scheme, itemcache, parID, cnid, e.path(), macname);
+            trace.push_back(RegularFileObservation { ad });
+            return std::make_shared<AppleDoubleRep>(scheme, item);
         }
+        trace.push_back(NoRegularFileObservation { ad });
     }
-    return nullptr;
+    return {};
 }
 
 void AppleDoubleItemFactory::createFile(const fs::path& path)
 {
-    fs::path adpath = makeADPath(AppleDoubleScheme::percent, path);
-
+    // An upgrade may only add a sidecar to a file we could write anyway: a
+    // read-only file must not silently acquire a resource fork. Opening the
+    // primary is therefore a deliberate write-access test. There is no O_TRUNC,
+    // so an existing host file is not modified by this.
     PlainDataFork data(path, PlainDataFork::create);
-    AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(adpath, PlainDataFork::create),
-                                AppleSingleDoubleFile::create_double);
+
+    fs::path adpath = makeADPath(AppleDoubleScheme::percent, path);
+    bool existed = fs::exists(adpath);
+    try
+    {
+        AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(adpath, PlainDataFork::create),
+                                    AppleSingleDoubleFile::create_double);
+    }
+    catch(...)
+    {
+        // An empty regular file would still be accepted as an AppleDouble
+        // container by the gauntlet, so do not leave a half-written one behind.
+        if(!existed)
+        {
+            boost::system::error_code ec;
+            fs::remove(adpath, ec);
+        }
+        throw;
+    }
 }
 
-AppleDoubleFileItem::AppleDoubleFileItem(AppleDoubleScheme scheme, ItemCache& itemcache, CNID parID, CNID cnid, fs::path p, mac_string_view name)
-    : FileItem(itemcache, parID, cnid, p, name), scheme(scheme)
-{
-}
-
-std::shared_ptr<AppleSingleDoubleFile> AppleDoubleFileItem::access(int8_t permission)
+std::shared_ptr<AppleSingleDoubleFile> AppleDoubleRep::access(int8_t permission)
 {
     std::shared_ptr<AppleSingleDoubleFile> p;
     if((p = openedFile.lock()))
         return p;
     else
     {
-        fs::path adpath = makeADPath(scheme, path());
+        fs::path adpath = makeADPath(scheme, item_.path());
         p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(adpath, permission));
         openedFile = p;
         return p;
     }
 }
-std::unique_ptr<OpenFile> AppleDoubleFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> AppleDoubleRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path_, permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> AppleDoubleFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> AppleDoubleRep::openRF(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 2);
 }
 
-ItemInfo AppleDoubleFileItem::getInfo()
+void AppleDoubleRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->read(9, 0, &info, sizeof(info.file));
-
-    return info;
 }
 
-void AppleDoubleFileItem::setInfo(ItemInfo info)
+void AppleDoubleRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    access(fsRdWrPerm)->write(9, 0, &info, sizeof(info.file));
+    access(fsRdWrPerm)->write(9, 0, const_cast<ItemInfo*>(&info), sizeof(info.file));
 }
 
-void AppleDoubleFileItem::deleteItem()
+void AppleDoubleRep::remove()
 {
-    fs::remove(path());
-    fs::path adpath = makeADPath(scheme, path());
+    fs::remove(item_.path());
     boost::system::error_code ec;
-    fs::remove(adpath, ec);
+    fs::remove(makeADPath(scheme, item_.path()), ec);
 }
 
-void AppleDoubleFileItem::moveItem(const fs::path& newPath, mac_string_view newName)
+void AppleDoubleRep::move(const fs::path& newPath)
 {
-    fs::path adpathOld = makeADPath(scheme, path());
+    fs::path adpathOld = makeADPath(scheme, item_.path());
     fs::path adpathNew = makeADPath(scheme, newPath);
 
-    fs::rename(path(), newPath);
+    // The base checks the destination before renaming the primary, so a
+    // collision leaves the sidecar untouched.
+    FileRep::move(newPath);
 
+    // A companion at a free primary name is orphaned; overwrite it.
     boost::system::error_code ec;
     fs::rename(adpathOld, adpathNew, ec);
-
-    path_ = newPath;
-    if(!newName.empty())
-        name_ = newName;
 }
 
-ItemPtr AppleSingleItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr AppleSingleItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(!fs::is_regular_file(e.path()))
-        return nullptr;
     GUEST<uint64_t> magic = 0;
     fs::ifstream(e.path(), std::ios::binary).read((char*)&magic, 8);
 
     if(magic == 0x0005160000020000)
-        return std::make_shared<AppleSingleFileItem>(itemcache, parID, cnid, e.path(), macname);
-    else
-        return nullptr;
+    {
+        // The choice rests on the file's content; assert it unchanged, but never
+        // re-read the magic to check.
+        trace.push_back(UnchangedFileObservation { e.path(), statFile(e.path()) });
+        return std::make_shared<AppleSingleRep>(item);
+    }
+    return {};
 }
 
 void AppleSingleItemFactory::createFile(const fs::path& path)
 {
-    AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(path, PlainDataFork::create),
-                                AppleSingleDoubleFile::create_single);
+    bool existed = fs::exists(path);
+    try
+    {
+        AppleSingleDoubleFile rsrc(std::make_unique<PlainDataFork>(path, PlainDataFork::create),
+                                    AppleSingleDoubleFile::create_single);
+    }
+    catch(...)
+    {
+        if(!existed)
+        {
+            boost::system::error_code ec;
+            fs::remove(path, ec);
+        }
+        throw;
+    }
 }
 
 
-std::shared_ptr<AppleSingleDoubleFile> AppleSingleFileItem::access(int8_t permission)
+std::shared_ptr<AppleSingleDoubleFile> AppleSingleRep::access(int8_t permission)
 {
     std::shared_ptr<AppleSingleDoubleFile> p;
     if((p = openedFile.lock()))
         return p;
     else
     {
-        p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(path(), permission));
+        p = std::make_shared<AppleSingleDoubleFile>(std::make_unique<PlainDataFork>(item_.path(), permission));
         openedFile = p;
         return p;
     }
 }
-std::unique_ptr<OpenFile> AppleSingleFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> AppleSingleRep::open(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 1);
 }
-std::unique_ptr<OpenFile> AppleSingleFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> AppleSingleRep::openRF(int8_t permission)
 {
     return std::make_unique<AppleSingleDoubleFork>(access(permission), 2);
 }
 
-ItemInfo AppleSingleFileItem::getInfo()
+void AppleSingleRep::getInfo(ItemInfo& info)
 {
-    ItemInfo info = FileItem::getInfo();
     access(fsRdPerm)->read(9, 0, &info, sizeof(info));
-
-    return info;
 }
 
-void AppleSingleFileItem::setInfo(ItemInfo info)
+void AppleSingleRep::setInfo(const ItemInfo& info)
 {
-    FileItem::setInfo(info);
-    access(fsRdWrPerm)->write(9, 0, &info, sizeof(info.file));
+    access(fsRdWrPerm)->write(9, 0, const_cast<ItemInfo*>(&info), sizeof(info.file));
 }
 
 AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile)
@@ -187,18 +208,24 @@ AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile, cr
     : file(std::move(aFile))
 {
     GUEST<uint64_t> magicAndVersion = 0x0005160000020000;
-    file->write(0, &magicAndVersion, 8);
+    if(file->write(0, &magicAndVersion, sizeof(magicAndVersion)) != sizeof(magicAndVersion))
+        throw OSErrorException(ioErr);
+
     uint16_t zero = 0;
-    file->write(24, &zero, 2);
+    if(file->write(24, &zero, sizeof(zero)) != sizeof(zero))
+        throw OSErrorException(ioErr);
 }
 
 AppleSingleDoubleFile::AppleSingleDoubleFile(std::unique_ptr<OpenFile> aFile, create_double_t)
     : file(std::move(aFile))
 {
     GUEST<uint64_t> magicAndVersion = 0x0005160700020000;
-    file->write(0, &magicAndVersion, 8);
+    if(file->write(0, &magicAndVersion, sizeof(magicAndVersion)) != sizeof(magicAndVersion))
+        throw OSErrorException(ioErr);
+
     uint16_t zero = 0;
-    file->write(24, &zero, 2);
+    if(file->write(24, &zero, sizeof(zero)) != sizeof(zero))
+        throw OSErrorException(ioErr);
 }
 
 AppleSingleDoubleFile::~AppleSingleDoubleFile()

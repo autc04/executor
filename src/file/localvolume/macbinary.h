@@ -39,6 +39,9 @@ public:
     void readFInfo(ItemInfo& info);
     void writeFInfo(const ItemInfo& info);
 
+    // The permission the underlying host file was opened with.
+    bool canWrite() const { return file_->canWrite(); }
+
 private:
     std::unique_ptr<OpenFile> file_;
     uint8_t header_[128];
@@ -69,27 +72,34 @@ public:
     virtual void setEOF(size_t sz) override;
     virtual size_t read(size_t offset, void *p, size_t n) override;
     virtual size_t write(size_t offset, void *p, size_t n) override;
+    virtual bool canWrite() const override { return file->canWrite(); }
 };
 
-class MacBinaryFileItem : public FileItem
+class MacBinaryRep : public FileRep
 {
     std::weak_ptr<MacBinaryFile> openedFile;
 
     std::shared_ptr<MacBinaryFile> access(int8_t permission);
 
 public:
-    using FileItem::FileItem;
+    explicit MacBinaryRep(FileItem& item) : FileRep(item) {}
 
-    virtual ItemInfo getInfo() override;
-    virtual void setInfo(ItemInfo info) override;
+    virtual void getInfo(ItemInfo& info) override;
+    virtual void setInfo(const ItemInfo& info) override;
     virtual std::unique_ptr<OpenFile> open(int8_t permission) override;
     virtual std::unique_ptr<OpenFile> openRF(int8_t permission) override;
+
+    // A MacBinary file is presented without its ".bin" extension.
+    virtual fs::path nameSource(const fs::path& filename) const override;
+
+    // The inverse: a Mac name is stored with ".bin" appended.
+    virtual fs::path hostName(const fs::path& macFilename) const override;
 };
 
 class MacBinaryItemFactory : public ItemFactory
 {
-    virtual ItemPtr createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-        const fs::directory_entry& e, mac_string_view macname) override;
+    virtual FileRepPtr createRepForFile(ItemCache& itemcache, FileItem& item,
+        const fs::directory_entry& e, ProbeTrace& trace) override;
 };
 
 } // namespace Executor

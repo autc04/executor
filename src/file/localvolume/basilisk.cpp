@@ -13,18 +13,27 @@ bool BasiliskItemFactory::isHidden(const fs::directory_entry& e)
 }
 
 
-ItemPtr BasiliskItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr BasiliskItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
-    {
-        fs::path rsrc = e.path().parent_path() / ".rsrc" / e.path().filename();
-        fs::path finf = e.path().parent_path() / ".finf" / e.path().filename();
-        
-        if(fs::is_regular_file(rsrc) || fs::is_regular_file(finf))
-            return std::make_shared<BasiliskFileItem>(itemcache, parID, cnid, e.path(), macname);
-    }
-    return nullptr;
+    fs::path rsrc = e.path().parent_path() / ".rsrc" / e.path().filename();
+    fs::path finf = e.path().parent_path() / ".finf" / e.path().filename();
+
+    bool hasRsrc = fs::is_regular_file(rsrc);
+    bool hasFinf = fs::is_regular_file(finf);
+
+    if(hasRsrc)
+        trace.push_back(RegularFileObservation { rsrc });
+    else
+        trace.push_back(NoRegularFileObservation { rsrc });
+    if(hasFinf)
+        trace.push_back(RegularFileObservation { finf });
+    else
+        trace.push_back(NoRegularFileObservation { finf });
+
+    if(hasRsrc || hasFinf)
+        return std::make_shared<BasiliskRep>(item);
+    return {};
 }
 
 void BasiliskItemFactory::createFile(const fs::path& newPath)
@@ -37,63 +46,64 @@ void BasiliskItemFactory::createFile(const fs::path& newPath)
     fs::create_directory(parentPath / ".rsrc");
     fs::create_directory(parentPath / ".finf");
 
-    fs::ofstream(parentPath / ".rsrc" / fn, std::ios::binary);
+    fs::ofstream rsrc(parentPath / ".rsrc" / fn, std::ios::binary);
+    if(!rsrc)
+        throw OSErrorException(ioErr);
+
     FInfo info = {};
-    fs::ofstream(parentPath / ".finf" / fn, std::ios::binary).write((char*)&info, sizeof(info));
+    fs::ofstream finf(parentPath / ".finf" / fn, std::ios::binary);
+    finf.write((char*)&info, sizeof(info));
+    if(!finf)
+        throw OSErrorException(ioErr);
 }
 
-std::unique_ptr<OpenFile> BasiliskFileItem::open(int8_t permission)
+std::unique_ptr<OpenFile> BasiliskRep::open(int8_t permission)
 {
-    return std::make_unique<PlainDataFork>(path_, permission);
+    return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
-std::unique_ptr<OpenFile> BasiliskFileItem::openRF(int8_t permission)
+std::unique_ptr<OpenFile> BasiliskRep::openRF(int8_t permission)
 {
-    fs::path rsrc = path().parent_path() / ".rsrc" / path().filename();
+    fs::path rsrc = item_.path().parent_path() / ".rsrc" / item_.path().filename();
     return std::make_unique<PlainDataFork>(rsrc, permission);
 }
 
-ItemInfo BasiliskFileItem::getInfo()
+void BasiliskRep::getInfo(ItemInfo& info)
 {
-    fs::path finf = path().parent_path() / ".finf" / path().filename();
+    fs::path finf = item_.path().parent_path() / ".finf" / item_.path().filename();
 
-    ItemInfo info = FileItem::getInfo();
     fs::ifstream(finf, std::ios::binary).read((char*)&info, sizeof(info.file));
-
-    return info;
 }
 
-void BasiliskFileItem::setInfo(ItemInfo info)
+void BasiliskRep::setInfo(const ItemInfo& info)
 {
-    fs::path finf = path().parent_path() / ".finf" / path().filename();
+    fs::path finf = item_.path().parent_path() / ".finf" / item_.path().filename();
 
-    FileItem::setInfo(info);
     fs::ofstream(finf, std::ios::binary).write((char*)&info, sizeof(info.file));
 }
 
-void BasiliskFileItem::deleteItem()
+void BasiliskRep::remove()
 {
-    fs::remove(path());
-    fs::path rsrc = path().parent_path() / ".rsrc" / path().filename();
-    fs::path finf = path().parent_path() / ".finf" / path().filename();
+    fs::remove(item_.path());
+    fs::path rsrc = item_.path().parent_path() / ".rsrc" / item_.path().filename();
+    fs::path finf = item_.path().parent_path() / ".finf" / item_.path().filename();
     boost::system::error_code ec;
     fs::remove(rsrc, ec);
     fs::remove(finf, ec);
 }
 
-void BasiliskFileItem::moveItem(const fs::path& newPath, mac_string_view newName)
+void BasiliskRep::move(const fs::path& newPath)
 {
-    fs::path rsrcOld = path().parent_path() / ".rsrc" / path().filename();
-    fs::path finfOld = path().parent_path() / ".finf" / path().filename();
+    fs::path rsrcOld = item_.path().parent_path() / ".rsrc" / item_.path().filename();
+    fs::path finfOld = item_.path().parent_path() / ".finf" / item_.path().filename();
     fs::path rsrcNew = newPath.parent_path() / ".rsrc" / newPath.filename();
     fs::path finfNew = newPath.parent_path() / ".finf" / newPath.filename();
 
-    fs::rename(path(), newPath);
+    // The base checks the destination before renaming the primary, so a
+    // collision leaves the companions untouched.
+    FileRep::move(newPath);
 
+    // A companion at a free primary name is orphaned; overwrite it.
     boost::system::error_code ec;
     fs::rename(rsrcOld, rsrcNew, ec);
     fs::rename(finfOld, finfNew, ec);
-
-    path_ = std::move(newPath);
-    if(!newName.empty())
-        name_ = newName;
 }

@@ -12,13 +12,19 @@
 #include "appledouble.h"
 #include "macbinary.h"
 
-#include "simplecnidmapper.h"
 #include "lmdbcnidmapper.h"
+#include "simplecnidmapper.h"
 #include "itemcache.h"
+#include "stats.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <exception>
 #include <map>
 #include <iostream>
+#include <stdexcept>
+
+#include <rsys/paths.h>
 
 #ifdef _WIN32
 #define NOMINMAX 1
@@ -39,14 +45,11 @@ static void setFCBName(filecontrolblock *fcb, const mac_string& name)
     fcb->fcbCName[0] = (uint8_t)n;
 }
 
-ItemPtr ExtensionItemFactory::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr ExtensionItemFactory::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
-    if(fs::is_regular_file(e.path()))
-    {
-        return std::make_shared<PlainFileItem>(itemcache, parID, cnid, e.path(), macname);
-    }
-    return nullptr;
+    // Last in the gauntlet: it claims every regular file, so it has nothing to probe.
+    return std::make_shared<PlainRep>(item);
 }
 
 void ExtensionItemFactory::createFile(const fs::path& newPath)
@@ -54,18 +57,50 @@ void ExtensionItemFactory::createFile(const fs::path& newPath)
     PlainDataFork data(newPath, PlainDataFork::create);
 }
 
+// Open the persistent CNID store, falling back to the in-memory backend when it
+// cannot be used (permissions, disk full, a corrupt or incompatible database, a
+// reused database directory, ...). Losing persistence is much better than
+// terminating the whole emulator during volume mount.
+static std::unique_ptr<CNIDMapper> createCNIDMapper(const fs::path& root,
+                                                    const mac_string& volumeName)
+{
+    try
+    {
+        return std::make_unique<LMDBCNIDMapper>(root, volumeName);
+    }
+    catch(const std::exception& e)
+    {
+        const fs::path database =
+            ROMlib_DirectoryMap / LMDBCNIDMapper::volumeDirectoryName(root);
+
+        std::fprintf(stderr,
+                     "\n"
+                     "********************************************************************\n"
+                     "* CNID persistence is unavailable for volume \"%s\".\n"
+                     "* Falling back to in-memory CNIDs: file IDs and Mac names will\n"
+                     "* NOT be preserved across runs.\n"
+                     "* Database: %s\n"
+                     "* Error:    %s\n"
+                     "********************************************************************\n"
+                     "\n",
+                     root.string().c_str(), database.string().c_str(), e.what());
+
+        return std::make_unique<SimpleCNIDMapper>(volumeName);
+    }
+}
+
 LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     : Volume(vcb), root(root)
 {
+    const mac_string volumeName = getVolumeName();
+
     itemCache = std::make_unique<ItemCache>(
             root,
-            getVolumeName(),
-            std::make_unique<SimpleCNIDMapper>(root, getVolumeName()),
-            //std::make_unique<LMDBCNIDMapper>(root, getVolumeName()),
+            volumeName,
+            createCNIDMapper(root, volumeName),
             static_cast<ItemFactory*>(this)
         );
 
-    itemFactories.push_back(std::make_unique<DirectoryItemFactory>());
     itemFactories.push_back(std::make_unique<AppleSingleItemFactory>());
     itemFactories.push_back(std::make_unique<AppleDoubleItemFactory>());
     upgradedItemFactory = itemFactories.back().get();
@@ -93,20 +128,34 @@ bool LocalVolume::isHidden(const fs::directory_entry& e)
     return false;
 }
 
-ItemPtr LocalVolume::createItemForDirEntry(ItemCache& itemcache, CNID parID, CNID cnid,
-    const fs::directory_entry& e, mac_string_view macname)
+FileRepPtr LocalVolume::createRepForFile(ItemCache& itemcache, FileItem& item,
+    const fs::directory_entry& e, ProbeTrace& trace)
 {
+    // The gauntlet classifies regular files only. Check that once, here at the top,
+    // and record the fact once, so no factory repeats it and all of them may assume
+    // it. A TOCTOU change since the caller's own check just surfaces as a read
+    // error later, which is reportable.
+    if(!fs::is_regular_file(e.path()))
+    {
+        trace.push_back(NoRegularFileObservation { e.path() });
+        return std::make_shared<PlainRep>(item);
+    }
+    trace.push_back(RegularFileObservation { e.path() });
+
     for(auto& itemFactory : itemFactories)
     {
-        if(ItemPtr item = itemFactory->createItemForDirEntry(itemcache, parID, cnid, e, macname))
-            return item;
+        localVolumeStats().factoryProbes++;
+        if(FileRepPtr rep = itemFactory->createRepForFile(itemcache, item, e, trace))
+            return rep;
     }
-    return {};
+    // ExtensionItemFactory is the plain fallback and claims every regular file,
+    // so the loop normally returns above. Keep a safety net.
+    return std::make_shared<PlainRep>(item);
 }
 
 std::shared_ptr<DirectoryItem> LocalVolume::resolveDir(long dirID)
 {
-    if(auto dirItem = std::dynamic_pointer_cast<DirectoryItem>(itemCache->tryResolve(dirID)))
+    if(auto dirItem = std::dynamic_pointer_cast<DirectoryItem>(itemCache->realizeByCNID(dirID)))
         return dirItem;
     else
         throw OSErrorException(dirNFErr); // not a directory
@@ -168,8 +217,7 @@ ItemPtr LocalVolume::resolve(mac_string_view name, short vRef, long dirID)
     else
     {
         std::shared_ptr<DirectoryItem> dir = resolveDir(vRef, dirID);
-        itemCache->cacheDirectory(dir);
-        if(auto file = dir->tryResolve(name))
+        if(auto file = dir->child(name))
             return file;
         else
             throw OSErrorException(fnfErr);
@@ -198,8 +246,7 @@ ItemPtr LocalVolume::resolveRelative(const std::shared_ptr<DirectoryItem>& base,
     }
     else
     {
-        itemCache->cacheDirectory(base);
-        item = base->tryResolve(mac_string_view(p, colon));
+        item = base->child(mac_string_view(p, colon));
         if(!item)
         {
             if(colon == name.end())
@@ -224,8 +271,7 @@ ItemPtr LocalVolume::resolveForInfo(mac_string_view name, short vRef, long dirID
     if(index > 0)
     {
         auto dir = resolveDir(vRef, dirID);
-        itemCache->cacheDirectory(dir);
-        return dir->resolve(index, includeDirectories);
+        return dir->child(index, includeDirectories);
     }
     else if(index == 0 && !name.empty())
         return resolve(name, vRef, dirID);
@@ -276,10 +322,13 @@ LocalVolume::FCBExtension& LocalVolume::openFCBX()
     return fcbExtensions[index];
 }
 
-FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
+void LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactory)
 {
     CNID cnid = item->cnid();
 
+    // Collect the FCBs that will need their fork reopened. Nothing is touched
+    // yet: a failed upgrade must leave the guest's open refnums working.
+    std::vector<FCBExtension *> affected;
     for(int i = 0; i < NFCB; i++)
     {
         if(ROMlib_fcblocks[i].fdfnum == cnid
@@ -287,70 +336,71 @@ FileItemPtr LocalVolume::upgradeItem(FileItemPtr item, ItemFactory *betterFactor
         {
             FCBExtension& fcbx = fcbExtensions[i];
             assert(fcbx.refNum == i * 94 + 2);
-            fcbx.file = {};
-            fcbx.access = {};
+            affected.push_back(&fcbx);
         }
     }
 
-    fs::path path = item->path();
-    fs::path tempPath = path.parent_path() / fs::unique_path();
+    // 1. The fallible host work comes first. createFile throws OSErrorException
+    //    if the new storage cannot be created, before any state changes.
+    betterFactory->createFile(item->path());
 
-    itemCache->flushItem(item);
-    item->moveItem(tempPath, mac_string_view());
-    betterFactory->createFile(path);
-    auto newItem = std::dynamic_pointer_cast<FileItem>(itemCache->tryResolve(cnid));
+    // 2. Prove that the factory now claims the file. Otherwise the gauntlet
+    //    below would fall through to PlainRep again and the caller's retry would
+    //    throw UpgradeRequiredException a second time.
+    {
+        ProbeTrace check;
+        if(!betterFactory->createRepForFile(*itemCache, *item,
+                                            fs::directory_entry(item->path()), check))
+            throw OSErrorException(ioErr);
+    }
 
-    assert(newItem->cnid() == cnid);
-
-    auto copydata = [](const std::unique_ptr<OpenFile>& from, const std::unique_ptr<OpenFile>& to) {
-        size_t sz = from->getEOF();
-        to->setEOF(sz);
-
-        const size_t bufSize = 1024 * 1024;
-        std::unique_ptr<uint8_t[]> buffer(new uint8_t[bufSize]);
-        for(size_t offset = 0; offset < sz; offset += bufSize)
-        {
-            size_t sz1 = std::min(bufSize, sz - offset);
-            from->read(offset, buffer.get(), sz1);
-            to->write(offset, buffer.get(), sz1);
-        }
-    };
+    // 3. Take the old forks out of the FCBs but keep them alive, so that a
+    //    failure below can put them back instead of leaving null accesses
+    //    behind. The upgrade source is always PlainRep, whose forks are
+    //    self-contained (PlainDataFork/EmptyFork), so they do not depend on the
+    //    rep being swapped under them.
+    std::vector<std::unique_ptr<OpenFile>> oldAccess;
+    oldAccess.reserve(affected.size());
+    for(FCBExtension *fcbx : affected)
+        oldAccess.push_back(std::move(fcbx->access));
 
     try
     {
-        copydata(item->open(fsRdPerm), newItem->open(fsRdWrPerm));
-        copydata(item->openRF(fsRdPerm), newItem->openRF(fsRdWrPerm));
-    }
-    catch(const std::exception& e)
-    {
-        std::cout << e.what() << std::endl;
-    }
-    newItem->setInfo(item->getInfo());
-    item->deleteItem();
+        // 4. Swap the rep. The upgrade targets only *add* the richer encoding's
+        //    storage beside the existing data fork, so the host file keeps its
+        //    inode — and the item keeps its CNID.
+        item->rematerialize();
+        if(item->isPlainRep())
+            throw OSErrorException(ioErr);
 
-
-    newItem->resWriteAccessRefNum = item->resWriteAccessRefNum;
-    newItem->dataWriteAccessRefNum = item->dataWriteAccessRefNum;
-
-    for(int i = 0; i < NFCB; i++)
-    {
-        if(ROMlib_fcblocks[i].fdfnum == cnid
-           && ROMlib_fcblocks[i].fcvptr == &vcb)
+        // 5. Open every replacement fork before committing any of them, so a
+        //    failure here does not leave the FCB set half upgraded.
+        std::vector<std::unique_ptr<OpenFile>> fresh;
+        fresh.reserve(affected.size());
+        for(FCBExtension *fcbx : affected)
         {
-            FCBExtension& fcbx = fcbExtensions[i];
-            assert(fcbx.refNum == i * 94 + 2);
-            fcbx.file = newItem;
+            int8_t perm = (fcbx->fcb->fcbMdRByt & WRITEBIT) ? fsRdWrPerm : fsRdPerm;
 
-            int8_t perm = (fcbx.fcb->fcbMdRByt & WRITEBIT) ? fsRdWrPerm : fsRdPerm;
-
-            if(fcbx.fcb->fcbMdRByt & RESOURCEBIT)
-                fcbx.access = newItem->openRF(perm);
+            if(fcbx->fcb->fcbMdRByt & RESOURCEBIT)
+                fresh.push_back(item->openRF(perm));
             else
-                fcbx.access = newItem->open(perm);
+                fresh.push_back(item->open(perm));
+        }
+
+        // 6. Commit; nothing below can throw.
+        for(size_t j = 0; j < affected.size(); j++)
+        {
+            affected[j]->file = item;
+            affected[j]->access = std::move(fresh[j]);
         }
     }
-
-    return newItem;
+    catch(...)
+    {
+        for(size_t j = 0; j < affected.size(); j++)
+            if(oldAccess[j])
+                affected[j]->access = std::move(oldAccess[j]);
+        throw;
+    }
 }
 
 void LocalVolume::openCommon(GUEST<short>& refNum, ItemPtr item, Fork fork, int8_t permission)
@@ -440,8 +490,7 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
 
         pb->dirInfo.ioFlAttrib = ATTRIB_ISADIR;
         
-        itemCache->cacheDirectory(dirItem);
-        pb->dirInfo.ioDrNmFls = dirItem->countItems();
+        pb->dirInfo.ioDrNmFls = dirItem->countVisible();
 
         // Directories have dates just as files do, and Item::getInfo
         // already reads them off the underlying filesystem.  Reporting
@@ -471,7 +520,7 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
         pb->hFileInfo.ioFlLgLen = dsize;
         pb->hFileInfo.ioFlPyLen = dsize;
         pb->hFileInfo.ioFlRLgLen = rsize;
-        pb->hFileInfo.ioFlRLgLen = rsize;
+        pb->hFileInfo.ioFlRPyLen = rsize;
 
         pb->hFileInfo.ioFlMdDat = info.modTime;
         pb->hFileInfo.ioFlCrDat = info.creationTime;
@@ -520,8 +569,18 @@ void LocalVolume::setInfoCommon(const ItemPtr& item, CInfoPBPtr pb, InfoKind inf
         }
         catch(const UpgradeRequiredException&)
         {
-            fitem = upgradeItem(fitem, upgradedItemFactory);
-            fitem->setInfo(info);
+            upgradeItem(fitem, upgradedItemFactory);
+            try
+            {
+                fitem->setInfo(info);
+            }
+            catch(const UpgradeRequiredException&)
+            {
+                // upgradeItem verified the rep can store this now; if it still
+                // refuses, report the failure instead of letting it escape the
+                // trap boundary.
+                throw OSErrorException(ioErr);
+            }
         }
         // TODO: if(infoKind == InfoKind::CatInfo)) ioFlBkDat
     }
@@ -561,10 +620,16 @@ LocalVolume::NonexistentFile LocalVolume::resolveForCreate(mac_string_view name,
         name = mac_string_view(name.begin() + colon+1, name.end());
     }
 
-    itemCache->cacheDirectory(parent);
-    if(parent->tryResolve(name))
+    if(parent->child(name))
         throw OSErrorException(dupFNErr);
-    
+
+    // The guest name does not spell out a format's host encoding: a MacBinary
+    // item called "bar" lives at "bar.bin", so creating "bar.bin" would
+    // otherwise open the existing file. New items always use the default (plain)
+    // encoding, so the host path is just the converted guest name.
+    if(statPath(parent->path() / toUnicodeFilename(name)).exists)
+        throw OSErrorException(dupFNErr);
+
     return NonexistentFile { parent, name };
 }
 
@@ -572,7 +637,7 @@ void LocalVolume::createCommon(NonexistentFile file)
 {
     fs::path parentPath = file.parent->path();
     defaultItemFactory->createFile(parentPath / toUnicodeFilename(file.name));
-    itemCache->flushDirectoryCache(file.parent);
+    file.parent->clearCache();
 }
 void LocalVolume::PBCreate(ParmBlkPtr pb)
 {
@@ -589,10 +654,9 @@ void LocalVolume::PBDirCreate(HParmBlkPtr pb)
     fs::path fn = toUnicodeFilename(name);
     fs::create_directory(parent->path() / fn);
 
-    itemCache->flushDirectoryCache(parent);
+    parent->clearCache();
 
-    itemCache->cacheDirectory(parent);
-    auto item = parent->tryResolve(name);
+    auto item = parent->child(name);
     if(!item)
         throw OSErrorException(ioErr);
     pb->fileParam.ioDirID = item->cnid();
@@ -619,10 +683,10 @@ void LocalVolume::renameCommon(ItemPtr item, mac_string_view newName)
         throw OSErrorException(bdNamErr);
 
     auto parent = resolveDir(item->parID());
-    itemCache->cacheDirectory(parent);
-    if(parent->tryResolve(newName))
-        throw OSErrorException(dupFNErr);
-    
+    if(ItemPtr existing = parent->child(newName))
+        if(existing != item)
+            throw OSErrorException(dupFNErr);
+
     itemCache->renameItem(item, newName);
 
     // Keep the name in any open FCBs current, as the HFS backend does.
@@ -689,7 +753,16 @@ void LocalVolume::PBWrite(ParmBlkPtr pb)
     catch(const UpgradeRequiredException&)
     {
         upgradeItem(fcbx.file, upgradedItemFactory);
-        n = fcbx.access->write(fcbx.fcb->fcbCrPs, pb->ioParam.ioBuffer, pb->ioParam.ioReqCount);
+        try
+        {
+            n = fcbx.access->write(fcbx.fcb->fcbCrPs, pb->ioParam.ioBuffer, pb->ioParam.ioReqCount);
+        }
+        catch(const UpgradeRequiredException&)
+        {
+            // See setInfoCommon: the verified upgrade should make this
+            // unreachable, but it must not escape the trap boundary.
+            throw OSErrorException(ioErr);
+        }
     }
     
     pb->ioParam.ioActCount = n;
@@ -781,25 +854,44 @@ void LocalVolume::PBSetEOF(ParmBlkPtr pb)
     catch(const UpgradeRequiredException&)
     {
         upgradeItem(fcbx.file, upgradedItemFactory);
-        fcbx.access->setEOF(pb->ioParam.ioMisc);
+        try
+        {
+            fcbx.access->setEOF(pb->ioParam.ioMisc);
+        }
+        catch(const UpgradeRequiredException&)
+        {
+            throw OSErrorException(ioErr);
+        }
     }
 }
 
 void LocalVolume::PBCatMove(CMovePBPtr pb)
 {
     ItemPtr item = resolve(pb->ioNamePtr, pb->ioVRefNum, pb->ioDirID);
-    auto newParent = std::dynamic_pointer_cast<DirectoryItem>(resolve(pb->ioNewName, pb->ioVRefNum, pb->ioNewDirID));
+    auto newParent = resolveDir(pb->ioVRefNum, pb->ioNewDirID);
 
-    if(!newParent)
-        throw OSErrorException(dirNFErr);   // check this?
+    // ioNewName is the item's new name (nil keeps the current one), not the
+    // destination; the destination directory is ioNewDirID.
+    mac_string_view newName = pb->ioNewName;
+    if(newName.find(':') != mac_string_view::npos)
+        throw OSErrorException(bdNamErr);
 
-    auto name = item->name();
+    mac_string_view finalName = newName.empty() ? mac_string_view(item->name()) : newName;
 
-    itemCache->cacheDirectory(newParent);
-    if(newParent->tryResolve(mac_string_view(name.data(), name.size())))
-        throw OSErrorException(dupFNErr);
+    if(ItemPtr existing = newParent->child(finalName))
+        if(existing != item)
+            throw OSErrorException(dupFNErr);
 
-    itemCache->moveItem(item, newParent);
+    itemCache->moveItem(item, newParent, newName);
+
+    // Keep the name and parent in any open FCBs current, as PBHRename does.
+    if(auto fileItem = std::dynamic_pointer_cast<FileItem>(item))
+        for(auto& fcbx : fcbExtensions)
+            if(fcbx.file == fileItem)
+            {
+                fcbx.fcb->fcbDirID = fileItem->parID();
+                setFCBName(fcbx.fcb, fileItem->name());
+            }
 }
 
 void LocalVolume::PBFlushFile(ParmBlkPtr pb)
@@ -876,16 +968,43 @@ std::optional<FSSpec> LocalVolume::nativePathToFSSpec(const fs::path& inPath)
     auto path = fs::canonical(inPath, ec);
     if(ec)
         return {};
-    ItemPtr item = itemCache->tryResolve(path);
+
+    ItemPtr item;
+    try
+    {
+        item = itemCache->realizeByHostPath(path);
+    }
+    catch(const std::runtime_error&)
+    {
+        // A CNID-backend failure must not abort the emulator; report the host
+        // path as unmapped instead.
+        return std::nullopt;
+    }
 
     if(item)
     {
+        const mac_string* name;
+        try
+        {
+            name = &item->name();
+        }
+        catch(const OSErrorException&)
+        {
+            return std::nullopt;
+        }
+        catch(const std::runtime_error&)
+        {
+            return std::nullopt;
+        }
+
+        if(name->empty())
+            return std::nullopt;
+
         FSSpec spec;
-        const auto& name = item->name();
         spec.vRefNum = vcb.vcbVRefNum;
         spec.parID = item->parID();
-        memcpy(&spec.name[1], name.c_str(), name.size());
-        spec.name[0] = name.size();
+        memcpy(&spec.name[1], name->c_str(), name->size());
+        spec.name[0] = name->size();
         return spec;
     }
     else
