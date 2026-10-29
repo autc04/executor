@@ -194,8 +194,8 @@ public:
 QtVideoDriver::QtVideoDriver(Executor::IEventListener *eventListener, int& argc, char* argv[])
     : VideoDriver(eventListener)
 {
-    qapp = new QGuiApplication(argc, argv);
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::Round);
+    qapp = new QGuiApplication(argc, argv);
 }
 
 QtVideoDriver::~QtVideoDriver()

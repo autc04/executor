@@ -33,6 +33,20 @@
  *     boundary is both necessary and sufficient.
  */
 
+#if defined(_WIN32)
+
+/* This driver is built on POSIX sockets (arpa/inet.h, poll, ifaddrs,
+ * writev, ...), which Windows does not provide.  Register nothing until
+ * there is a Winsock backend, so that Windows builds still link. */
+namespace Executor
+{
+void InitMacTCPDriver()
+{
+}
+}
+
+#else
+
 #include <base/common.h>
 #include <DeviceMgr.h>
 #include <FileMgr.h>
@@ -698,3 +712,5 @@ void Executor::InitMacTCPDriver()
         (StringPtr) "\04.IPP", -48,
     });
 }
+
+#endif /* !_WIN32 */

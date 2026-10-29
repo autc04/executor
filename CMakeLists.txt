@@ -119,7 +119,11 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
 if(WIN32)
     set(CPACK_GENERATOR "ZIP")
 
-    if(TARGET front-end-qt)
+    # This deployment path is Qt 5-specific: it looks up the Qt5 plugin target
+    # and uses the LOCATION property, neither of which exists for Qt 6.  Skip
+    # it for Qt 6 builds (which need qt_generate_deploy_app_script instead),
+    # so that configuring a Qt 6 Windows build does not fail here.
+    if(TARGET front-end-qt AND TARGET Qt5::QWindowsIntegrationPlugin)
         install_qt5_plugin("Qt5::QWindowsIntegrationPlugin" QT_PLUGINS "bin/")
 
         set(APPS "\${CMAKE_INSTALL_PREFIX}/bin/executor.exe")
