@@ -1,19 +1,30 @@
-# Design: MacBinary backend for LocalVolume
+# Historical design record: MacBinary backend for LocalVolume
 
-> **AI-generated.** This document was produced with the assistance of an AI
-> language model and may contain inaccuracies. It describes the MacBinary
-> LocalVolume backend as implemented on 2026-10-04.
+> **AI-generated, historical.** This document was produced with the assistance
+> of an AI language model and may contain inaccuracies. It describes the
+> MacBinary LocalVolume backend as implemented on 2026-10-04. It is a snapshot,
+> not current documentation. Later changes and corrections are recorded as notes
+> in place, but those notes may be incomplete: do not rely on them to describe
+> current behaviour. The authoritative subsystem overview is
+> `docs/subsystems/local-volume.md`.
 
 - **Date:** 2026-10-04
-- **Status:** implemented (2026-10-04)
+- **Status:** implemented on 2026-10-04 (historical; see the authoritative
+  overview for current behaviour)
 - **Area:** `src/file/localvolume/`
 
 > **Later refactor note.** The staged-materialization work
 > (`docs/ai/2026-10-08-localvolume-staged-materialization-plan.md`) renamed the
 > per-format `*FileItem` classes to `*Rep : FileRep` and replaced
 > `ItemFactory::createItemForDirEntry` with `createRepForFile`, run lazily at
-> Materialize. The class names and factory signature below describe the state on
-> 2026-10-04; the format precedence rules are unchanged.
+> Materialize. The class names, factory signature and code line numbers below
+> describe the state on 2026-10-04; the format precedence rules are unchanged.
+>
+> **Later naming change (2026-10-26).** A MacBinary item is now displayed with
+> its trailing `.bin` removed (`foo.bin` appears as `foo`), and a rename or move
+> re-appends `.bin` through `FileRep::hostName`. Naming asks the rep through
+> `FileRep::nameSource`, so a rep can supply the displayed name. Decision 1 and
+> the Deferred item below describe the original behaviour.
 
 ## Summary
 
@@ -42,6 +53,10 @@ MacItemFactory             (__APPLE__ only; Finder-info / resource-fork xattrs)
 ExtensionItemFactory       (default fallback; everything else is a plain file)
 ```
 
+*(Correction (2026-10-29): `0x00051600` is the AppleSingle magic; `0x00051607`
+is the AppleDouble magic, but AppleDouble is detected by companion-file presence
+rather than by the primary file's magic.)*
+
 A `.bin` file fell through to `ExtensionItemFactory` and became a
 `PlainFileItem` with an empty resource fork (`openRF` returned `EmptyFork`) and a
 hard-coded `TEXT`/`ttxt` FInfo that threw `UpgradeRequiredException` on
@@ -59,6 +74,12 @@ hard-coded `TEXT`/`ttxt` FInfo that threw `UpgradeRequiredException` on
      (`src/util/macstrings.cpp:204`) for collisions. `DirectoryItem::resolveGroup`
      drives that policy and stores the finished name on the record, so a factory
      cannot rename an item.
+   > **Superseded (2026-10-26).** The guest name is now the host filename with a
+   > trailing `.bin` removed (`foo.bin` appears as `foo`); a rename or move
+   > re-appends `.bin` through `FileRep::hostName`. `FileRep::nameSource` lets
+   > the rep supply the displayed name, so the statement that a factory cannot
+   > rename an item no longer holds. Current behaviour is described in
+   > `docs/subsystems/local-volume.md` (*File formats* and *Naming*).
 2. **Writes preserve all unmanaged header bytes.** The 128-byte header is read
    into a raw buffer; writes start from those raw bytes so unknown fields (the
    `"mBIN"` signature, secondary-header length, computer/OS-type, comment length,
@@ -73,6 +94,11 @@ hard-coded `TEXT`/`ttxt` FInfo that threw `UpgradeRequiredException` on
    MacBinary II/III (extended version at `[122]` is 129 or 130). On write, the
    CRC is recomputed for MacBinary II/III and for MacBinary I files that carry a
    non-zero CRC; an all-zero CRC is left zero.
+   > **Correction (2026-10-29).** The detector verifies the stored CRC only when
+   > it is non-zero; it does not also enforce it for MacBinary II/III with a
+   > zero CRC. The write path does recompute the CRC for II/III (`hasCRC_`),
+   > which is the distinction this decision blurred. The Implementation notes
+   > below state the detector's actual behaviour.
 
 ## Integration
 
@@ -88,6 +114,11 @@ MacItemFactory             (__APPLE__ only)
 MacBinaryItemFactory       ← MacBinary backend
 ExtensionItemFactory       (default)
 ```
+
+*(This is the 2026-10-04 registration order, when `DirectoryItemFactory` still
+existed. The current order removes it: AppleSingle, AppleDouble, Basilisk, Mac
+(macOS only), MacBinary, Plain. The relative precedence, including MacBinary
+immediately before the plain fallback, is unchanged.)*
 
 Consequences:
 
@@ -130,6 +161,8 @@ Steps (extension gate first, then header; follows Deark's detector):
    MacBinary I. All three are accepted.
 6. MacBinary III signature `"mBIN"` at `[102..105]` → strong accept (some files
    carry it with earlier version numbers).
+   *(Correction (2026-10-29): the detector returns immediately here, so the
+   filename-character and length checks below are not applied to `mBIN` files.)*
 7. Fork lengths `dflen = u32be(h[83..86])`, `rflen = u32be(h[87..90])`. Size
    sanity, with Deark's tolerances:
    - `128 + dflen <= size` and `128 + dflen + rflen <= size + 4096` (resource
@@ -146,6 +179,8 @@ Steps (extension gate first, then header; follows Deark's detector):
 9. CRC: CRC-16/XMODEM (poly `0x1021`, init 0) over bytes `[0..123]`, stored
    big-endian at `[124..125]`. Verified when the reported CRC is non-zero or the
    file is II/III (decision 3); a mismatch rejects the file.
+   *(Correction (2026-10-29): verification is applied only when the reported CRC
+   is non-zero; there is no separate II/III requirement. See Decision 3.)*
 
 Because the extension gate already narrows candidates hard, these checks accept
 all real variants while keeping false positives very low.
@@ -226,6 +261,8 @@ Mirrors the AppleSingle/AppleDouble split.
 - `setInfo` writes the fields above back into the header (plus low flags at
   `[101]` for II/III) and never needs to throw `UpgradeRequiredException`, so a
   MacBinary item **never triggers `upgradeItem`**.
+  *(Correction (2026-10-29): `writeFInfo` does not update `[101]`; the low
+  Finder-flags byte is preserved, as the header-layout table says.)*
 
 ## Precedence example (the motivating case)
 
@@ -237,6 +274,10 @@ foo.bin            data fork (text)
 `AppleDoubleItemFactory` (position 3) sees the sidecar and claims the pair; the
 `MacBinaryItemFactory` at position 6 is never consulted. Even if `foo.bin` also
 happens to carry a valid MacBinary header, AppleDouble wins.
+
+*(The position numbers are from the 2026-10-04 order. In the current order
+AppleDouble is second; MacBinary is fifth where the macOS backend is present
+and fourth elsewhere.)*
 
 ## Read/write semantics
 
@@ -264,6 +305,8 @@ happens to carry a valid MacBinary header, AppleDouble wins.
   produced before the CNID mappers insert it into their `usedNames` set, with a
   host-name-vs-embedded-name precedence rule, 63-byte/31-char handling, and
   rename round-tripping. Revisit separately.
+  *(Since the 2026-10-26 naming change, the fallback name is the `.bin`-stripped
+  host name, not `foo.bin`; the embedded name remains deferred.)*
 
 ## Implementation notes
 

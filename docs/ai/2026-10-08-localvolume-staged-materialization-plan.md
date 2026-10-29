@@ -1,14 +1,18 @@
-# Plan: staged materialization for `LocalVolume`
+# Historical design record: staged materialization for `LocalVolume`
 
-> **AI-generated.** This document was produced with the assistance of an AI
-> language model and may contain inaccuracies. It is a *plan*, not a record of
-> implemented behaviour.
+> **AI-generated, historical.** This document records the design and the staged
+> implementation of the LocalVolume rework on its branch. It is not kept up to
+> date and must not be read as a description of current behaviour. The
+> authoritative subsystem overview is `docs/subsystems/local-volume.md`; where
+> the two disagree, that document wins.
 
 - **Date:** 2026-10-08
-- **Status:** Phases 0–5 were implemented under the *older* object model (see the phase headings). The link-free design above is the target; Phases 6–10 reach it and are DONE. Phase 11 is implemented through 11c (the LMDB backend is the default); Phase 11d is preliminary and not agreed, and Phases 12–13 are not implemented.
+- **Status:** Historical. The design is implemented through Phase 11c. Phase 11d
+  is preliminary, not agreed, and not implemented; the items in *Future Ideas*
+  are not implemented either. This document is not maintained.
+- **Authoritative overview:** `docs/subsystems/local-volume.md`
 - **Area:** `src/file/localvolume/`
-- **Related:** `docs/subsystems/local-volume.md`,
-  `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
+- **Related:** `docs/ai/2026-10-04-macbinary-localvolume-backend.md`
 
 ## Summary
 
@@ -149,7 +153,7 @@ which has no path → CNID index and must enumerate each ancestor to find the ch
 ## Decisions
 
 Decisions marked **[revised]** changed while folding in the link-free object
-model; those marked **[revisit]** may need a further decision before their phase.
+model.
 
 1. **Content-derived names are dead.** No name is ever read from an
    AppleDouble/AppleSingle/MacBinary header. All names are transformations of the
@@ -165,12 +169,11 @@ model; those marked **[revisit]** may need a further decision before their phase
    (and its `parID`) at **CNIDResolve**; the `macName` is decided separately, at
    **NameResolve**, and is therefore optional until then. `macName` never
    determines the `CNID`.
-4. **Naming avoids known conflicts, and is batch-only for now.** Deciding a name
-   assigns a `macName` that does not collide with any name already assigned in
-   that directory. A "resolve my name" request triggers a `NameResolve` of the
-   whole `macNamePrefix` group it falls in — deterministic, and simpler because
-   the group is decided at once. Single-item (order-dependent, faster) name
-   resolution is a possible later phase.
+4. **Naming avoids known conflicts and is batch-only.** Deciding a name assigns
+   a `macName` that does not collide with any name already assigned in that
+   directory. A "resolve my name" request triggers a `NameResolve` of the whole
+   `macNamePrefix` group it falls in — deterministic, and simpler because the
+   group is decided at once.
 5. **[revised] `macNamePrefix` is a conservative grouping key** (see *Names*).
    Over-grouping costs only laziness; under-grouping would be a bug. The group is
    the contiguous run of equal prefixes in a prefix-sorted descriptor list, found
@@ -1231,7 +1234,7 @@ A heuristic, not a proof: it says nothing about device renumbering, btrfs
 subvolume id quirks, "same path, different volume," or a device number reused
 after a remount within one process. Keep the manual switch for exceptions.
 
-### Phase 11d — Identity epochs (preliminary; not agreed)
+### Phase 11d — Identity epochs — NOT IMPLEMENTED (preliminary; not agreed)
 
 Persist an identity epoch (the "generation" idea) with the volume: the `st_dev`
 observed at open, plus a volume identity. When the epoch changes, reconcile by
@@ -1254,28 +1257,6 @@ Preliminary and not agreed; do not implement without a decision. Open questions:
   still exists; skipping persistence for such volumes is probably better.
 - Whether a rebase also repairs records with an invalid or missing identity, or
   only records whose epoch differs.
-
-### Phase 12 — Single-item name resolution
-
-Today a name request resolves the whole `macNamePrefix` group. Add, as an
-optimization, single-item (order-dependent) assignment for a name whose group is
-otherwise unknown, keeping full-group `NameResolve` as the fallback.
-
-### Phase 13 — Drop Boost.Filesystem in favour of platform APIs
-
-`boost::filesystem` is a lowest-common-denominator wrapper, and the design now
-needs detail it does not expose. Replace it with platform-specific code:
-
-- directory scans that read the inode and kind straight from `readdir`
-  (`d_ino`/`d_type`) or `FindFirstFile`, so listing no longer runs a `stat` per
-  entry to learn its identity;
-- a Windows `statPath` that exposes identity (`GetFileInformationByHandle`),
-  instead of today's path-keyed fallback;
-- optionally, a real change signal for directory staleness
-  (inotify/FSEvents/`ReadDirectoryChangesW`) to replace the `(mtime, size)` stamp.
-
-Keep `boost::filesystem` behind the `fs` alias as the fallback for platforms
-without a native path.
 
 ## Testing
 
@@ -1393,6 +1374,8 @@ against regressing F1/F3.
 
 ## Future Ideas
 
+None of these is implemented or scheduled.
+
 - **Concurrent modification during a scan is currently unguarded.** A scan is not
   atomic: `readdir` may skip or repeat entries when the directory is modified
   while it is being read (POSIX leaves that unspecified), and the two-pass scan
@@ -1455,7 +1438,7 @@ test coverage that now exists. The large-directory benchmark remains
 
 | Point | Nature | Test case now? |
 |---|---|---|
-| Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
+| Windows: `statPath` exposes no identity and does not follow reparse points. | Accepted limitation | No — needs Windows CI |
 | Windows: the LMDB records serialize `posixName` with `fs::path::string()` and rebuild it with `fs::path(std::string)`, which is ANSI-code-page based; a MacRoman name the code page cannot represent throws (reported as `ioErr`) or round-trips as `?`. Persistence needs a UTF-8 or native-wide encoding. | Correctness on Windows | No — needs Windows CI |
 
 ### Still open: other holes
