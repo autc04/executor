@@ -1444,7 +1444,7 @@ against regressing F1/F3.
 - `docs/subsystems/local-volume.md`, `docs/subsystems/file-manager.md`,
   `docs/ai/2026-10-04-macbinary-localvolume-backend.md`.
 
-## Implementation review status (2026-10-21)
+## Implementation review status (2026-10-21, updated 2026-10-29)
 
 These are the points from the implementation review that remain open, with the
 test coverage that now exists. The large-directory benchmark remains
@@ -1456,6 +1456,7 @@ test coverage that now exists. The large-directory benchmark remains
 | Point | Nature | Test case now? |
 |---|---|---|
 | Windows: `statPath` exposes no identity and does not follow reparse points (Phase 13 is not being done). | Accepted limitation | No — needs Windows CI |
+| Windows: the LMDB records serialize `posixName` with `fs::path::string()` and rebuild it with `fs::path(std::string)`, which is ANSI-code-page based; a MacRoman name the code page cannot represent throws (reported as `ioErr`) or round-trips as `?`. Persistence needs a UTF-8 or native-wide encoding. | Correctness on Windows | No — needs Windows CI |
 
 ### Still open: other holes
 
@@ -1522,9 +1523,18 @@ test coverage that now exists. The large-directory benchmark remains
   corrected to use `toMacRomanFilename(posixName, 0)`. The code already did
   this; raw `toMacRoman` would under-group `:`/invalid-encoding names and break
   lookup by the displayed name.
+- **LMDB failure handling** — a database that cannot be opened (permissions,
+  disk full, a corrupt or old-schema database, or a directory belonging to
+  another root) no longer aborts the emulator: `createCNIDMapper` warns and
+  mounts the volume with `SimpleCNIDMapper`, and later backend failures surface
+  as `ioErr` (`b4ca9ae4`).
+- **Disambiguator bound** — the naming loop stops at `#999`, and the 26-byte
+  group key remains a prefix of every candidate (`2b5e55d8`, `df1bc2d0`);
+  `LargeCollisionGroupsKeepDistinctNames`.
 
-No open-point defect tests remain. The large-directory benchmark is still
-disabled and can be run with:
+The original review's points all have coverage; the Windows caveat above does
+not (it needs a Windows build). The large-directory benchmark is still disabled
+and can be run with:
 
 ```sh
 ./build/tests/tests --gtest_also_run_disabled_tests \

@@ -11,9 +11,10 @@ Date: 2026-10-10
   self-reported version `0.9.70`) to the release tag `LMDB_1.0.2`
   (`c279e047`, 2026-09-08).
 - The `lmdbxx` submodule is otherwise unchanged in version, but it now carries
-  a local commit `af9f90b` ("prevent double transaction abort") fixing
-  `txn::commit()`; see "Crash on first real use" and "lmdbxx" below. It is
-  ahead of `origin/master` by one commit and has not been pushed.
+  a commit `af9f90b` ("prevent double transaction abort") fixing
+  `txn::commit()`; see "Crash on first real use" and "lmdbxx" below. That
+  commit has been pushed and is `origin/master`, so a fresh checkout can fetch
+  it.
 
 ## Test results
 
@@ -119,15 +120,15 @@ instead; it is the same on-disk format and API as before.
 
 - Upstream (`bendiken/lmdbxx`) is **unmaintained**: last commit `0b43ca8`,
   2016-02-29.
-- The fork (`autc04/lmdbxx`) `master` is `33f271a` (2018-10-08), **two commits
-  ahead** of upstream (`bd7b412`, `33f271a`), and is exactly the commit already
-  pinned. There is nothing to merge or update.
+- The fork (`autc04/lmdbxx`) `master` is `af9f90b`, **three commits ahead** of
+  upstream (`bd7b412`, `33f271a`, `af9f90b`), and is the commit this branch
+  pins. There is nothing to merge or update.
 - `lmdb++.h` compiles cleanly against the LMDB 1.0.2 header, so **lmdbxx does
   not need to be abandoned** in favour of the C API.
 - A one-function fix was applied to the fork's `lmdb++.h` (`txn::commit()`
-  exception safety, see above), committed locally as `af9f90b`. It is ahead of
-  `origin/master` by one commit and needs to be pushed to `autc04/lmdbxx` to
-  persist.
+  exception safety, see above), committed as `af9f90b`. It has been pushed to
+  `autc04/lmdbxx` and is its `origin/master`, so the submodule pointer is
+  fetchable from a clean clone.
 
 ## References
 
