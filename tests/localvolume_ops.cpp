@@ -11,6 +11,7 @@
 #include "localvolume_test_util.h"
 
 #include <file/file.h>
+#include <file/localvolume/filenames.h>
 #include <file/localvolume/plain.h>
 #include <file/localvolume/stats.h>
 
@@ -832,9 +833,12 @@ TEST_F(LocalVolumeFixture, HostChangeVisibleWithoutInvalidation)
 
 // A scan that fails must not be committed. Reading the failure as an empty
 // directory would delete every child's record and renumber the directory, and
-// Count would cache a wrong 0 -- so both funnels report ioErr and leave the
-// directory to be retried instead.
-TEST_F(LocalVolumeFixture, UnreadableDirectoryReportsIoErr)
+// Count would cache a wrong 0 -- so the listing funnel reports ioErr and leaves
+// the directory to be retried. GetCatInfo on the directory itself must still
+// succeed, though: guests enumerate with "until the call fails", so an error
+// there would silently truncate the *parent's* listing at this entry. It reports
+// an unknown count (0) instead.
+TEST_F(LocalVolumeFixture, UnreadableDirectoryListsAsIoErrButCountsAsZero)
 {
     hostDir("d");
     hostFile("d/a", "a");
@@ -878,7 +882,13 @@ TEST_F(LocalVolumeFixture, UnreadableDirectoryReportsIoErr)
     bumpMtime("d");   // stale listing, so the next access re-scans
 
     EXPECT_EQ(ioErr, fmDirInfoResult(d->cnid, 1));    // the listing funnel
-    EXPECT_EQ(ioErr, fmDirInfoResult(eID, -1));       // the count funnel
+
+    // The count funnel reports a directory whose contents cannot be read as an
+    // unknown count, not an error (see the comment above).
+    EXPECT_EQ(noErr, fmDirInfoResult(eID, -1));
+    auto eCount = fmChildCount(eID);
+    ASSERT_TRUE(eCount.has_value());
+    EXPECT_EQ(0, *eCount);
 
     fs::permissions(host("d"), fs::perms::owner_all);
     fs::permissions(host("e"), fs::perms::owner_all);
@@ -893,6 +903,110 @@ TEST_F(LocalVolumeFixture, UnreadableDirectoryReportsIoErr)
     ASSERT_TRUE(bAfter.has_value());
     EXPECT_EQ(a->cnid, aAfter->cnid);
     EXPECT_EQ(b->cnid, bAfter->cnid);
+}
+
+// The guest enumeration idiom is "index 1, 2, ... until the call fails". An
+// unreadable directory in the middle of a listing must not end that
+// enumeration: it reports its own metadata (with an unknown count) so the
+// entries sorted after it are still seen. The Browser (packages/go) relies on
+// this, and on Windows the metadata query used to fail inside
+// fs::last_write_time, which opens the directory.
+TEST_F(LocalVolumeFixture, EnumerationContinuesPastUnreadableDirectory)
+{
+    hostDir("a-dir");
+    hostDir("locked");
+    hostFile("locked/inside", "x");
+    hostDir("z-dir");
+
+    const auto unreadable = fs::perms::owner_write | fs::perms::owner_exe;
+    fs::permissions(host("locked"), unreadable);
+
+    bool enforced = false;
+    try
+    {
+        for(auto& entry : fs::directory_iterator(host("locked")))
+            (void)entry;
+    }
+    catch(const boost::filesystem::filesystem_error&)
+    {
+        enforced = true;
+    }
+
+    if(!enforced)   // e.g. running as root, where permissions are not enforced
+    {
+        fs::permissions(host("locked"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce directory permissions";
+    }
+
+    auto entries = fmList(rootDirID_);
+    fs::permissions(host("locked"), fs::perms::owner_all);
+
+    std::vector<std::string> names;
+    for(auto& e : entries)
+        names.push_back(e.name);
+    EXPECT_EQ((std::vector<std::string> { "a-dir", "locked", "z-dir" }), names);
+}
+
+// Same idiom, for a file that cannot be opened: it still reports its metadata
+// (Finder info where the format needs no read, size from the stat), so the
+// entries sorted after it are enumerated.
+TEST_F(LocalVolumeFixture, EnumerationContinuesPastUnreadableFile)
+{
+    hostFile("a-file", "12345");
+    hostFile("m-locked", "locked contents");
+    hostFile("z-file", "z");
+
+    const auto lockedSize = hostRead("m-locked").size();
+
+    fs::permissions(host("m-locked"), fs::perms());
+
+    bool enforced = false;
+    {
+        fs::ifstream in(host("m-locked"), std::ios::binary);
+        enforced = !in;
+    }
+
+    if(!enforced)   // e.g. running as root, where permissions are not enforced
+    {
+        fs::permissions(host("m-locked"), fs::perms::owner_all);
+        GTEST_SKIP() << "host filesystem does not enforce file permissions";
+    }
+
+    auto entries = fmList(rootDirID_);
+
+    // The unreadable entry's metadata is still served while it cannot be read.
+    {
+        auto name = str255("m-locked");
+        CInfoPBRec ipb;
+        std::memset(&ipb, 42, sizeof(ipb));
+        ipb.hFileInfo.ioCompletion = nullptr;
+        ipb.hFileInfo.ioVRefNum = vRefNum_;
+        ipb.hFileInfo.ioDirID = rootDirID_;
+        ipb.hFileInfo.ioNamePtr = name.data();
+        ipb.hFileInfo.ioFDirIndex = 0;
+        PBGetCatInfoSync(&ipb);
+        EXPECT_EQ(noErr, ipb.hFileInfo.ioResult);
+        EXPECT_EQ(lockedSize, (size_t)ipb.hFileInfo.ioFlLgLen.get());
+    }
+
+    fs::permissions(host("m-locked"), fs::perms::owner_all);
+
+    std::vector<std::string> names;
+    for(auto& e : entries)
+        names.push_back(e.name);
+    EXPECT_EQ((std::vector<std::string> { "a-file", "m-locked", "z-file" }), names);
+}
+
+// Whether a name can be addressed is host-specific: Win32 path parsing rejects
+// names a directory enumeration happily returns, but this host has no such
+// rules, so nothing is filtered here. (The Win32 rules are compiled only into
+// the Windows build.)
+TEST(Filenames, PosixHostDoesNotFilterWin32StyleNames)
+{
+    EXPECT_TRUE(isAddressableFilename(fs::path("aux")));
+    EXPECT_TRUE(isAddressableFilename(fs::path("nul.tar.gz")));
+    EXPECT_TRUE(isAddressableFilename(fs::path("trailing.")));
+    EXPECT_TRUE(isAddressableFilename(fs::path("dir") / "a:b"));
 }
 
 // Phase 5.2: eviction under the item budget is transparent - re-accessing an

@@ -346,14 +346,17 @@ independently.
 A `DirectoryItem` holds an optional count and an optional descriptor list, each with
 the `FileStamp` it is valid for. `FileStamp` is `(mtime, size)` in the host's native
 resolution (not `last_write_time`, whose one-second resolution would miss same-second
-changes). `statPath` returns the stamp, the identity, and the kind from one raw stat.
+changes, and which on Windows opens the file and so fails on a directory that cannot
+be read). `statPath` returns the stamp, the identity, and the kind from one raw stat.
 
 - `ensureListed()` stats the directory; if `listed_` and the stamp matches, the
   descriptors and count are valid (O(1)).
 - Otherwise it scans. The scan has two passes over one name vector: `readdir` runs to
   completion first, then each name is `stat`ed. This keeps a directory stream that
   needs several `getdents` fills from spanning the per-entry stats. Entries that are
-  neither regular files nor directories are dropped; hidden names are filtered.
+  neither regular files nor directories are dropped; hidden names are filtered, as are
+  names the host cannot address (on Windows: `aux`-style device names and other names
+  Win32 path parsing mangles).
 - The stamp is taken **before** the scan and stored with the result, so a change
   arriving during the scan makes the next access re-list rather than serving a state
   that was never fully observed.
@@ -362,11 +365,15 @@ changes). `statPath` returns the stamp, the identity, and the kind from one raw 
 
 `countVisible()` returns the descriptor count if the directory is already Listed
 (without revalidating the listing), a cached tally if its stamp is valid, or a fresh
-readdir tally (hidden names filtered, no stats) otherwise. The count includes
-subdirectories as well as files, matching HFS valence. A failed count scan reports
-`ioErr` and is not cached. Count's listed fast path deliberately does not revalidate:
-re-listing to answer a count would defeat Count, and `ioDrNmFls` is a snapshot in
-HFS terms anyway.
+readdir tally (hidden and unaddressable names filtered, no stats) otherwise. The count
+includes subdirectories as well as files, matching HFS valence. A failed count scan is not
+cached, and it does not fail the `PBGetCatInfo` that asked for it: `ioDrNmFls` is
+reported as `0` (unknown) instead. Guests enumerate a directory by asking for index
+1, 2, … until a call fails, so an error on a directory whose *contents* cannot be
+read would be read as "past the last entry" and silently truncate the parent's
+listing. Listing the directory itself still reports `ioErr`. Count's listed fast
+path deliberately does not revalidate: re-listing to answer a count would defeat
+Count, and `ioDrNmFls` is a snapshot in HFS terms anyway.
 
 ### Binding checks
 
@@ -520,12 +527,18 @@ observes an undecided name; a name that cannot be decided reports `fnfErr` or `i
 
 `getInfoCommon` fills `CInfoPBRec`:
 
-- **Files**: fork sizes come from opening both forks read-only and asking their EOF;
-  FInfo/FXInfo come from the rep; modification date is the host modification time
-  shifted to the Mac epoch. Creation date is not stored and reports `0`; MacBinary can
-  supply both dates from its header.
+- **Files**: fork sizes come from opening both forks read-only and asking their EOF,
+  falling back to the stat size for the data fork and `0` for the resource fork when a
+  fork cannot be opened; FInfo/FXInfo come from the rep (zeroed when the format's own
+  metadata cannot be read); modification date is the host modification time shifted to
+  the Mac epoch. Creation date is not stored and reports `0`; MacBinary can supply both
+  dates from its header. None of these failures fail the call — see *Directory
+  listings and counts* for why.
 - **Directories**: `ioDrNmFls` is `countVisible()` (files and subdirectories); the
-  modification date is the host directory mtime; Finder info fields are zeroed.
+  modification date is the host directory mtime, taken from the raw `stat` (not
+  `last_write_time`, which on Windows opens the directory); Finder info fields are
+  zeroed. A directory whose contents cannot be read reports an unknown count (`0`)
+  rather than failing the call (see *Directory listings and counts*).
 - File attributes and the open-fork refnum come from the FCB table.
 
 `setInfoCommon` writes FInfo/FXInfo and the dates through the rep. A plain rep that is
@@ -615,6 +628,17 @@ I/O failures inside reps use `hostError(errno)` so that `ENOSPC`/`EDQUOT`/`EFBIG
 - **Non-regular, non-directory entries** (sockets, FIFOs, devices) are dropped from
   listings. `countVisible` does not stat, so a count can include them where a listing
   would not.
+- **An unreadable directory still reports metadata.** Its `ioDrNmFls` is `0` until a
+  scan succeeds, and enumerating it (or resolving a child inside it) reports `ioErr`.
+  Failing the directory's own `PBGetCatInfo` would abort a guest's enumeration of the
+  *parent*, which cannot tell that error from "past the last entry" (`packages/go`'s
+  Browser is one such guest). Its dates come from the raw `stat`, so they do not
+  depend on the contents being readable.
+- **An unreadable file still reports metadata.** Its dates and data-fork size come
+  from the stat, the resource fork is reported as empty, and Finder info that lives
+  inside the file's format (MacBinary, AppleSingle, AppleDouble) is zeroed when it
+  cannot be read. Opening the file for actual I/O still reports the host error, as
+  does the same for a name the narrow Windows path encoding cannot open.
 - **The Mac name space is case-insensitive**, matching the folded name index; host
   names that differ only by case are disambiguated with `#N`.
 - **Host changes are observed as of the last access.** A change racing the guest's
@@ -625,6 +649,13 @@ I/O failures inside reps use `hostError(errno)` so that `ENOSPC`/`EDQUOT`/`EFBIG
 - **Cross-directory host moves are delete + create** (new CNID); only a File Manager
   move preserves it.
 - **No CNID database GC.** Records for directories that are never revisited remain.
+- **Names Win32 cannot address are not listed** (Windows only). A `Z:`-style
+  volume over a Unix filesystem can contain names that Win32 path parsing remaps:
+  device names (`aux`, `nul`, `com1`, … with or without an extension), names ending
+  in a dot or space, and names carrying `< > : " | ? *` or control characters. They
+  are returned by `readdir` but cannot be `stat`ed through a full path, so List and
+  Count filter them out (see *Directory listings and counts*). On a POSIX host every
+  name is addressable and nothing is filtered.
 - **Windows** exposes no identity (name+kind matching), and the LMDB record encoding
   uses `fs::path::string()`, which is ANSI-code-page based; a MacRoman name the code
   page cannot represent is reported as `ioErr` or stored as `?`. Persistence needs a
@@ -675,6 +706,7 @@ I/O failures inside reps use `hostError(errno)` so that `ENOSPC`/`EDQUOT`/`EFBIG
 | `src/file/localvolume/lmdbcnidmapper.h` / `.cpp` | Persistent LMDB backend |
 | `src/file/localvolume/simplecnidmapper.h` / `.cpp` | In-memory reference/fallback backend |
 | `src/file/localvolume/filestamp.h` / `.cpp` | `statPath`, `FileStamp`, `FileIdentity`, identity-policy classification |
+| `src/file/localvolume/filenames.h` / `.cpp` | `isAddressableFilename`: whether a host name can be addressed (Win32 device names, mangled characters) |
 | `src/file/localvolume/openfile.h` | `OpenFile`, `EmptyFork`, `hostError`, `UpgradeRequiredException` |
 | `src/file/localvolume/plain.h` / `.cpp` | Plain files |
 | `src/file/localvolume/appledouble.h` / `.cpp` | AppleDouble and AppleSingle |

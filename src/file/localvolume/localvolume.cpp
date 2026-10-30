@@ -489,8 +489,28 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
             throw OSErrorException(fnfErr);
 
         pb->dirInfo.ioFlAttrib = ATTRIB_ISADIR;
-        
-        pb->dirInfo.ioDrNmFls = dirItem->countVisible();
+
+        // A directory's metadata must not fail because its contents cannot be
+        // read. Guests enumerate a directory by asking for index 1, 2, ... until
+        // the call fails, so an error here would be read as "past the last
+        // entry" and silently truncate the listing of this directory's *parent*.
+        // Report an unknown count instead. The failed scan is not cached, and
+        // listing this directory still reports ioErr (DirectoryItem::child).
+        try
+        {
+            pb->dirInfo.ioDrNmFls = dirItem->countVisible();
+        }
+        catch(const boost::filesystem::filesystem_error& exc)
+        {
+            // Counting could not read the directory. The scan failure is logged
+            // and ignored: a guest enumerating the parent cannot tell it from
+            // "past the last entry", so report an unknown count rather than
+            // failing the call (and the failed scan must not be cached).
+            std::cerr << "could not count " << item->path() << ": " << exc.what()
+                      << "; ignoring the error and reporting 0 items" << std::endl;
+
+            pb->dirInfo.ioDrNmFls = 0;
+        }
 
         // Directories have dates just as files do, and Item::getInfo
         // already reads them off the underlying filesystem.  Reporting
@@ -513,10 +533,29 @@ void LocalVolume::getInfoCommon(CInfoPBPtr pb, InfoKind infoKind)
         pb->hFileInfo.ioFlAttrib = open_attrib_bits(item->cnid(), &vcb, &pb->hFileInfo.ioFRefNum);
         auto info = fileItem->getInfo();
         pb->hFileInfo.ioFlFndrInfo = info.file.info;
-        
-        size_t dsize = fileItem->open(fsRdPerm)->getEOF();
-        size_t rsize = fileItem->openRF(fsRdPerm)->getEOF();
-        
+
+        // Fork sizes are best-effort for the same reason as the Finder info
+        // above: opening a fork can fail (no read permission, a host name the
+        // narrow path encoding cannot open, a special file), and that must not
+        // end the parent's enumeration. The data fork falls back to the stat
+        // size, the resource fork to empty.
+        size_t dsize = statPath(item->path()).stamp.size;
+        size_t rsize = 0;
+        try
+        {
+            dsize = fileItem->open(fsRdPerm)->getEOF();
+        }
+        catch(const OSErrorException&)
+        {
+        }
+        try
+        {
+            rsize = fileItem->openRF(fsRdPerm)->getEOF();
+        }
+        catch(const OSErrorException&)
+        {
+        }
+
         pb->hFileInfo.ioFlLgLen = dsize;
         pb->hFileInfo.ioFlPyLen = dsize;
         pb->hFileInfo.ioFlRLgLen = rsize;

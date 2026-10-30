@@ -221,6 +221,9 @@ set(file_sources
     file/localvolume/filestamp.h
     file/localvolume/filestamp.cpp
 
+    file/localvolume/filenames.h
+    file/localvolume/filenames.cpp
+
     file/localvolume/basilisk.h
     file/localvolume/basilisk.cpp
     file/localvolume/appledouble.h

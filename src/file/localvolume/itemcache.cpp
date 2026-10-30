@@ -1,6 +1,7 @@
 #include "itemcache.h"
 #include "item.h"
 #include "cnidmapper.h"
+#include "filenames.h"
 #include "stats.h"
 
 #include <OSUtil.h>
@@ -530,8 +531,10 @@ ItemPtr ItemCache::realizeByHostPath(fs::path inPath)
             return {};
 
         // Match the listing's visibility rule: a sidecar filtered out of the
-        // listing is not addressable by host path either.
-        if(itemFactory().isHidden(fs::directory_entry(childPath)))
+        // listing, or a name this host cannot address, is not addressable by
+        // host path either.
+        if(itemFactory().isHidden(fs::directory_entry(childPath))
+           || !isAddressableFilename(childPath))
             return {};
 
         CNID cnid = resolveChildCNID(dir->cnid(), elem, st);

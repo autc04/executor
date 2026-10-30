@@ -494,7 +494,9 @@ validity for a state whose entries we may not have observed.) Do **not** use
 `fs::last_write_time()` for the stamp at all: this project's `fs` is
 Boost.Filesystem, whose `last_write_time()` returns `std::time_t` — one-second
 resolution, which would miss same-second changes and make the validation test
-flaky.
+flaky. On Windows it also opens the file (`CreateFileW`), so it fails for a
+file whose contents cannot be read; `Item::getInfo` therefore takes modification
+dates from the same raw stat (`statPath`), which only needs attribute access.
 
 Counting caches the same way, with one deliberate exception: `Count(dir)` returns
 `descriptors_.size()` whenever the directory is Listed, a cached `count_` if its
@@ -613,10 +615,19 @@ Consequences:
   CNIDResolve) and lists no ancestor; a stale binding is validated or recreated.
 - **Read errors**: a scan that fails must **not** be cached as a valid (empty)
   listing — the directory is left invalid so the next access retries. A requested
-  directory that cannot be read reports `ioErr` — the listing funnel
-  (`DirectoryItem::child`) and `Count` alike. In a path walk, a component that does not
-  exist is `fnfErr`, and one that exists but cannot be `stat`ed is `ioErr`;
-  `nativePathToFSSpec` maps both to `nullopt`.
+  directory that cannot be read reports `ioErr` when it is *listed*, through
+  `DirectoryItem::child`. Asking that directory for its own metadata (`Count`) does
+  **not** report `ioErr`: `ioDrNmFls` is answered as `0` (unknown), because guests
+  enumerate with "index 1, 2, … until the call fails" and would otherwise read the
+  error as "past the last entry" and truncate the parent's listing. In a path walk, a
+  component that does not exist is `fnfErr`, and one that exists but cannot be
+  `stat`ed is `ioErr`; `nativePathToFSSpec` maps both to `nullopt`. A file's metadata
+  is best-effort in the same way: if a fork cannot be opened, its size falls back to
+  the stat (resource fork: empty), and Finder info embedded in the file's format is
+  zeroed, so asking for an entry never truncates the parent's enumeration. A name the
+  host cannot address at all — a Win32 device name, a name with a trailing dot or
+  space on Windows — is filtered out of List and Count before it is stat'ed, rather
+  than left to fail the scan.
 - The staleness bound is "as of the last access". Changes racing the guest's
   other traps are inherently un-transactional (HFS is not transactional either).
 

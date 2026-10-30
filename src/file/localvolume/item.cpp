@@ -1,6 +1,7 @@
 #include "item.h"
 #include "itemcache.h"
 #include "cnidmapper.h"
+#include "filenames.h"
 #include "openfile.h"
 #include "stats.h"
 
@@ -49,7 +50,12 @@ constexpr int64_t macToUnixEpoch = 86400 * (365 * (1970-1904) + (1970-1904+3)/4)
 
 int64_t macModTime(const fs::path& path)
 {
-    return fs::last_write_time(path) + macToUnixEpoch;
+    // A raw stat, not fs::last_write_time(): on Windows the latter opens the
+    // file (CreateFileW) and fails for a directory whose contents cannot be
+    // read (`FILE_READ_EA` needs access Wine does not grant). That would make
+    // the directory's own GetCatInfo fail and truncate a guest's enumeration
+    // of its parent; the stamp the rest of LocalVolume uses has no such need.
+    return statPath(path).stamp.mtime / 1000000000 + macToUnixEpoch;
 }
 
 // An AppleDouble companion beside `p`, using the named naming scheme.
@@ -336,9 +342,23 @@ std::unique_ptr<OpenFile> FileItem::openRF(int8_t permission)
 
 ItemInfo FileItem::getInfo()
 {
-    ensureMaterialized();
     ItemInfo info = Item::getInfo();
-    rep_->getInfo(info);
+
+    // The rep's Finder info lives in the file's own format (a MacBinary header,
+    // an AppleDouble sidecar), so reading it can fail for a file that cannot be
+    // opened. Report the entry without it instead of failing the metadata query:
+    // a guest enumerating the parent cannot tell an error from "past the last
+    // entry", so failing here would truncate its listing. The dates and the
+    // base FInfo already come from the stat and stay valid.
+    try
+    {
+        ensureMaterialized();
+        rep_->getInfo(info);
+    }
+    catch(const OSErrorException&)
+    {
+    }
+
     return info;
 }
 
@@ -381,20 +401,14 @@ int DirectoryItem::countVisible()
 
     int count = 0;
     localVolumeStats().countScans++;
-    try
-    {
-        ItemFactory& factory = itemcache_.itemFactory();
-        for(const auto& e : fs::directory_iterator(path()))
-            if(!factory.isHidden(e))
-                ++count;
-    }
-    catch(const boost::filesystem::filesystem_error& exc)
-    {
-        // A failed scan is not a tally, so report it rather than caching a wrong
-        // count as valid.
-        std::cerr << exc.what() << std::endl;
-        throw OSErrorException(ioErr);
-    }
+
+    // A scan that throws propagates before the tally is cached, so a failure is
+    // never committed as a count. The caller decides how to present it: for
+    // ioDrNmFls it logs and reports an unknown count (LocalVolume::getInfoCommon).
+    ItemFactory& factory = itemcache_.itemFactory();
+    for(const auto& e : fs::directory_iterator(path()))
+        if(!factory.isHidden(e) && isAddressableFilename(e.path()))
+            ++count;
 
     count_ = count;
     countStamp_ = stamp;   // as for a listing: keyed to the state we started
@@ -420,7 +434,7 @@ std::optional<std::vector<Descriptor>> DirectoryItem::listDirectory()
     {
         for(const auto& e : fs::directory_iterator(path()))
         {
-            if(factory.isHidden(e))
+            if(factory.isHidden(e) || !isAddressableFilename(e.path()))
                 continue;
 
             // Identity and kind are filled in by the second pass.
@@ -690,6 +704,8 @@ void DirectoryItem::deleteItem()
     {
         if(factory.isHidden(*it))
             hidden.push_back(it->path());
+        else if(!isAddressableFilename(it->path()))
+            continue;   // not guest-visible, and Win32 cannot remove it either
         else
         {
             hasVisibleChild = true;

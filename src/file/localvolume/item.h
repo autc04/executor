@@ -293,7 +293,11 @@ public:
     // --- Count / List / NameResolve: the directory-stage machinery ---
 
     // Count: the visible-child tally, without a descriptor list. List implies
-    // Count. Throws ioErr if the directory cannot be read.
+    // Count. A failed scan propagates the host filesystem error without caching
+    // a tally; the caller turns that into a guest-visible answer -- an unknown
+    // count rather than a failed trap (see LocalVolume::getInfoCommon) -- because
+    // guests cannot tell an error apart from "past the last entry" when they
+    // enumerate.
     int countVisible();
 
     // List: ensure the listing is present and valid, re-scanning the host if it
