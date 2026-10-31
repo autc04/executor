@@ -3,6 +3,7 @@
 #include <QGuiApplication>
 #include <QPainter>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QBitmap>
 #include <QScreen>
 #include <QBackingStore>
@@ -24,6 +25,7 @@
 
 //#include "keycode_map.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <unordered_map>
@@ -108,6 +110,44 @@ public:
         macosx_hide_menu_bar(qRound(ev->position().x()), qRound(ev->position().y()) - windowTopPadding, width(), height());
 #endif
         drv_->callbacks_->mouseMoved(guestX(ev->position().x()), guestY(ev->position().y()));
+    }
+
+    void wheelEvent(QWheelEvent *ev) override
+    {
+        /* angleDelta is in eighths of a degree, 120 per notch.  High-resolution
+         * devices may only provide pixelDelta. */
+        QPoint angle = ev->angleDelta();
+
+        if(std::getenv("EXECUTOR_WHEEL_DEBUG"))
+        {
+            QPoint pixels = ev->pixelDelta();
+            std::cerr << "[wheel] qt angle=" << angle.x() << "," << angle.y()
+                      << " pixel=" << pixels.x() << "," << pixels.y()
+                      << " pos=" << ev->position().x() << ","
+                      << ev->position().y() << std::endl;
+        }
+        int dx = angle.x() / 120;
+        int dy = angle.y() / 120;
+
+        if(dx == 0 && angle.x() != 0)
+            dx = angle.x() > 0 ? 1 : -1;
+        if(dy == 0 && angle.y() != 0)
+            dy = angle.y() > 0 ? 1 : -1;
+
+        if(dx == 0 && dy == 0)
+        {
+            QPoint pixels = ev->pixelDelta();
+            if(pixels.x() != 0)
+                dx = pixels.x() > 0 ? 1 : -1;
+            if(pixels.y() != 0)
+                dy = pixels.y() > 0 ? 1 : -1;
+        }
+
+        if(dx != 0 || dy != 0)
+            drv_->callbacks_->mouseWheelEvent(dx, dy,
+                guestX(ev->position().x()), guestY(ev->position().y()));
+
+        ev->accept();
     }
 
 private:

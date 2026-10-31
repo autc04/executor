@@ -35,6 +35,12 @@ queue and posts entries to the OS queue or directly to the HLE mechanism.
 virtual key code (MKVKey) has a corresponding bit. The low-memory `LM(KeyMap)` 16-byte
 bitmap is updated from this state.
 
+**Mouse wheel** (`src/osevent/wheel.cpp`): the guest has no wheel event, so host
+wheel motion is translated into a synthetic `mouseDown`/`mouseUp` pair on the
+scroll bar responsible for the window under the pointer.  `EventSink` runs
+`ROMlib_handleWheelEvent()` on the emulator thread; the guest's own
+`FindControl`/`TrackControl` handling then scrolls.  See the design notes below.
+
 **Auto-key** (`ROMlib_SetAutokey`): posts repeated keyboard events when a key is held
 down, implementing the Mac auto-repeat mechanism.
 
@@ -67,6 +73,7 @@ clears handlers registered by the previous application.
 | `src/osevent/osevent.cpp` | `GetNextEvent`, `WaitNextEvent`, queue management |
 | `src/osevent/hle.cpp` | HLE queue: `hle_get_event`, keyboard auto-repeat |
 | `src/osevent/osevent.h` | Event Manager internal API |
+| `src/osevent/wheel.cpp` | Host mouse wheel → synthetic scroll-bar clicks |
 | `src/osevent/ibm_keycodes.cpp` | PC→Mac virtual key code mapping |
 | `src/appleevent/AE.cpp` | `AESend`, `AEProcessAppleEvent`, dispatch, coercion entry points |
 | `src/appleevent/AE_desc.cpp` | `AECreateDesc`, `AEDisposeDesc`, list/AE-record accessors, `AEGetArray`/`AEPutArray`, `AECreateAppleEvent` |
@@ -93,6 +100,7 @@ clears handlers registered by the previous application.
 | `C_PostEvent(what, msg)` | `_PostEvent` | Post a synthetic event |
 | `ROMlib_PPostEvent(code, msg, qelp, when, where, mods)` | — | Internal queue post |
 | `hle_get_event(evt, remove)` | — | Core event fetch (HLE queue) |
+| `ROMlib_handleWheelEvent(dx, dy, h, v)` | — | Translate host wheel motion into scroll-bar clicks |
 | `C_AEInstallEventHandler` | — | Register an Apple Event handler |
 | `C_AEProcessAppleEvent(event)` | — | Dispatch a received Apple Event |
 
@@ -118,3 +126,20 @@ clears handlers registered by the previous application.
   `Responsiveness::ActiveScope`; `GetNextEvent`/`GetOSEvent` deliberately do not
   count, which is how the emulator spots an application that has stopped pumping
   its event loop (`docs/ai/2026-10-07-unresponsive-app-detection-plan.md`).
+- **Mouse wheel**: `ROMlib_handleWheelEvent()` is called directly from the
+  emulator-thread work item, not from `OSEventCommon`. It runs in an interrupt
+  context and therefore only reads guest structs/regions; it never calls
+  `FindWindow`, `FindControl`, `TestControl` or touches `qdGlobals().thePort`.
+  Scroll bars are found heuristically: the bar under the pointer, or else the
+  nearest tall bar to its right whose vertical span contains the pointer (for
+  vertical scrolling), because a document scroll bar is responsible for the whole
+  document body. Horizontal wheels use the analogous bar-under-pointer/nearest-
+  below rule, again requiring the pointer to be within the bar's perpendicular
+  span. `TrackControl` invokes the action proc once for the initial part before
+  its tracking loop, so an already-queued mouse-up (as produced here) still acts.
+  Set `EXECUTOR_WHEEL_DEBUG` to trace the host event and each handler decision on
+  stderr. The synthetic click is suppressed while a menu is being tracked, while
+  a physical button is held, and when `WWExist`/`default_aux_ctl` show that the
+  Window/Control Managers are not initialised. Before posting, the arrow point
+  must be inside the target window's `visRgn` (local coordinates), so a bar
+  covered by a window in front is never clicked.

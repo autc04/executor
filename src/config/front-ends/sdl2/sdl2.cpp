@@ -5,6 +5,9 @@
 
 #include <SDL.h>
 
+#include <cstdio>
+#include <cstdlib>
+
 using namespace Executor;
 
 namespace
@@ -174,6 +177,26 @@ void SDL2VideoDriver::runEventLoop()
             case SDL_MOUSEBUTTONUP:
                 callbacks_->mouseButtonEvent(event.button.state == SDL_PRESSED, event.button.x, event.button.y);
                 break;
+            case SDL_MOUSEWHEEL:
+            {
+                int dx = event.wheel.x;
+                int dy = event.wheel.y;
+
+                if(std::getenv("EXECUTOR_WHEEL_DEBUG"))
+                    fprintf(stderr, "[wheel] sdl2 x=%d y=%d dir=%d\n",
+                            event.wheel.x, event.wheel.y,
+                            (int)event.wheel.direction);
+
+                if(event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+                {
+                    dx = -dx;
+                    dy = -dy;
+                }
+
+                if(dx != 0 || dy != 0)
+                    callbacks_->mouseWheelEvent(dx, dy, -1, -1);
+                break;
+            }
             case SDL_KEYDOWN:
             case SDL_KEYUP:
             {

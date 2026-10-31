@@ -9,7 +9,19 @@
 #include <time/syncint.h>
 #include "responsiveness.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 using namespace Executor;
+
+namespace
+{
+bool wheelDebug()
+{
+    static const bool enabled = std::getenv("EXECUTOR_WHEEL_DEBUG") != nullptr;
+    return enabled;
+}
+}
 
 std::unique_ptr<EventSink> EventSink::instance;
 
@@ -43,6 +55,29 @@ void EventSink::mouseMoved(int h, int v)
         LM(MouseLocation2) = LM(MTemp) = LM(MouseLocation) = Point{(int16_t)v, (int16_t)h};
 
         adb_apeiron_hack();
+    });
+}
+
+void EventSink::mouseWheelEvent(int deltaX, int deltaY, int h, int v)
+{
+    if(wheelDebug())
+        fprintf(stderr, "[wheel] EventSink dx=%d dy=%d h=%d v=%d\n", deltaX,
+                deltaY, h, v);
+
+    runOnEmulatorThread([=]() {
+        int hh = h;
+        int vv = v;
+
+        if(hh < 0 || vv < 0)
+        {
+            hh = LM(MouseLocation2).h;
+            vv = LM(MouseLocation2).v;
+        }
+
+        if(wheelDebug())
+            fprintf(stderr, "[wheel] emulator thread h=%d v=%d\n", hh, vv);
+
+        ROMlib_handleWheelEvent(deltaX, deltaY, hh, vv);
     });
 }
 

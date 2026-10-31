@@ -15,6 +15,7 @@
 
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <signal.h>
 #include <fcntl.h>
 
@@ -707,6 +708,42 @@ void X11VideoDriver::handleEvents()
             case ButtonPress:
             case ButtonRelease:
             {
+                unsigned button = evt.xbutton.button;
+
+                /* Core X11 maps wheel motion to buttons 4-7.  These are not
+                 * real button presses and must not become guest clicks at the
+                 * pointer. */
+                if(button >= 4 && button <= 7)
+                {
+                    if(evt.type == ButtonPress)
+                    {
+                        int dx = 0, dy = 0;
+
+                        if(getenv("EXECUTOR_WHEEL_DEBUG"))
+                            fprintf(stderr, "[wheel] x button=%u at %d,%d\n",
+                                    button, evt.xbutton.x, evt.xbutton.y);
+
+                        switch(button)
+                        {
+                            case 4: /* wheel up */
+                                dy = 1;
+                                break;
+                            case 5: /* wheel down */
+                                dy = -1;
+                                break;
+                            case 6: /* wheel left */
+                                dx = -1;
+                                break;
+                            case 7: /* wheel right */
+                                dx = 1;
+                                break;
+                        }
+                        callbacks_->mouseWheelEvent(dx, dy,
+                                                    evt.xbutton.x, evt.xbutton.y);
+                    }
+                    break;
+                }
+
                 callbacks_->mouseButtonEvent(evt.type == ButtonPress, evt.xbutton.x, evt.xbutton.y);
                 break;
             }

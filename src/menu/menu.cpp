@@ -996,10 +996,17 @@ static MenuHandle itemishierarchical(MenuHandle mh, INTEGER item, INTEGER *sixp)
 
 #define HIERRECTBIT (1L << 16)
 
+int Executor::ROMlib_menu_tracking_depth = 0;
+
 int32_t Executor::ROMlib_menuhelper(MenuHandle mh, Rect *saverp,
                                     int32_t oldwhere, Boolean ispopup,
                                     int16_t nmenusdisplayed)
 {
+    struct TrackingScope
+    {
+        TrackingScope() { ++ROMlib_menu_tracking_depth; }
+        ~TrackingScope() { --ROMlib_menu_tracking_depth; }
+    } trackingScope;
     mbdfentry *oldentry, *newentry;
     Rect r, r2;
     Point tempp;

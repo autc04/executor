@@ -58,9 +58,10 @@ handles caret blinking and selection highlighting.
 the standard push-button, check-box, radio-button, and scroll-bar CDEFs.
 `ctlPopup.cpp` implements the pop-up menu control.
 
-**`TrackControl`**: the synchronous mouse-tracking loop. It calls `FindControl` to
-hit-test the click, then loops calling the CDEF's track message until the mouse button
-is released, updating the control's highlight state.
+**`TrackControl`**: the synchronous mouse-tracking loop. It hit-tests the initial
+click, invokes the control's action proc once for that part, then loops calling the
+CDEF's track message until the mouse button is released, updating the control's
+highlight state and invoking the action while the pointer stays in the original part.
 
 **Arrow bitmaps**: `.map` files in `src/ctl/` contain raw bitmap data for scroll-bar
 arrows and thumb; these are compiled into the binary as byte arrays.
@@ -107,3 +108,8 @@ renders individual cells.
   uses `MenuSelect` for tracking.
 - **`TE_SLAM`**: a debug assertion that verifies the internal consistency of a `TERec`.
   Only active when `ERROR_TEXT_EDIT_SLAM` is enabled at compile time.
+- **`TrackControl` action timing**: the action proc is called once for the initial
+  part *before* the tracking loop, and again on each loop iteration in which the
+  pointer is still in that part. The upfront call is what makes a synthetic click
+  whose mouse-up is already queued (for example a mouse-wheel-generated click)
+  trigger the action; without it the loop exits immediately and nothing happens.

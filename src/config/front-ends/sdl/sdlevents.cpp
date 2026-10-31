@@ -24,6 +24,9 @@
 
 #include <SDL/SDL.h>
 
+#include <cstdio>
+#include <cstdlib>
+
 using namespace Executor;
 
 #if SDL_MAJOR_VERSION == 0 && SDL_MINOR_VERSION < 9
@@ -476,7 +479,20 @@ void SDLVideoDriver::runEventLoop()
 
             case SDL_MOUSEBUTTONDOWN:
             case SDL_MOUSEBUTTONUP:
-                callbacks_->mouseButtonEvent(event.button.state == SDL_PRESSED, event.button.x, event.button.y);
+                if(event.button.button == 4 || event.button.button == 5)
+                {
+                    /* SDL 1.2 reports wheel motion as buttons 4 and 5. */
+                    if(std::getenv("EXECUTOR_WHEEL_DEBUG"))
+                        fprintf(stderr, "[wheel] sdl1 button=%u type=%u\n",
+                                (unsigned)event.button.button,
+                                (unsigned)event.type);
+                    if(event.type == SDL_MOUSEBUTTONDOWN)
+                        callbacks_->mouseWheelEvent(0,
+                                                    event.button.button == 4 ? 1 : -1,
+                                                    event.button.x, event.button.y);
+                }
+                else
+                    callbacks_->mouseButtonEvent(event.button.state == SDL_PRESSED, event.button.x, event.button.y);
                 break;
 
             case SDL_KEYDOWN:

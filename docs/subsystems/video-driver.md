@@ -34,13 +34,16 @@ When more than 5 rects accumulate, they are coalesced into a single bounding rec
 avoid unbounded growth.
 
 **`EventSink`**: implements `IEventListener` and translates host input events (mouse
-clicks, key presses, suspend/resume) into entries on the Mac event queue. It uses an
-internal mutex-protected work queue so that events posted from the host GUI thread are
-picked up by `pumpEvents()` on the emulator thread.
+clicks, key presses, wheel motion, suspend/resume) into entries on the Mac event queue.
+It uses an internal mutex-protected work queue so that events posted from the host GUI
+thread are picked up by `pumpEvents()` on the emulator thread.
 
 **`IEventListener`**: interface consumed by each front-end. Calling
 `mouseButtonEvent(down, h, v)` atomically calls `mouseMoved` then `mouseButtonEvent`,
-ensuring the event position is always current.
+ensuring the event position is always current. `mouseWheelEvent(deltaX, deltaY, h, v)`
+uses positive values for wheel-right/wheel-up; passing `-1` for `h` and `v` means the
+last guest mouse position. `EventSink` turns wheel motion into `ROMlib_handleWheelEvent()`,
+which posts ordinary mouse clicks on the responsible scroll bar (`src/osevent/wheel.cpp`).
 
 **Refresh timer** (`src/vdriver/refresh.cpp`): a VBL-style periodic timer that fires at
 the configured refresh rate (default ~60 Hz). On each tick it calls
@@ -81,6 +84,7 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
 | `dirty_rect_accrue(t,l,b,r)` | Record a modified rectangle |
 | `DirtyRects::getAndClear()` | Retrieve and reset the dirty rect list |
 | `EventSink::pumpEvents()` | Drain the pending-event queue on the emulator thread |
+| `EventSink::mouseWheelEvent()` | Marshal a host wheel event to `ROMlib_handleWheelEvent()` |
 | `set_refresh_rate(hz)` | Change the screen refresh frequency |
 | `QtVideoDriver::setMode()` | Resize the Qt window and reallocate the framebuffer |
 | `updateResponsivenessFeedback()` | Poll the guest's captured state and apply the rootless feedback; returns true if a repaint is needed |

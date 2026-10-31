@@ -4,6 +4,7 @@
 #include <QuickDraw.h>
 #include <quickdraw/region.h>
 
+#include <cstdlib>
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -216,6 +217,37 @@ WaylandVideoDriver::WaylandVideoDriver(Executor::IEventListener *eventListener, 
             }
         }
         callbacks_->mouseMoved(guestX, guestY);
+    };
+    pointer_.on_axis() = [this] (uint32_t time, pointer_axis axis, double value) {
+        int dx = 0, dy = 0;
+
+        if(std::getenv("EXECUTOR_WHEEL_DEBUG"))
+            std::cerr << "[wheel] wayland axis=" << (int)axis
+                      << " value=" << value << std::endl;
+
+        if(value == 0.0)
+            return;
+
+        /* Wayland reports positive values as scrolling down/right. */
+        if(axis == pointer_axis::vertical_scroll)
+            dy = value > 0 ? -1 : 1;
+        else if(axis == pointer_axis::horizontal_scroll)
+            dx = value > 0 ? 1 : -1;
+
+        if(dx == 0 && dy == 0)
+            return;
+
+        double guestX = mouseX_, guestY = mouseY_;
+        {
+            std::lock_guard lk(mutex_);
+            if(committedShape_.width > 0 && committedShape_.height > 0
+                && guestWidth_ > 0 && guestHeight_ > 0)
+            {
+                guestX = mouseX_ * guestWidth_ / committedShape_.width;
+                guestY = mouseY_ * guestHeight_ / committedShape_.height;
+            }
+        }
+        callbacks_->mouseWheelEvent(dx, dy, (int)guestX, (int)guestY);
     };
 
     keyboard_ = seat_.get_keyboard();

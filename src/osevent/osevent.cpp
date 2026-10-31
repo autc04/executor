@@ -238,6 +238,25 @@ short Executor::ROMlib_GetModifiers()
     return modifiers;
 }
 
+OSErr Executor::ROMlib_PPostEvent(INTEGER evcode, LONGINT evmsg,
+                                  GUEST<EvQElPtr> *qelp, LONGINT when,
+                                  Point where, INTEGER butmods)
+{
+    if(!((1 << evcode) & LM(SysEvtMask)))
+        /*-->*/ return evtNotEnb;
+
+    EvQEl *qp = geteventelem();
+    qp->evtQWhat = evcode;
+    qp->evtQMessage = evmsg;
+    qp->evtQWhen = when;
+    qp->evtQWhere = where;
+    qp->evtQModifiers = butmods;
+    Enqueue((QElemPtr)qp, &LM(EventQueue));
+    if(qelp)
+        *qelp = qp;
+    return noErr;
+}
+
 OSErr Executor::PPostEvent(INTEGER evcode, LONGINT evmsg,
                               GUEST<EvQElPtr> *qelp) /* IMIV-85 */
 {
@@ -254,17 +273,9 @@ OSErr Executor::PPostEvent(INTEGER evcode, LONGINT evmsg,
 
     if(!((1 << evcode) & LM(SysEvtMask)))
         /*-->*/ return evtNotEnb;
-    
-    EvQEl *qp = geteventelem();
-    qp->evtQWhat = evcode;
-    qp->evtQMessage = evmsg;
-    qp->evtQWhen = TickCount();
-    qp->evtQWhere = LM(MouseLocation2);
-    qp->evtQModifiers = modifiers;
-    Enqueue((QElemPtr)qp, &LM(EventQueue));
-    if(qelp)
-        *qelp = qp;
-    return noErr;
+
+    return ROMlib_PPostEvent(evcode, evmsg, qelp, TickCount(),
+                             LM(MouseLocation2), modifiers);
 }
 
 void Executor::ROMlib_SetAutokey(uint32_t message)

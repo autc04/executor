@@ -44,6 +44,11 @@ extern mextp ROMlib_mitemtop(MenuHandle mh, INTEGER item, StringPtr *ssp);
 extern INTEGER ROMlib_mentosix(INTEGER mid);
 extern LONGINT ROMlib_menuhelper(MenuHandle mh, Rect *saver, LONGINT where,
                                  Boolean ispopup, INTEGER ndisplayed);
+
+/* Non-zero while a menu is being tracked (pull-down, popup, hierarchical or
+ * sticky).  Mouse-wheel handling must not inject clicks into the tracking
+ * loop's event queue. */
+extern int ROMlib_menu_tracking_depth;
 extern Boolean ROMlib_shouldalarm(void);
 
 #define mbDraw 0

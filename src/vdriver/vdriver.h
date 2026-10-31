@@ -71,6 +71,10 @@ public:
 
     virtual void mouseButtonEvent(bool down) = 0;
     virtual void mouseMoved(int h, int v) = 0;
+    /* deltaX > 0 means wheel right, deltaY > 0 means wheel up.  h/v are the
+     * guest pointer coordinates; passing -1 for both means "use the current
+     * guest mouse position". */
+    virtual void mouseWheelEvent(int deltaX, int deltaY, int h, int v) = 0;
     virtual void keyboardEvent(bool down, unsigned char mkvkey) = 0;
     virtual void suspendEvent() = 0;
     virtual void resumeEvent(bool updateClipboard /* TODO: does this really make sense? */) = 0;
@@ -83,6 +87,7 @@ class EventSink : public IEventListener
 public:
     virtual void mouseButtonEvent(bool down) override;
     virtual void mouseMoved(int h, int v) override;
+    virtual void mouseWheelEvent(int deltaX, int deltaY, int h, int v) override;
     virtual void keyboardEvent(bool down, unsigned char mkvkey) override;
     virtual void suspendEvent() override;
     virtual void resumeEvent(bool updateClipboard) override;

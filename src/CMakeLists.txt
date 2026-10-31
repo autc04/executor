@@ -486,6 +486,7 @@ set(osevent_sources
         osevent/hle.cpp
         osevent/ibm_keycodes.cpp
         osevent/osevent.cpp
+        osevent/wheel.cpp
     )
 source_group(OSEvent FILES ${osevent_sources})
 

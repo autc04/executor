@@ -161,6 +161,11 @@ INTEGER Executor::C_TrackControl(ControlHandle c, Point p,
         /* not an indicator */
         (*c)->contrlHilite = partstart;
         CTLCALL(c, drawCntl, partstart);
+        /* Act on the initial part before tracking.  The mouse-up may already
+           be queued (e.g. a wheel-generated click), in which case the loop
+           below would exit without ever calling the action. */
+        if(a && inpart)
+            a(c, inpart);
         /* the action callback can remove mouse up events which is why the
 	      following line is not a GetOSEvent call. */
         while(!OSEventAvail(mUpMask, &ev) && StillDown())

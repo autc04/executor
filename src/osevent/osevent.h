@@ -33,6 +33,11 @@ extern void ROMlib_showhidecursor(void);
 
 extern uint16_t ROMlib_right_to_left_key_map(uint16_t what);
 
+/* Translate a host mouse-wheel event into a simulated click on the scroll
+ * bar that is responsible for the window under the pointer.  deltaX > 0
+ * means wheel right, deltaY > 0 means wheel up; h/v are guest coordinates. */
+extern void ROMlib_handleWheelEvent(int deltaX, int deltaY, int h, int v);
+
 bool ROMlib_GetKey(uint8_t mkvkey);
 void ROMlib_SetKey(uint8_t mkvkey, bool down);
 short ROMlib_GetModifiers();
