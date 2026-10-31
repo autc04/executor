@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <array>
+#include <atomic>
 #include <optional>
 
 #if defined(_WIN32)
@@ -49,6 +50,36 @@ namespace
     std::condition_variable wake_cond;
 #else
     std::optional<pthread_t> waitingThread;
+
+    /* True while the emulator thread is alive and can be signalled.  The
+     * SIGALRM handler runs on whichever thread the kernel picks, so it must
+     * not forward to `waitingThread' once that thread has exited: the stored
+     * pthread_t is then a dangling handle and pthread_kill() faults while
+     * dereferencing the freed thread descriptor. */
+    std::atomic<bool> waitingThreadActive{false};
+
+    /* SIGALRM is process-directed, so it can be delivered to any thread that
+     * does not block it.  Only the emulator thread should be eligible: its
+     * handler assumes it runs there and forwards the interrupt to itself.
+     *
+     * Block it before any thread can be created so that threads spawned from
+     * static initializers inherit the block.  SyncintTimer's constructor does
+     * this too, but it runs during ordinary static initialization; Tracy's
+     * Profiler is constructed with init_priority(105) and starts its worker
+     * threads before that.  Those threads would otherwise inherit an
+     * unblocked SIGALRM and could receive the timer signal.  This initializer
+     * therefore has to run earlier than 105. */
+    struct BlockSigalrmEarly
+    {
+        BlockSigalrmEarly()
+        {
+            sigset_t sigs;
+            sigemptyset(&sigs);
+            sigaddset(&sigs, SIGALRM);
+            pthread_sigmask(SIG_BLOCK, &sigs, nullptr);
+        }
+    };
+    BlockSigalrmEarly blockSigalrmEarly __attribute__((init_priority(101)));
 #endif
 
     struct SyncintTimer
@@ -66,6 +97,7 @@ namespace
         ~SyncintTimer();
 
         void start();
+        void stop();
         void post(std::chrono::microseconds usecs, bool fromLast);
         void wait();
     };
@@ -219,19 +251,36 @@ void SyncintTimer::start()
 #else
     struct sigaction s;
 
-    s.sa_handler = [](int n) {
-        timerInterrupt.trigger();
+    s.sa_handler = [](int) {
+        if(waitingThreadActive.load(std::memory_order_acquire))
+            timerInterrupt.trigger();
     };
     sigemptyset(&s.sa_mask);
     s.sa_flags = 0;
     sigaction(SIGALRM, &s, nullptr);
 
+    waitingThread = pthread_self();
+    waitingThreadActive.store(true, std::memory_order_release);
+
     sigset_t sigs;
     sigemptyset(&sigs);
     sigaddset(&sigs, SIGALRM);
     pthread_sigmask(SIG_UNBLOCK, &sigs, NULL);
+#endif
+}
 
-    waitingThread = pthread_self();
+/* Stop delivering timer interrupts, and make sure a signal that is already
+ * pending cannot forward to (or touch the state of) the emulator thread once
+ * it starts to exit.  Must be called on the emulator thread. */
+void SyncintTimer::stop()
+{
+#if USE_TIMER_THREAD
+    /* The timer thread is stopped and joined in the destructor. */
+#else
+    waitingThreadActive.store(false, std::memory_order_release);
+
+    struct itimerval t = {};
+    setitimer(ITIMER_REAL, &t, nullptr);
 #endif
 }
 
@@ -304,6 +353,11 @@ void Executor::syncint_init()
 
     timerInterrupt = Interrupt(&timeInterruptHandler);
     timer.start();
+}
+
+void Executor::syncint_shutdown()
+{
+    timer.stop();
 }
 
 void Executor::syncint_wait_interrupt()

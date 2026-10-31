@@ -28,6 +28,11 @@ startup, including during emulator initialization; attach the Tracy profiler
 when you want a trace. `TRACY_ON_DEMAND` is intentionally not defined so that
 startup can be profiled.
 
+Tracy's worker threads are started from a static initializer with
+`init_priority(105)`, i.e. before ordinary static initializers run. Any state a
+thread inherits (notably the signal mask) must therefore be set up earlier;
+see `2026-10-31-sigalrm-shutdown-crash.md` for the SIGALRM example.
+
 ## What is instrumented
 
 - `GeneratedEntrypoint::handle68K` wraps every 68K trap dispatch (including

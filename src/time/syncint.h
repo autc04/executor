@@ -10,6 +10,7 @@ class PowerCore;
 namespace Executor
 {
 extern void syncint_init();
+extern void syncint_shutdown();
 extern void syncint_post(std::chrono::microseconds usecs, bool fromLast = false);
 extern void syncint_wait_interrupt();
 extern void syncint_check_interrupt();

@@ -549,6 +549,11 @@ int main(int argc, char **argv)
         }
 
         vdriver->endEventLoop();
+
+        /* Disarm the timer before this thread exits: a SIGALRM that fires
+         * afterwards would otherwise be delivered to another thread, whose
+         * handler forwards it to our now-dead pthread_t. */
+        syncint_shutdown();
     });
 
     vdriver->runEventLoop();
