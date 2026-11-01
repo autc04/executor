@@ -409,8 +409,8 @@ void hilite_window(int left, int top, int right, int bottom)
     /* draw the lines */
     RGBForeColor(lines);
 
-    l = left + 1;
-    r = right - 2;
+    l = left + 2;
+    r = right - 3;
     MoveTo(l, top - 15);
     LineTo(r, top - 15);
     MoveTo(l, top - 13);
@@ -426,7 +426,8 @@ void hilite_window(int left, int top, int right, int bottom)
 }
 
 void draw_title(GrafPtr w,
-                int go_away_drawn, int zoom_drawn)
+                int go_away_drawn, int zoom_drawn,
+                bool movableDBox = false)
 {
     GrafPtr tp;
     int left, top, right, bottom;
@@ -441,6 +442,14 @@ void draw_title(GrafPtr w,
     right = PORT_RECT(w).right - PORT_BOUNDS(w).left;
     bottom = PORT_RECT(w).bottom - PORT_BOUNDS(w).top;
 
+    if(movableDBox)
+    {
+        left -= 8;
+        top -= 6;
+        right += 8;
+        bottom += 8;
+    }
+    
     /* #warning "clean up this port mess in draw_title ()" */
     GUEST<GrafPtr> tmpPort;
     GetPort(&tmpPort);
@@ -628,57 +637,56 @@ void draw_grow_lines(Rect *bounds)
     LineTo(right - 15, bottom - 1); /* at side */
 }
 
-void draw_dialog_box(GrafPtr w)
+void draw_dialog_box(GrafPtr w, bool movable = false)
 {
     int left, top, right, bottom;
-    Rect r;
-    RGBColor middle_color;
 
     left = PORT_RECT(w).left - PORT_BOUNDS(w).left;
     top = PORT_RECT(w).top - PORT_BOUNDS(w).top;
     right = PORT_RECT(w).right - PORT_BOUNDS(w).left;
     bottom = PORT_RECT(w).bottom - PORT_BOUNDS(w).top;
 
+    Rect contentRect = { top, left, bottom, right };
+    Rect tempRect;
+    auto rect = [&tempRect](int l, int t, int r, int b) -> const Rect* { return &(tempRect = { t, l, b, r }); };
+    auto grow = [&tempRect](Rect r, int d) -> const Rect* { return &(tempRect = { r.top-d, r.left-d, r.bottom+d, r.right+d }); };
+    
     PenSize(1, 1);
     PenMode(patCopy);
 
-    /* draw the outtermost rectangle; in the frame_shadow_color */
-    RGBForeColor(frame_shadow);
-    SetRect(&r, left - 8, top - 8, right + 8, bottom + 8);
-    FrameRect(&r);
-
-    /* draw the center rectangle */
-    if(color_p)
+    if(movable)
     {
-        middle_color.red = 0xBBBB;
-        middle_color.green = 0xBBBB;
-        middle_color.blue = 0xBBBB;
+        /* bounds of the title bar */
+        /* clear the title bar with the titlebar background color; title bar
+        color is dependent on whether or not the window is hilited,
+        `validate_colors_for_window ()' takes this into account */
+        RGBForeColor(title_bar_bk);
+        PaintRect(rect(left - 8, top - 23, right + 8, top - 7));
+    
+        /* draw the outtermost rectangle; in the frame_shadow_color */
+        RGBForeColor(frame_shadow);
+        
+        FrameRect(rect(left - 8, top - 23, right + 8, bottom + 8));
     }
     else
-        middle_color = ROMlib_white_rgb_color;
-
-    RGBForeColor(&middle_color);
-    InsetRect(&r, 2, 2);
-    FrameRect(&r);
-
-    /* draw the innermost rectangle; in the dark dialog color */
-    RGBForeColor(dialog_dark);
-    InsetRect(&r, 2, 2);
-    FrameRect(&r);
-
-    /* FIXME:
-     go in one more pixel, and white out a rect
-     three pixels wide; having to do this worries
-     me that the location of the border may be wrong,
-     resolve this */
-    InsetRect(&r, 1, 1);
+        FrameRect(grow(contentRect, 8));
+        
     PenSize(3, 3);
     RGBForeColor(content);
-    FrameRect(&r);
+    FrameRect(grow(contentRect, 3));
     PenSize(1, 1);
 
-    if(color_p)
+    if(color_p && WINDOW_HILITED(w))
     {
+        /* draw the center rectangle */
+        RGBColor middle_color = { 0xBBBB, 0xBBBB, 0xBBBB };
+        RGBForeColor(&middle_color);
+        FrameRect(grow(contentRect, 6));
+
+        /* draw the innermost rectangle; in the dark dialog color */
+        RGBForeColor(dialog_dark);
+        FrameRect(grow(contentRect, 4));
+    
         /* and now for the inbetween hiliting */
         RGBForeColor(dialog_light);
         MoveTo(left - 7, bottom + 6);
@@ -701,14 +709,34 @@ void draw_dialog_box(GrafPtr w)
     }
     else
     {
-        RGBForeColor(&ROMlib_black_rgb_color);
-        InsetRect(&r, -2, -2);
-        FrameRect(&r);
+        /* draw the center rectangle */
+        RGBForeColor(&ROMlib_white_rgb_color);
+        FrameRect(grow(contentRect, 6));
+
+        PenSize(2, 2);
+        if(!color_p && !WINDOW_HILITED(w))
+            PenPat(&qdGlobals().gray);
+        RGBForeColor(title);
+        FrameRect(grow(contentRect, 5));
+        if(!color_p && !WINDOW_HILITED(w))
+            PenPat(&qdGlobals().black);
+        PenSize(1, 1);
 
         RGBForeColor(&ROMlib_white_rgb_color);
-        InsetRect(&r, -2, -2);
-        FrameRect(&r);
+        FrameRect(grow(contentRect, 7));
     }
+
+    if (movable)
+    {
+        if(WINDOW_HILITED(w))
+            hilite_window(left - 7, top - 4, right + 7, bottom + 8);
+        draw_title(w, false, false, true);
+    }
+    
+    /* #warning "delete these, they shouldn't be necessary" */
+    /* be a sneaky bastard, and set the fg/bk color to b/w */
+    RGBForeColor(&ROMlib_black_rgb_color);
+    RGBBackColor(&ROMlib_white_rgb_color);
 }
 
 void draw_plain_dialog_box(GrafPtr w)
@@ -979,6 +1007,23 @@ void calc_dialog_box(GrafPtr w, INTEGER n)
                left - n, top - n, right + n, bottom + n);
 }
 
+
+void calc_movable_dialog_box(GrafPtr w)
+{
+    int left, top, right, bottom;
+    const INTEGER n = 8;
+
+    left = PORT_RECT(w).left - PORT_BOUNDS(w).left;
+    top = PORT_RECT(w).top - PORT_BOUNDS(w).top;
+    right = PORT_RECT(w).right - PORT_BOUNDS(w).left;
+    bottom = PORT_RECT(w).bottom - PORT_BOUNDS(w).top;
+
+    SetRectRgn(WINDOW_CONT_REGION(w), left, top, right, bottom);
+    SetRectRgn(WINDOW_STRUCT_REGION(w),
+               left - n, top - n - 15, right + n, bottom + n);
+}
+
+
 struct draw_save
 {
     PenState pen_state;
@@ -1027,7 +1072,6 @@ LONGINT Executor::C_wdef0(INTEGER varcode, WindowPtr window, INTEGER message,
             {
                 case documentProc:
                 case noGrowDocProc:
-                case movableDBoxProc:
                     switch(parm)
                     {
                         case 0: /* draw entire window frame */
@@ -1042,8 +1086,12 @@ LONGINT Executor::C_wdef0(INTEGER varcode, WindowPtr window, INTEGER message,
                             break;
                     }
                     break;
+                case movableDBoxProc:
+                    draw_dialog_box((GrafPtr)w, true);
+                    break;
+                    
                 case dBoxProc:
-                    draw_dialog_box((GrafPtr)w);
+                    draw_dialog_box((GrafPtr)w, false);
                     break;
                 case plainDBox:
                     draw_plain_dialog_box((GrafPtr)w);
@@ -1072,10 +1120,12 @@ LONGINT Executor::C_wdef0(INTEGER varcode, WindowPtr window, INTEGER message,
             {
                 case documentProc:
                 case noGrowDocProc:
-                case movableDBoxProc:
                     // FIXME: #warning TODO: correct frame for movableDBoxProc (toolbox essentials 4-10)
                     calc_doc((GrafPtr)w);
                     break;
+                case movableDBoxProc:
+                    calc_movable_dialog_box((GrafPtr)w);
+                    break;                
                 case dBoxProc:
                     calc_dialog_box((GrafPtr)w, 8);
                     break;

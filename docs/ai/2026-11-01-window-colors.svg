@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1580" viewBox="0 0 1100 1580">
+  <style>
+    .title   { font-family: 'DejaVu Sans', sans-serif; font-size: 28px; font-weight: bold; fill: #111111; }
+    .sub     { font-family: 'DejaVu Sans Mono', monospace; font-size: 12px; fill: #555555; }
+    .h2      { font-family: 'DejaVu Sans', sans-serif; font-size: 17px; font-weight: bold; fill: #111111; }
+    .note    { font-family: 'DejaVu Sans', sans-serif; font-size: 12px; fill: #666666; }
+    .col     { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; font-weight: bold; fill: #777777; letter-spacing: 0.06em; }
+    .idx     { font-family: 'DejaVu Sans Mono', monospace; font-size: 13px; fill: #555555; }
+    .name    { font-family: 'DejaVu Sans Mono', monospace; font-size: 13px; fill: #111111; }
+    .hex     { font-family: 'DejaVu Sans Mono', monospace; font-size: 12px; fill: #111111; }
+    .rgb     { font-family: 'DejaVu Sans Mono', monospace; font-size: 12px; fill: #777777; }
+    .role    { font-family: 'DejaVu Sans', sans-serif; font-size: 12.5px; fill: #444444; }
+    .formula { font-family: 'DejaVu Sans Mono', monospace; font-size: 12px; fill: #333333; }
+    .legend  { font-family: 'DejaVu Sans', sans-serif; font-size: 12px; fill: #555555; }
+    .legendb { font-family: 'DejaVu Sans Mono', monospace; font-size: 12.5px; font-weight: bold; fill: #111111; }
+    .marker  { font-family: 'DejaVu Sans', sans-serif; font-size: 10px; font-weight: bold; fill: #111111; }
+    .swatch  { stroke: #9a9a9a; stroke-width: 1; }
+    .rule    { stroke: #e2e2e7; stroke-width: 1; }
+    .band    { fill: #f1f1f5; }
+  </style>
+
+  <rect x="0" y="0" width="1100" height="1580" fill="#fbfbfd"/>
+
+  <text class="title" x="48" y="62">Executor window colour tables</text>
+  <text class="sub" x="48" y="88">src/wind/windColor.cpp : default_color_win_ctab[13]  →  src/wind/windDocdef.cpp : validate_colors_for_window() → window_colors[19]</text>
+
+  <!-- ================= 1. base table ================= -->
+  <text class="h2" x="48" y="132">1 · Base table — default_color_win_ctab[13]</text>
+  <text class="note" x="48" y="153">Per-window tables (SetWinColor / GetAuxWin, the "wctb" resource) may override these; only values 0–12 are accepted.</text>
+
+  <text class="col" x="48" y="180">COLOUR</text>
+  <text class="col" x="175" y="180">#</text>
+  <text class="col" x="205" y="180">CONSTANT</text>
+  <text class="col" x="450" y="180">HEX</text>
+  <text class="col" x="530" y="180">RGB 16-BIT</text>
+  <text class="col" x="680" y="180">MEANING IN windDocdef.cpp</text>
+
+  <g>
+    <rect class="band" x="40" y="186" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="192" width="110" height="24" fill="#FFFFFF"/>
+    <text class="idx" x="175" y="209">0</text>
+    <text class="name" x="205" y="209">wContentColor</text>
+    <text class="hex" x="450" y="209">#FFFFFF</text>
+    <text class="rgb" x="530" y="209">FFFF, FFFF, FFFF</text>
+    <text class="role" x="680" y="209">window interior / background</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="224" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="241">1</text>
+    <text class="name" x="205" y="241">wFrameColor</text>
+    <text class="hex" x="450" y="241">#000000</text>
+    <text class="rgb" x="530" y="241">0000, 0000, 0000</text>
+    <text class="role" x="680" y="241">1-pixel frame outline</text>
+    <line class="rule" x1="40" y1="249" x2="1060" y2="249"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="250" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="256" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="273">2</text>
+    <text class="name" x="205" y="273">wTextColor</text>
+    <text class="hex" x="450" y="273">#000000</text>
+    <text class="rgb" x="530" y="273">0000, 0000, 0000</text>
+    <text class="role" x="680" y="273">title text</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="288" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="305">3</text>
+    <text class="name" x="205" y="305">wHiliteColor</text>
+    <text class="hex" x="450" y="305">#000000</text>
+    <text class="rgb" x="530" y="305">0000, 0000, 0000</text>
+    <text class="role" x="680" y="305">highlight</text>
+    <line class="rule" x1="40" y1="313" x2="1060" y2="313"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="314" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="320" width="110" height="24" fill="#FFFFFF"/>
+    <text class="idx" x="175" y="337">4</text>
+    <text class="name" x="205" y="337">wTitleBarColor</text>
+    <text class="hex" x="450" y="337">#FFFFFF</text>
+    <text class="rgb" x="530" y="337">FFFF, FFFF, FFFF</text>
+    <text class="role" x="680" y="337">title bar (base colour)</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="352" width="110" height="24" fill="#FFFFFF"/>
+    <text class="idx" x="175" y="369">5</text>
+    <text class="name" x="205" y="369">wHiliteColorLight</text>
+    <text class="hex" x="450" y="369">#FFFFFF</text>
+    <text class="rgb" x="530" y="369">FFFF, FFFF, FFFF</text>
+    <text class="role" x="680" y="369">highlight gradient, light end</text>
+    <line class="rule" x1="40" y1="377" x2="1060" y2="377"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="378" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="384" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="401">6</text>
+    <text class="name" x="205" y="401">wHiliteColorDark</text>
+    <text class="hex" x="450" y="401">#000000</text>
+    <text class="rgb" x="530" y="401">0000, 0000, 0000</text>
+    <text class="role" x="680" y="401">highlight gradient, dark end</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="416" width="110" height="24" fill="#FFFFFF"/>
+    <text class="idx" x="175" y="433">7</text>
+    <text class="name" x="205" y="433">wTitleBarLight</text>
+    <text class="hex" x="450" y="433">#FFFFFF</text>
+    <text class="rgb" x="530" y="433">FFFF, FFFF, FFFF</text>
+    <text class="role" x="680" y="433">title bar gradient, light end</text>
+    <line class="rule" x1="40" y1="441" x2="1060" y2="441"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="442" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="448" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="465">8</text>
+    <text class="name" x="205" y="465">wTitleBarDark</text>
+    <text class="hex" x="450" y="465">#000000</text>
+    <text class="rgb" x="530" y="465">0000, 0000, 0000</text>
+    <text class="role" x="680" y="465">title bar gradient, dark end</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="480" width="110" height="24" fill="#CCCCFF"/>
+    <text class="idx" x="175" y="497">9</text>
+    <text class="name" x="205" y="497">wDialogLight</text>
+    <text class="hex" x="450" y="497">#CCCCFF</text>
+    <text class="rgb" x="530" y="497">CCCC, CCCC, FFFF</text>
+    <text class="role" x="680" y="497">LT_BLUISH_RGB — grow box, light</text>
+    <line class="rule" x1="40" y1="505" x2="1060" y2="505"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="506" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="512" width="110" height="24" fill="#000000"/>
+    <text class="idx" x="175" y="529">10</text>
+    <text class="name" x="205" y="529">wDialogDark</text>
+    <text class="hex" x="450" y="529">#000000</text>
+    <text class="rgb" x="530" y="529">0000, 0000, 0000</text>
+    <text class="role" x="680" y="529">grow box, dark</text>
+  </g>
+  <g>
+    <rect class="swatch" x="48" y="544" width="110" height="24" fill="#CCCCFF"/>
+    <text class="idx" x="175" y="561">11</text>
+    <text class="name" x="205" y="561">wTingeLight</text>
+    <text class="hex" x="450" y="561">#CCCCFF</text>
+    <text class="rgb" x="530" y="561">CCCC, CCCC, FFFF</text>
+    <text class="role" x="680" y="561">LT_BLUISH_RGB — window tinge, light</text>
+    <line class="rule" x1="40" y1="569" x2="1060" y2="569"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="570" width="1020" height="32"/>
+    <rect class="swatch" x="48" y="576" width="110" height="24" fill="#333366"/>
+    <text class="idx" x="175" y="593">12</text>
+    <text class="name" x="205" y="593">wTingeDark</text>
+    <text class="hex" x="450" y="593">#333366</text>
+    <text class="rgb" x="530" y="593">3333, 3333, 6666</text>
+    <text class="role" x="680" y="593">DK_BLUISH_RGB — window tinge, dark</text>
+  </g>
+
+  <!-- ================= 2. derived ================= -->
+  <text class="h2" x="48" y="654">2 · Derived entries — window_colors[13…18]</text>
+  <text class="note" x="48" y="675">Built by AVERAGE_COLOR(c1, c2, ratio) = c1·ratio + c2·(1−ratio); the values below are for the default table above.</text>
+
+  <text class="col" x="48" y="702">#</text>
+  <text class="col" x="80" y="702">NAME (windDocdef.cpp)</text>
+  <text class="col" x="220" y="702">WINDOW</text>
+  <text class="col" x="290" y="702">SOURCE / FORMULA</text>
+  <text class="col" x="640" y="702">COLOUR</text>
+  <text class="col" x="735" y="702">HEX</text>
+
+  <g>
+    <rect class="band" x="40" y="708" width="1020" height="30"/>
+    <text class="idx" x="48" y="728">13</text>
+    <text class="name" x="80" y="728">title_bar_bk</text>
+    <text class="formula" x="220" y="728">active</text>
+    <text class="formula" x="290" y="728">avg(title_bar_light, title_bar_dark, 0xEEEE)</text>
+    <rect class="swatch" x="640" y="712" width="80" height="22" fill="#EEEEEE"/>
+    <text class="hex" x="735" y="728">#EEEEEE</text>
+  </g>
+  <g>
+    <text class="idx" x="48" y="758">13</text>
+    <text class="name" x="80" y="758">title_bar_bk</text>
+    <text class="formula" x="220" y="758">inactive</text>
+    <text class="formula" x="290" y="758">= content</text>
+    <rect class="swatch" x="640" y="742" width="80" height="22" fill="#FFFFFF"/>
+    <text class="hex" x="735" y="758">#FFFFFF</text>
+    <line class="rule" x1="40" y1="768" x2="1060" y2="768"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="768" width="1020" height="30"/>
+    <text class="idx" x="48" y="788">14</text>
+    <text class="name" x="80" y="788">title</text>
+    <text class="formula" x="220" y="788">active</text>
+    <text class="formula" x="290" y="788">= text</text>
+    <rect class="swatch" x="640" y="772" width="80" height="22" fill="#000000"/>
+    <text class="hex" x="735" y="788">#000000</text>
+  </g>
+  <g>
+    <text class="idx" x="48" y="818">14</text>
+    <text class="name" x="80" y="818">title</text>
+    <text class="formula" x="220" y="818">inactive</text>
+    <text class="formula" x="290" y="818">avg(hilite_light, black, 0x8888)</text>
+    <rect class="swatch" x="640" y="802" width="80" height="22" fill="#888888"/>
+    <text class="hex" x="735" y="818">#888888</text>
+    <line class="rule" x1="40" y1="828" x2="1060" y2="828"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="828" width="1020" height="30"/>
+    <text class="idx" x="48" y="848">15</text>
+    <text class="name" x="80" y="848">frame_outline</text>
+    <text class="formula" x="220" y="848">active</text>
+    <text class="formula" x="290" y="848">= frame</text>
+    <rect class="swatch" x="640" y="832" width="80" height="22" fill="#000000"/>
+    <text class="hex" x="735" y="848">#000000</text>
+  </g>
+  <g>
+    <text class="idx" x="48" y="878">15</text>
+    <text class="name" x="80" y="878">frame_outline</text>
+    <text class="formula" x="220" y="878">inactive</text>
+    <text class="formula" x="290" y="878">avg(hilite_light, black, 0x5555)</text>
+    <rect class="swatch" x="640" y="862" width="80" height="22" fill="#555555"/>
+    <text class="hex" x="735" y="878">#555555</text>
+    <line class="rule" x1="40" y1="888" x2="1060" y2="888"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="888" width="1020" height="30"/>
+    <text class="idx" x="48" y="908">16</text>
+    <text class="name" x="80" y="908">half_tinge</text>
+    <text class="formula" x="220" y="908">always</text>
+    <text class="formula" x="290" y="908">avg(tinge_light, tinge_dark, 0xAAAA)</text>
+    <rect class="swatch" x="640" y="892" width="80" height="22" fill="#9999CC"/>
+    <text class="hex" x="735" y="908">#9999CC</text>
+  </g>
+  <g>
+    <text class="idx" x="48" y="938">17</text>
+    <text class="name" x="80" y="938">lines</text>
+    <text class="formula" x="220" y="938">always</text>
+    <text class="formula" x="290" y="938">avg(title_bar_light, title_bar_dark, 0xAAAA)</text>
+    <rect class="swatch" x="640" y="922" width="80" height="22" fill="#AAAAAA"/>
+    <text class="hex" x="735" y="938">#AAAAAA</text>
+    <line class="rule" x1="40" y1="948" x2="1060" y2="948"/>
+  </g>
+  <g>
+    <rect class="band" x="40" y="948" width="1020" height="30"/>
+    <text class="idx" x="48" y="968">18</text>
+    <text class="name" x="80" y="968">half_dialog</text>
+    <text class="formula" x="220" y="968">always</text>
+    <text class="formula" x="290" y="968">avg(dialog_light, dialog_dark, 0x8888)</text>
+    <rect class="swatch" x="640" y="952" width="80" height="22" fill="#6D6D88"/>
+    <text class="hex" x="735" y="968">#6D6D88</text>
+  </g>
+
+  <!-- ================= 3. window anatomy ================= -->
+  <text class="h2" x="48" y="1020">3 · Where they land on an active window (default table)</text>
+
+  <!-- window -->
+  <rect x="90" y="1070" width="420" height="280" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+  <rect x="91" y="1071" width="418" height="23" fill="#EEEEEE"/>
+  <rect x="91" y="1094" width="418" height="3" fill="#9999CC"/>
+  <rect x="91" y="1097" width="418" height="1.5" fill="#AAAAAA"/>
+  <rect x="96" y="1075" width="14" height="14" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+  <rect x="488" y="1075" width="14" height="14" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+  <text x="300" y="1088" text-anchor="middle" font-family="'DejaVu Sans', sans-serif" font-size="11" fill="#000000">Untitled</text>
+  <text x="300" y="1180" text-anchor="middle" font-family="'DejaVu Sans', sans-serif" font-size="13" fill="#000000">window content</text>
+  <rect x="492" y="1331" width="16" height="16" fill="#CCCCFF" stroke="#000000" stroke-width="1.5"/>
+  <line x1="495" y1="1344" x2="506" y2="1333" stroke="#6D6D88" stroke-width="1.5"/>
+  <line x1="495" y1="1338" x2="500" y2="1333" stroke="#6D6D88" stroke-width="1.5"/>
+  <line x1="500" y1="1344" x2="506" y2="1338" stroke="#6D6D88" stroke-width="1.5"/>
+
+  <!-- markers -->
+  <g>
+    <circle cx="125" cy="1070" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="125" y="1073.5" text-anchor="middle">1</text>
+  </g>
+  <g>
+    <circle cx="410" cy="1083" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="410" y="1086.5" text-anchor="middle">2</text>
+  </g>
+  <g>
+    <circle cx="103" cy="1108" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="103" y="1111.5" text-anchor="middle">3</text>
+  </g>
+  <g>
+    <circle cx="465" cy="1096" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="465" y="1099.5" text-anchor="middle">4</text>
+  </g>
+  <g>
+    <circle cx="428" cy="1113" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="428" y="1116.5" text-anchor="middle">5</text>
+  </g>
+  <g>
+    <circle cx="300" cy="1225" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="300" y="1228.5" text-anchor="middle">6</text>
+  </g>
+  <g>
+    <circle cx="470" cy="1339" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="470" y="1342.5" text-anchor="middle">7</text>
+  </g>
+
+  <!-- legend -->
+  <g>
+    <circle cx="565" cy="1072" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1075.5" text-anchor="middle">1</text>
+    <text class="legendb" x="586" y="1072">wFrameColor · #000000</text>
+    <text class="legend" x="586" y="1088">1-pixel outline around the whole window</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1112" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1115.5" text-anchor="middle">2</text>
+    <text class="legendb" x="586" y="1112">title_bar_bk[13] · #EEEEEE</text>
+    <text class="legend" x="586" y="1128">title bar: #FFFFFF when the window is inactive</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1152" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1155.5" text-anchor="middle">3</text>
+    <text class="legendb" x="586" y="1152">frame + content · #000000 / #FFFFFF</text>
+    <text class="legend" x="586" y="1168">close box and zoom box: framed, filled with content colour</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1192" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1195.5" text-anchor="middle">4</text>
+    <text class="legendb" x="586" y="1192">half_tinge[16] · #9999CC</text>
+    <text class="legend" x="586" y="1208">bluish shadow band drawn under the title bar</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1232" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1235.5" text-anchor="middle">5</text>
+    <text class="legendb" x="586" y="1232">lines[17] · #AAAAAA</text>
+    <text class="legend" x="586" y="1248">separator lines (title bar bottom rule)</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1272" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1275.5" text-anchor="middle">6</text>
+    <text class="legendb" x="586" y="1272">wContentColor · #FFFFFF</text>
+    <text class="legend" x="586" y="1288">the interior, and the window's RGB back colour</text>
+  </g>
+  <g>
+    <circle cx="565" cy="1312" r="9" fill="#FFFFFF" stroke="#000000"/>
+    <text class="marker" x="565" y="1315.5" text-anchor="middle">7</text>
+    <text class="legendb" x="586" y="1312">dialog_light / half_dialog · #CCCCFF / #6D6D88</text>
+    <text class="legend" x="586" y="1328">grow box, with dialog_dark · #000000 for the inner frame</text>
+  </g>
+
+  <!-- ================= 4. bw fallback ================= -->
+  <text class="h2" x="48" y="1400">4 · The monochrome fallback — bw_window_colors[19]</text>
+  <text class="note" x="48" y="1421">Used when the mixing step fails on the current device depth; red is the literal UNUSED sentinel {0xFFFF, 0, 0}.</text>
+
+  <g>
+    <rect class="swatch" x="90" y="1436" width="40" height="34" fill="#FFFFFF"/>
+    <text class="idx" x="102" y="1486">0</text>
+    <rect class="swatch" x="134" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="146" y="1486">1</text>
+    <rect class="swatch" x="178" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="190" y="1486">2</text>
+    <rect class="swatch" x="222" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="234" y="1486">3</text>
+    <rect class="swatch" x="266" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="278" y="1486">4</text>
+    <rect class="swatch" x="310" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="322" y="1486">5</text>
+    <rect class="swatch" x="354" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="366" y="1486">6</text>
+    <rect class="swatch" x="398" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="410" y="1486">7</text>
+    <rect class="swatch" x="442" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="454" y="1486">8</text>
+    <rect class="swatch" x="486" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="498" y="1486">9</text>
+    <rect class="swatch" x="530" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="538" y="1486">10</text>
+    <rect class="swatch" x="574" y="1436" width="40" height="34" fill="#FFFFFF"/>
+    <text class="idx" x="582" y="1486">11</text>
+    <rect class="swatch" x="618" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="626" y="1486">12</text>
+    <rect class="swatch" x="662" y="1436" width="40" height="34" fill="#FFFFFF"/>
+    <text class="idx" x="670" y="1486">13</text>
+    <rect class="swatch" x="706" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="714" y="1486">14</text>
+    <rect class="swatch" x="750" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="758" y="1486">15</text>
+    <rect class="swatch" x="794" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="806" y="1486">16</text>
+    <rect class="swatch" x="838" y="1436" width="40" height="34" fill="#000000"/>
+    <text class="idx" x="846" y="1486">17</text>
+    <rect class="swatch" x="882" y="1436" width="40" height="34" fill="#FF0000"/>
+    <text class="idx" x="894" y="1486">18</text>
+  </g>
+
+  <text class="note" x="48" y="1526">Slot 0 is patched from the colour table at the end (line 193), so a window with a coloured background keeps it. Slots 2–9, 16 and 18 are never painted in the</text>
+  <text class="note" x="48" y="1544">B&amp;W path; slot 13 is white and slot 11 is white, so monochrome windows show a plain white title bar and white tinge.</text>
+  <text class="note" x="48" y="1566">Rounded windows (wdef16) return before the averaging step, so slots 15–18 keep their static zero (black) values.</text>
+</svg>
