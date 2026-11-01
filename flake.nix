@@ -212,6 +212,7 @@
           inputsFrom = [ self'.packages.default ];
           packages = [ pkgs.tracy ];
           TRACY_SOURCE_DIR = "${pkgs.tracy.src}";
+          hardeningDisable = [ "all" ];
         };
       };
     };
