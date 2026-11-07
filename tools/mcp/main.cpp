@@ -1,18 +1,15 @@
 /* executor-mcp -- a small MCP (Model Context Protocol) server that lets an AI
- * agent drive a running Executor session.
+ * agent drive a *running* Executor session.
  *
- * It is the client of Executor's control socket (--control), not of the guest.
- * See docs/ai/2026-11-06-agent-control-design.md.
+ * It attaches to Executor's control socket (--control); it never starts or
+ * manages Executor itself.  See docs/ai/2026-11-06-agent-control-design.md.
  *
  *   executor-mcp --attach unix:/run/user/1000/executor/1234.sock
- *   executor-mcp --spawn build/executor --size 1024x768 --bpp 8 -- tests.ad
+ *   executor-mcp --attach tcp:127.0.0.1:47800
  *
  * MCP messages are newline-delimited JSON-RPC 2.0 on stdin/stdout.  Nothing
- * else may be written to stdout; the spawned Executor's stdout is redirected to
- * stderr.
+ * else may be written to stdout.
  */
-
-#ifndef _WIN32
 
 #include "session.h"
 #include "tools.h"
@@ -188,7 +185,6 @@ void usage()
 {
     std::fprintf(stderr,
         "usage: executor-mcp --attach <endpoint>\n"
-        "       executor-mcp --spawn <executor> [--size WxH] [--bpp N] [-- app args...]\n"
         "  endpoint: unix:<path> or tcp:<host>:<port>\n");
 }
 
@@ -199,7 +195,6 @@ void usage()
 int main(int argc, char **argv)
 {
     std::string attach;
-    Executor::mcp::SpawnOptions spawnOptions;
 
     for(int i = 1; i < argc; i++)
     {
@@ -207,18 +202,6 @@ int main(int argc, char **argv)
 
         if(arg == "--attach" && i + 1 < argc)
             attach = argv[++i];
-        else if(arg == "--spawn" && i + 1 < argc)
-            spawnOptions.executor = argv[++i];
-        else if(arg == "--size" && i + 1 < argc)
-            spawnOptions.size = argv[++i];
-        else if(arg == "--bpp" && i + 1 < argc)
-            spawnOptions.bpp = argv[++i];
-        else if(arg == "--")
-        {
-            for(int j = i + 1; j < argc; j++)
-                spawnOptions.appArgs.push_back(argv[j]);
-            break;
-        }
         else
         {
             Executor::mcp::usage();
@@ -226,44 +209,19 @@ int main(int argc, char **argv)
         }
     }
 
-    try
+    if(attach.empty())
     {
-        if(!attach.empty())
-        {
-            Executor::mcp::Session session;
-            if(!session.connect(attach))
-            {
-                std::fprintf(stderr, "executor-mcp: cannot connect to %s\n",
-                             attach.c_str());
-                return 1;
-            }
-            return Executor::mcp::runMcp(session);
-        }
-
-        if(!spawnOptions.executor.empty())
-        {
-            auto session = Executor::mcp::Session::spawn(spawnOptions);
-            if(!session)
-                return 1;
-            return Executor::mcp::runMcp(*session);
-        }
-
         Executor::mcp::usage();
         return 2;
     }
-    catch(const std::exception &e)
+
+    Executor::mcp::Session session;
+
+    if(!session.connect(attach))
     {
-        std::fprintf(stderr, "executor-mcp: %s\n", e.what());
+        std::fprintf(stderr, "executor-mcp: cannot connect to %s\n", attach.c_str());
         return 1;
     }
+
+    return Executor::mcp::runMcp(session);
 }
-
-#else /* _WIN32 */
-
-int main(int, char **)
-{
-    std::fprintf(stderr, "executor-mcp is not supported on Windows yet\n");
-    return 1;
-}
-
-#endif

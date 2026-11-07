@@ -8,6 +8,11 @@ add_executable(executor-mcp
 
 target_link_libraries(executor-mcp Boost::json PNG::PNG)
 
+if(WIN32)
+    # asio needs the Winsock libraries, and MinGW does not autolink.
+    target_link_libraries(executor-mcp ws2_32 mswsock)
+endif()
+
 target_compile_features(executor-mcp PRIVATE cxx_std_20)
 
 # Keep the binary next to executor-tool.

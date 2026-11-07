@@ -423,10 +423,10 @@ Responsibilities that belong here, not in the emulator:
   built when CMake finds it), and base64 again for the MCP image block;
   `max_width` downscaling. Two base64 round trips per screenshot is the accepted
   cost of a JSON-only control stream.
-- Process spawning (with `--headless --control auto --size … --bpp …` defaults) and
-  stdout/stderr capture, so logs and `--logtraps` output are available.
-- Attach: `--attach <endpoint>`, and `--list` scanning `$XDG_RUNTIME_DIR/executor/`.
-  The session's `hello` identifies the app so the caller can pick the right one.
+- Attach only: `--attach <endpoint>` (`unix:<path>` or `tcp:<host>:<port>`), using
+  asio for the client socket just like the server. The tool never starts or
+  manages Executor, so there is no process handling and no platform-specific
+  spawn path; the session's `hello` identifies the app.
 - Rejecting non-ASCII `type_text` before it reaches the socket, and surfacing
   `delivered: false` instead of pretending a click worked.
 
@@ -490,7 +490,7 @@ Documentation to update when this lands: `docs/subsystems/video-driver.md`
 1. `runOnEmulatorThread` seam; `--control` server; `hello`, `screen`, `status`,
    `frame`. Verifiable with `socat` and a dumped PNG.
 2. Job queue plus the pointer and keyboard verbs; clicking through `socat`.
-3. `tools/executor-mcp` with the tool table above, spawn and attach.
+3. `tools/executor-mcp` with the tool table above and `--attach`.
 4. Later: `windows`/`menus`/`dialog-items` (the closest classic Mac OS has to an
    accessibility tree — works for Dialog Manager dialogs and standard controls, not
    for custom-drawn UI), `trap-log` streaming, `--record`/`--playback` wrappers,
@@ -526,6 +526,9 @@ Where the implementation deviates from the plan, and what is still missing:
   reports the same condition.
 - **PNG output uses libpng.** `executor-mcp` is only built when CMake finds
   libpng; `flake.nix` provides it. A blank 640×480 frame is ~5 KB.
+- **The tool is attach-only** (`--attach <endpoint>`) and uses asio for the
+  client socket, matching the server. It does not start or manage Executor, so
+  there is no `fork`/`exec` path and no platform gate beyond libpng.
 - **No automated tests** for the control layer or the MCP tool yet; the native
   suite passes unchanged (269 tests, `ctest -LE xfail`). The obvious additions
   are the keymap reverse lookup, job-queue ordering under fake time, and a
