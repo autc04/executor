@@ -56,7 +56,7 @@ void writeError(const json::value &id, int code, const std::string &text)
     writeMessage(message);
 }
 
-int runMcp(Session &session)
+int runMcp(ToolState &state)
 {
     std::string line;
 
@@ -158,7 +158,7 @@ int runMcp(Session &session)
 
             try
             {
-                writeResult(id, callTool(session, name, args));
+                writeResult(id, callTool(state, name, args));
             }
             catch(const std::exception &e)
             {
@@ -184,8 +184,9 @@ int runMcp(Session &session)
 void usage()
 {
     std::fprintf(stderr,
-        "usage: executor-mcp --attach <endpoint>\n"
-        "  endpoint: unix:<path> or tcp:<host>:<port>\n");
+        "usage: executor-mcp [--attach <endpoint>]\n"
+        "  The server starts unattached; the agent calls the attach tool.\n"
+        "  --attach pre-attaches for interactive use: unix:<path> or tcp:<host>:<port>\n");
 }
 
 }
@@ -209,19 +210,22 @@ int main(int argc, char **argv)
         }
     }
 
-    if(attach.empty())
+    Executor::mcp::ToolState state;
+
+    if(!attach.empty())
     {
-        Executor::mcp::usage();
-        return 2;
+        /* Optional pre-attach; the agent can also call the attach tool. */
+        try
+        {
+            state.session.connect(attach);
+            state.endpoint = attach;
+        }
+        catch(const std::exception &e)
+        {
+            std::fprintf(stderr, "executor-mcp: %s\n", e.what());
+            return 1;
+        }
     }
 
-    Executor::mcp::Session session;
-
-    if(!session.connect(attach))
-    {
-        std::fprintf(stderr, "executor-mcp: cannot connect to %s\n", attach.c_str());
-        return 1;
-    }
-
-    return Executor::mcp::runMcp(session);
+    return Executor::mcp::runMcp(state);
 }

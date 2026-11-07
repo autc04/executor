@@ -2,11 +2,11 @@
 
 #include "base64.h"
 #include "png.h"
-#include "session.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 
 namespace json = boost::json;
@@ -46,6 +46,12 @@ json::object toolError(const std::string &message)
     result["content"] = std::move(content);
     result["isError"] = true;
     return result;
+}
+
+json::object notAttached()
+{
+    return toolError("not attached to an Executor session: call the attach tool "
+                     "with an endpoint first");
 }
 
 std::string downscaleRGBA(const std::string &rgba, int width, int height,
@@ -128,11 +134,52 @@ json::object toolDefinition(const char *name, const char *description,
     return tool;
 }
 
+/* Attaches to `endpoint`, validates it with hello and replaces the current
+ * session.  A failed attach leaves the server unattached. */
+json::object attachSession(ToolState &state, const json::object &args)
+{
+    if(!args.contains("endpoint") || !args.at("endpoint").is_string())
+        return toolError("attach needs an \"endpoint\" string");
+
+    std::string endpoint(args.at("endpoint").as_string());
+
+    try
+    {
+        state.session.connect(endpoint);
+
+        json::object hello = state.session.request(json::object{ { "cmd", "hello" } });
+
+        if(!hello.contains("ok") || !hello.at("ok").as_bool())
+        {
+            state.session.close();
+            return toolError("executor rejected the hello request");
+        }
+
+        state.endpoint = endpoint;
+        hello["endpoint"] = endpoint;
+
+        return toolReply(hello);
+    }
+    catch(const std::exception &e)
+    {
+        state.session.close();
+        state.endpoint.clear();
+        return toolError(std::string("cannot attach: ") + e.what());
+    }
+}
+
 }
 
 json::array toolList()
 {
     json::array tools;
+
+    tools.push_back(toolDefinition(
+        "attach",
+        "Attach to a running Executor session. Must be called before any other "
+        "tool. endpoint is \"unix:<path>\" or \"tcp:<host>:<port>\" (loopback "
+        "only); the reply describes the attached session.",
+        { { "endpoint", prop("string") } }, { "endpoint" }));
 
     tools.push_back(toolDefinition(
         "screenshot",
@@ -206,11 +253,32 @@ json::array toolList()
     return tools;
 }
 
-json::object callTool(Session &session, const std::string &name,
+json::object callTool(ToolState &state, const std::string &name,
                       const json::object &args)
 {
+    if(name == "attach")
+        return attachSession(state, args);
+
+    if(!state.attached())
+        return notAttached();
+
+    /* Any I/O failure means the attached session is gone; drop it so the agent
+     * can attach again rather than reusing a dead socket. */
+    auto request = [&state](json::object command) {
+        try
+        {
+            return state.session.request(std::move(command));
+        }
+        catch(const std::exception &e)
+        {
+            state.session.close();
+            state.endpoint.clear();
+            throw std::runtime_error(std::string("session ended: ") + e.what());
+        }
+    };
+
     auto forwarded = [&](json::object command) {
-        return toolReply(session.request(std::move(command)));
+        return toolReply(request(std::move(command)));
     };
 
     if(name == "screenshot")
@@ -222,7 +290,7 @@ json::object callTool(Session &session, const std::string &name,
            region && region->is_array())
             command["rect"] = *region;
 
-        json::object reply = session.request(command);
+        json::object reply = request(command);
 
         if(!reply.contains("ok") || !reply.at("ok").as_bool())
             return toolReply(reply);
@@ -263,7 +331,11 @@ json::object callTool(Session &session, const std::string &name,
     }
 
     if(name == "status")
-        return forwarded(json::object{ { "cmd", "status" } });
+    {
+        json::object reply = request(json::object{ { "cmd", "status" } });
+        reply["endpoint"] = state.endpoint;
+        return toolReply(reply);
+    }
 
     if(name == "move")
         return forwarded(json::object{ { "cmd", "move" },
@@ -289,7 +361,7 @@ json::object callTool(Session &session, const std::string &name,
             move["cmd"] = "move";
             move["x"] = *x;
             move["y"] = args.at("y");
-            session.request(std::move(move));
+            request(std::move(move));
         }
 
         json::object command;

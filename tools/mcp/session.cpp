@@ -19,8 +19,7 @@ namespace Executor::mcp
 namespace
 {
 
-/* Connect deadlines and per-request deadlines; a wedged executor must not hang
- * the MCP server forever. */
+/* A wedged executor must not hang the MCP server forever. */
 constexpr std::chrono::seconds kRequestTimeout{ 120 };
 
 /* Runs an awaitable to completion on this thread and returns its value. */
@@ -46,20 +45,26 @@ T runSync(asio::io_context &ioc, asio::awaitable<T> awaitable)
 }
 
 /* Parses "unix:<path>" or "tcp:<host>:<port>" into an address usable by a
- * generic stream socket. */
-std::optional<asio::generic::stream_protocol::endpoint>
-parseEndpoint(const std::string &endpoint)
+ * generic stream socket.  Throws with a user-facing message. */
+asio::generic::stream_protocol::endpoint parseEndpoint(const std::string &endpoint)
 {
     if(endpoint.rfind("unix:", 0) == 0)
+    {
+        std::string path = endpoint.substr(5);
+
+        if(path.empty())
+            throw std::runtime_error("empty unix socket path");
+
         return asio::generic::stream_protocol::endpoint(
-            asio::local::stream_protocol::endpoint(endpoint.substr(5)));
+            asio::local::stream_protocol::endpoint(path));
+    }
 
     if(endpoint.rfind("tcp:", 0) == 0)
     {
         std::string rest = endpoint.substr(4);
         auto colon = rest.rfind(':');
         std::string host = colon == std::string::npos ? rest : rest.substr(0, colon);
-        std::string port = colon == std::string::npos ? "0" : rest.substr(colon + 1);
+        std::string port = colon == std::string::npos ? "" : rest.substr(colon + 1);
 
         if(host.empty())
             host = "127.0.0.1";
@@ -68,33 +73,59 @@ parseEndpoint(const std::string &endpoint)
         auto address = asio::ip::make_address(host, ec);
 
         if(ec)
-            return std::nullopt;
+            throw std::runtime_error("invalid TCP address: " + host);
+
+        if(!address.is_loopback())
+            throw std::runtime_error("only loopback TCP endpoints are allowed");
+
+        long portNumber = std::strtol(port.c_str(), nullptr, 10);
+
+        if(portNumber <= 0 || portNumber > 65535)
+            throw std::runtime_error("invalid TCP port: " + port);
 
         return asio::generic::stream_protocol::endpoint(
-            asio::ip::tcp::endpoint(address, (unsigned short)std::atoi(port.c_str())));
+            asio::ip::tcp::endpoint(address, (unsigned short)portNumber));
     }
 
-    return std::nullopt;
+    throw std::runtime_error(
+        "endpoint must be unix:<path> or tcp:<host>:<port>");
 }
 
 }
 
-bool Session::connect(const std::string &endpoint)
+void Session::connect(const std::string &endpoint)
 {
     auto address = parseEndpoint(endpoint);
 
-    if(!address)
-        return false;
+    close();
 
     boost::system::error_code ec;
 
-    socket_.open(address->protocol(), ec);
+    socket_.open(address.protocol(), ec);
     if(ec)
-        return false;
+        throw std::runtime_error("cannot open socket: " + ec.message());
 
-    socket_.connect(*address, ec);
+    socket_.connect(address, ec);
 
-    return !ec;
+    if(ec)
+    {
+        close();
+        throw std::runtime_error("cannot connect to " + endpoint + ": "
+                                 + ec.message());
+    }
+}
+
+void Session::close()
+{
+    boost::system::error_code ec;
+    socket_.close(ec);
+
+    buffer_.consume(buffer_.size());
+}
+
+bool Session::isOpen() const
+{
+    return socket_.is_open();
 }
 
 json::object Session::request(json::object command)

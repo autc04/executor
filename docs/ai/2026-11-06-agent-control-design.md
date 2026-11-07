@@ -403,8 +403,14 @@ implements `initialize` (negotiating `protocolVersion`: accept what the client a
 and reply with the revision we implement), `tools/list`, `tools/call`, `ping`, and
 declares only a `tools` capability.
 
+The server starts **unattached**; the agent selects a session with the `attach`
+tool. That keeps the harness configuration constant (`executor-mcp`, no arguments,
+since a PID-derived socket path cannot be written into a config) while still
+letting the agent work with a session it launched itself or was told about.
+
 | Tool | Arguments |
 |---|---|
+| `attach` | `endpoint` → the `hello` reply plus the endpoint; selects or replaces the session |
 | `screenshot` | `region?`, `max_width?` → image content block (PNG) + text block with geometry and pointer position |
 | `status` | — |
 | `click` | `x`, `y`, `count?` |
@@ -417,21 +423,37 @@ declares only a `tools` capability.
 | `wait` | `ms` |
 | `quit` | `force?` |
 
+Every tool except `attach` fails with `isError` and `code: "not-attached"` until a
+session has been attached.
+
+`attach` takes `unix:<path>` or `tcp:<host>:<port>`; a TCP host must be loopback,
+because this socket injects input into a GUI. It validates the endpoint by sending
+`hello`, so the reply carries the app name and screen geometry, and it replaces any
+previously attached session; a failed attach leaves the server unattached. An I/O
+error on any later request clears the attachment, so the server never reuses a dead
+socket: the tool returns an error for that call and `not-attached` afterwards, and
+the MCP server itself stays up.
+
 Responsibilities that belong here, not in the emulator:
 
 - Decoding the socket's base64, PNG encoding via **libpng** (the tool is only
   built when CMake finds it), and base64 again for the MCP image block;
   `max_width` downscaling. Two base64 round trips per screenshot is the accepted
   cost of a JSON-only control stream.
-- Attach only: `--attach <endpoint>` (`unix:<path>` or `tcp:<host>:<port>`), using
-  asio for the client socket just like the server. The tool never starts or
-  manages Executor, so there is no process handling and no platform-specific
-  spawn path; the session's `hello` identifies the app.
+- Attaching, using asio for the client socket just like the server. The tool never
+  starts or manages Executor: the agent either launches it with whatever process
+  facility its harness provides (choosing `--control unix:<path>`) or is told the
+  endpoint of an existing session.
+- No discovery in this iteration: there is no `sessions` tool and no scanning of
+  `$XDG_RUNTIME_DIR/executor/`. The endpoint is chosen by whoever starts Executor
+  or passed in by the caller.
+- `--attach <endpoint>` remains as an optional pre-attach for interactive use.
 - Rejecting non-ASCII `type_text` before it reaches the socket, and surfacing
   `delivered: false` instead of pretending a click worked.
 
-v1 is one session per server instance. Multi-session (a `session` argument) is a
-later iteration.
+One session at a time. Multi-session (a `session` argument on every tool) is a
+later iteration; noted for then: two agents sharing one MCP server would fight over
+the attachment.
 
 ## Failure modes to handle explicitly
 
@@ -439,6 +461,9 @@ later iteration.
   which closes the socket and cancels jobs rather than draining them. The client gets
   EOF (or its deadline expires) and `executor-mcp` reports that the session ended;
   there is no emulator left to answer with.
+- **Attached session ends.** The next request fails; the tool clears the attachment
+  and returns an `isError` result, and later tools report `not-attached` until
+  `attach` is called again. The MCP server itself keeps running.
 - **Client disconnects mid-frame.** `async_write` completes with an error; the
   coroutine unwinds. Nothing is locked at that point, by construction.
 - **Cancelled job vs. later client.** A timed-out job is dropped at its next step,
@@ -526,9 +551,10 @@ Where the implementation deviates from the plan, and what is still missing:
   reports the same condition.
 - **PNG output uses libpng.** `executor-mcp` is only built when CMake finds
   libpng; `flake.nix` provides it. A blank 640×480 frame is ~5 KB.
-- **The tool is attach-only** (`--attach <endpoint>`) and uses asio for the
-  client socket, matching the server. It does not start or manage Executor, so
-  there is no `fork`/`exec` path and no platform gate beyond libpng.
+- **The tool attaches; it does not spawn.** It starts unattached and the agent calls
+  the `attach` tool with an endpoint it chose (if it launched Executor) or was told.
+  There is no `fork`/`exec` path, no discovery tool, and no platform gate beyond
+  libpng. `--attach` is optional sugar for interactive use.
 - **No automated tests** for the control layer or the MCP tool yet; the native
   suite passes unchanged (269 tests, `ctest -LE xfail`). The obvious additions
   are the keymap reverse lookup, job-queue ordering under fake time, and a
