@@ -35,8 +35,9 @@ avoid unbounded growth.
 
 **`EventSink`**: implements `IEventListener` and translates host input events (mouse
 clicks, key presses, wheel motion, suspend/resume) into entries on the Mac event queue.
-It uses an internal mutex-protected work queue so that events posted from the host GUI
-thread are picked up by `pumpEvents()` on the emulator thread.
+It queues the work on the emulator thread through `runOnEmulatorThread()`
+(`src/base/emulator_thread.*`), a shared mutex-protected queue drained at the next
+interrupt safe point.
 
 **`IEventListener`**: interface consumed by each front-end. Calling
 `mouseButtonEvent(down, h, v)` atomically calls `mouseMoved` then `mouseButtonEvent`,
@@ -83,7 +84,8 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
 |--------|-------------|
 | `dirty_rect_accrue(t,l,b,r)` | Record a modified rectangle |
 | `DirtyRects::getAndClear()` | Retrieve and reset the dirty rect list |
-| `EventSink::pumpEvents()` | Drain the pending-event queue on the emulator thread |
+| `captureARGB(rect, out)` | Copy a rectangle of the guest framebuffer out as ARGB8888; emulator thread only |
+| `runOnEmulatorThread()` | Queue work for the emulator thread, drained at the next interrupt safe point |
 | `EventSink::mouseWheelEvent()` | Marshal a host wheel event to `ROMlib_handleWheelEvent()` |
 | `set_refresh_rate(hz)` | Change the screen refresh frequency |
 | `QtVideoDriver::setMode()` | Resize the Qt window and reallocate the framebuffer |
@@ -98,6 +100,11 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
   mechanism between the two.
 - **Minimum resolution**: `VDRIVER_MIN_SCREEN_WIDTH = 512`, `VDRIVER_MIN_SCREEN_HEIGHT = 342`
   (matching the original 512×342 Mac screen). Front-ends should reject smaller sizes.
+- **Screenshots / agent control**: `VideoDriver::captureARGB()` copies raw guest
+  pixels (no rootless hole mapping, no desktop dim) and is only ever called from
+  an emulator-thread task, so geometry and pixels come from one point in guest
+  execution. Input from the `--control` socket goes through `EventSink`, exactly
+  like real input. See `docs/ai/2026-11-06-agent-control-design.md`.
 - **`EventRecorder`**: records/replays raw input events for regression testing. When
   active it wraps `EventSink` and forwards events to the recorder before passing them
   on.

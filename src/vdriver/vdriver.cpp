@@ -6,6 +6,7 @@
 
 #include <thread>
 #include <condition_variable>
+#include <algorithm>
 
 using namespace Executor;
 
@@ -307,6 +308,22 @@ void VideoDriver::commitRootlessRegion()
     rootlessRegionDirty_ = false;
 }
 
+namespace
+{
+inline uint32_t fiveToEight(uint32_t x)
+{
+    return (x << 3) | (x >> 2);
+}
+
+inline uint32_t argbFrom16(uint16_t pix)
+{
+    return 0xFF000000
+        | (fiveToEight((pix >> 10) & 31) << 16)
+        | (fiveToEight((pix >> 5) & 31) << 8)
+        | fiveToEight(pix & 31);
+}
+}
+
 template<int depth>
 struct IndexedPixelGetter
 {
@@ -340,7 +357,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                                 const Executor::DirtyRects::Rects& rects)
 {
     ZoneScoped;
-    auto before = std::chrono::high_resolution_clock::now();
+    [[maybe_unused]] auto before = std::chrono::high_resolution_clock::now();
     
     if(!threadpool_)
         threadpool_ = std::make_unique<ThreadPool>();
@@ -402,7 +419,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 while(y >= rgnP.bottom())
                     rgnP.advance();
 
-                auto blitLine = [this, &rgnP, buffer, bufferWidth, bufferHeight, y, &r, dimPixel](auto getPixel) {
+                auto blitLine = [&rgnP, buffer, bufferWidth, y, &r, dimPixel](auto getPixel) {
                     auto rowIt = rgnP.row.begin();
                     int x = r.left;
 
@@ -455,16 +472,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                         {
                             auto *src16 = reinterpret_cast<GUEST<uint16_t>*>(src);
                             src16 += r.left;
-                            blitLine([&] {
-                                uint16_t pix = *src16++;
-                                auto fiveToEight = [](uint32_t x) {
-                                    return (x << 3) | (x >> 2);
-                                };
-                                return 0xFF000000
-                                    | (fiveToEight((pix >> 10) & 31) << 16)
-                                    | (fiveToEight((pix >> 5) & 31) << 8)
-                                    | fiveToEight(pix & 31);
-                            });
+                            blitLine([&] { return argbFrom16(*src16++); });
                         }
                         break;
 
@@ -481,9 +489,9 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
         }
     });
     
-    auto after = std::chrono::high_resolution_clock::now();
     
 #if 0
+    auto after = std::chrono::high_resolution_clock::now();
     static int sum = 0, count = 0;
 
     if(count > 100)
@@ -494,4 +502,65 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
 
     std::cout << double(sum)/count << std::endl;
 #endif
+}
+
+void VideoDriver::captureARGB(Rect rect, std::vector<uint32_t> &out) const
+{
+    const Framebuffer &fb = framebuffer_;
+
+    int left = std::clamp<int>(rect.left.get(), 0, fb.width);
+    int top = std::clamp<int>(rect.top.get(), 0, fb.height);
+    int right = std::clamp<int>(rect.right.get(), left, fb.width);
+    int bottom = std::clamp<int>(rect.bottom.get(), top, fb.height);
+    int width = right - left;
+    int height = bottom - top;
+
+    out.resize((size_t)width * (size_t)height);
+    if(width <= 0 || height <= 0 || !fb.data)
+        return;
+
+    for(int y = 0; y < height; y++)
+    {
+        uint32_t *dst = out.data() + (size_t)y * width;
+        const uint8_t *row = fb.data.get() + (size_t)(top + y) * fb.rowBytes;
+
+        switch(fb.bpp)
+        {
+            case 8:
+                for(int x = 0; x < width; x++)
+                    dst[x] = colors_[row[left + x]];
+                break;
+
+            case 1:
+            case 2:
+            case 4:
+                for(int x = 0; x < width; x++)
+                {
+                    int px = left + x;
+                    uint8_t byte = row[px * fb.bpp / 8];
+                    int shift = 8 - (px * fb.bpp % 8) - fb.bpp;
+                    dst[x] = colors_[(byte >> shift) & ((1 << fb.bpp) - 1)];
+                }
+                break;
+
+            case 16:
+                {
+                    auto *src = reinterpret_cast<const GUEST<uint16_t>*>(row);
+                    for(int x = 0; x < width; x++)
+                        dst[x] = argbFrom16(src[left + x]);
+                }
+                break;
+
+            case 32:
+                {
+                    auto *src = reinterpret_cast<const GUEST<uint32_t>*>(row);
+                    for(int x = 0; x < width; x++)
+                        dst[x] = src[left + x] | 0xFF000000;
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
 }

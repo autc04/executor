@@ -94,14 +94,9 @@ public:
     virtual void requestQuit() override;
     virtual void wake() override;
 
-    void pumpEvents();
-
     static std::unique_ptr<EventSink> instance;
 private:
     GUEST<uint32_t> keytransState = 0;
-
-    std::mutex mutex_;
-    std::vector<std::function<void ()>> todo_;
 
     void runOnEmulatorThread(std::function<void ()> f);
 };
@@ -153,6 +148,14 @@ public:
     rgb_spec_t *rgbSpec() { return framebuffer_.rgbSpec; }
     bool isGrayscale() { return framebuffer_.grayscale; }
     bool isRootless() { return framebuffer_.rootless; }
+
+    /* Copies `rect` (clamped to the screen) out of the guest framebuffer as
+     * tightly packed, top-down ARGB8888.  Reads the guest's actual pixels --
+     * no rootless hole mapping and no desktop dim.  `rect` is in guest screen
+     * coordinates; `out` receives width*height pixels of the clamped rect.
+     *
+     * Must be called on the emulator thread. */
+    void captureARGB(Rect rect, std::vector<uint32_t> &out) const;
 
 protected:
     IEventListener *callbacks_ = nullptr;

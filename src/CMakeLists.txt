@@ -15,7 +15,7 @@ if(NOT RUBY_EXECUTABLE)
     message(FATAL_ERROR "Cannot find command: 'ruby' (needed for building!)")
 endif()
 
-find_package(Boost REQUIRED CONFIG COMPONENTS filesystem program_options)
+find_package(Boost REQUIRED CONFIG COMPONENTS filesystem program_options json)
 
 find_package(Threads REQUIRED)
 
@@ -439,6 +439,9 @@ set(base_sources
         base/fault_handler.cpp
 
         base/patches.cpp
+
+        base/emulator_thread.h
+        base/emulator_thread.cpp
     )
 source_group(Base FILES ${base_sources})
 
@@ -458,6 +461,19 @@ set(vdriver_sources
         vdriver/eventrecorder.cpp
     )
 source_group(VDriver FILES ${vdriver_sources})
+
+set(control_sources
+        control/controlserver.h
+        control/controlserver.cpp
+        control/controlops.h
+        control/controlops.cpp
+        control/jobqueue.h
+        control/jobqueue.cpp
+        control/keymap.h
+        control/keymap.cpp
+        control/thread_util.h
+    )
+source_group(Control FILES ${control_sources})
 
 set(mman_sources
     mman/memsize.h
@@ -622,6 +638,7 @@ source_group(StructDump FILES ${structdump_sources})
 source_group(TrapEntries FILES ${trap_entry_sources})
 
 set(sources ${base_sources} ${mman_sources} ${vdriver_sources}
+    ${control_sources}
     ${ctl_sources} ${dial_sources} 
     ${list_sources} ${menu_sources}
     ${print_sources} ${qd_sources} ${res_sources}
@@ -654,7 +671,7 @@ target_link_libraries(romlib executor-tracy)
 
 target_link_libraries(romlib Threads::Threads syn68k PowerCore mon)
 
-target_link_libraries(romlib Boost::filesystem)  # mxe doesn't like this
+target_link_libraries(romlib Boost::filesystem Boost::json)  # mxe doesn't like this
 if(WIN32 AND NOT MSVC)
     # mingw build.
     # Boost's 'superior' build system doesn't manage library dependencies correctly

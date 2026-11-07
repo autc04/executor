@@ -2,6 +2,7 @@
 
 #include <ToolboxEvent.h>
 
+#include <base/emulator_thread.h>
 #include <rsys/adb.h>
 #include <rsys/toolevent.h>
 #include <osevent/osevent.h>
@@ -24,12 +25,6 @@ bool wheelDebug()
 }
 
 std::unique_ptr<EventSink> EventSink::instance;
-
-Interrupt eventInterrupt {
-    [] {
-        EventSink::instance->pumpEvents();
-    }
-};
 
 void EventSink::mouseButtonEvent(bool down)
 {
@@ -126,23 +121,10 @@ void EventSink::requestQuit()
 
 void EventSink::wake()
 {
-    eventInterrupt.trigger();
+    wakeEmulatorThread();
 }
 
 void EventSink::runOnEmulatorThread(std::function<void ()> f)
 {
-    std::lock_guard lk(mutex_);
-    todo_.push_back(f);
-    eventInterrupt.trigger();
-}
-
-void EventSink::pumpEvents()
-{
-    std::vector<std::function<void()>> todo;
-    {
-        std::lock_guard lk(mutex_);
-        todo = std::move(todo_);
-    }
-    for(const auto& f : todo)
-        f();
+    Executor::runOnEmulatorThread(std::move(f));
 }

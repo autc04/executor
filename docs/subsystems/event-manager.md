@@ -22,8 +22,11 @@ the `EventRecord` passed by the application.
 elements are `GUEST_STRUCT`-wrapped.
 
 **`EventSink`**: the video driver delivers input events by calling methods on
-`EventSink` (see `video-driver.md`). `EventSink::pumpEvents()` drains the event work
-queue and posts entries to the OS queue or directly to the HLE mechanism.
+`EventSink` (see `video-driver.md`). Each method queues its work on the emulator
+thread (`runOnEmulatorThread`, `src/base/emulator_thread.*`), which drains the queue
+at the next interrupt safe point and posts entries to the OS queue or directly to the
+HLE mechanism. Input injected through the agent control socket (`--control`) goes
+through `EventSink` too, so it is indistinguishable from a real user's.
 
 **Keyboard translation** (`osevent.cpp`):
 - `ROMlib_kchr_ptr()` returns a pointer to the KCHR keyboard layout resource, used to
@@ -113,7 +116,9 @@ clears handlers registered by the previous application.
   audit/implementation notes are in
   `docs/ai/2026-10-19-apple-event-manager-audit.md`.
 - **Thread safety**: events are delivered from the GUI thread via `EventSink`. They
-  must be consumed on the emulator thread via `pumpEvents()`. Never post directly to
+  must be consumed on the emulator thread; `EventSink` queues them through
+  `runOnEmulatorThread()` (`src/base/emulator_thread.*`), which is drained at the next
+  interrupt safe point. Never post directly to
   the OS queue from the GUI thread.
 - **`ROMlib_bewaremovement`**: a flag set when the mouse is near the edge of the screen
   in rootless mode, used to suppress accidental window drags.
