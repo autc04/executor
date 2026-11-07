@@ -104,6 +104,21 @@ int runMcp(ToolState &state)
             capabilities["tools"] = json::object();
             result["capabilities"] = std::move(capabilities);
 
+            /* The orientation a client shows before the first tool call: the
+             * rules that are cheap here and expensive to discover. */
+            result["instructions"] =
+                "You are driving a classic Mac OS session running inside Executor. "
+                "A screenshot is the only ground truth: the input tools report only "
+                "that events were posted, so follow every action with wait and a "
+                "screenshot that confirms the result. The Mac is cooperatively "
+                "multitasked; when status reports pumping=false the running "
+                "application is not returning to its event loop and further input "
+                "will be ignored until it does. The Mac's pointer is never drawn "
+                "into a screenshot - read mouse from the screenshot metadata or "
+                "from status. Coordinates are guest pixels. Clicking a menu bar "
+                "title only opens and closes the menu; use button_down, move, "
+                "button_up (or drag) to choose a menu item.";
+
             json::object info;
             info["name"] = "executor-mcp";
             info["version"] = "1.0";

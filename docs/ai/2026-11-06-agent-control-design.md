@@ -336,7 +336,10 @@ iteration.
 **Delivery is not guaranteed.** `ROMlib_PPostEvent` returns `evtNotEnb` when the
 guest has masked the event class via `SysEvtMask`, and `EventSink` currently ignores
 that. The control ops must report `delivered: false` rather than silently claiming
-success.
+success, and name the suppressed event classes in `suppressed` so the caller can
+tell "the application ignored it" from "the application never saw it". `keyup` is
+never named: Executor masks that class for the whole session because classic Mac OS
+does not queue key-up events.
 
 ## Control protocol (v1)
 
@@ -361,26 +364,33 @@ Failures: `{"id":1,"ok":false,"code":"timeout","error":"..."}`.
 |---|---|---|
 | `hello` | — | `proto`, `app`, `width`, `height`, `bpp`, `tick` |
 | `screen` | — | `width`, `height`, `bpp`, `rowBytes`, `rootless` |
-| `status` | — | `tick`, `pumping`, `since_response_ms`, `button`, `mouse`, `modifiers`, `dbltime`, `front`, `busy` |
-| `frame` | `rect?` `[l,t,r,b]` | `width`, `height`, `format`, `data` (base64 RGBA bytes) |
+| `status` | — | `tick`, `pumping`, `in_event_wait`, `since_response_ms`, `button`, `mouse`, `modifiers` (object), `modifiers_raw`, `dbltime`, `app`, `front`, `events_pending`, `busy` |
+| `frame` | `rect?` `[l,t,r,b]` | `width`, `height`, `format`, `data` (base64 RGBA bytes), `mouse`, `button` |
 | `move` | `x`, `y` | — |
-| `down` / `up` | `button?` | `delivered` |
-| `click` | `x`, `y`, `count?`, `gap_ms?`, `interval_ms?` | `delivered` |
-| `drag` | `from`, `to`, `duration_ms?`, `steps?` | `delivered` |
-| `key` / `keydown` / `keyup` | `name`, `modifiers?` | `delivered` |
-| `type` | `text`, `gap_ms?` | `chars`, `delivered` |
+| `down` / `up` | `button?` | `delivered`, `suppressed` |
+| `click` | `x`, `y`, `count?`, `gap_ms?`, `interval_ms?` | `delivered`, `suppressed` |
+| `drag` | `from`, `to`, `duration_ms?`, `steps?` | `delivered`, `suppressed` |
+| `key` / `keydown` / `keyup` | `name`, `modifiers?` | `delivered`, `suppressed` |
+| `type` | `text`, `gap_ms?` | `chars`, `delivered`, `suppressed` |
 | `wait` | `ms` | — |
 | `quit` | `force?` | — |
 
-`pumping` comes from `Responsiveness`, `front` from `LM(WindowList)` +
-`WINDOW_TITLE`, `dbltime` from `GetDblTime()`. `frame` clamps `rect` to the screen
-and derives geometry inside the emulator-thread task, so a mode change is reported
-rather than sampled mid-flight.
+`pumping` comes from `Responsiveness` (and is true while the guest is inside
+`WaitNextEvent`/`ModalDialog`, i.e. `in_event_wait`), `app` from
+`LM(CurApName)`, `front` from `LM(WindowList)` + `WINDOW_TITLE`, `events_pending`
+from walking `LM(EventQueue)`, `dbltime` from `GetDblTime()`. `frame` clamps
+`rect` to the screen and derives geometry inside the emulator-thread task, so a
+mode change is reported rather than sampled mid-flight; it also reports `mouse`
+and `button`, because the guest cursor is a host cursor and never appears in the
+pixels.
 
 Error codes emitted today: `bad-request`, `unsupported`, `busy`, `internal`.
-`timeout` is reserved until per-verb deadlines land. A `delivered: false` field is
-not an error reply: the verb ran, but the guest's `SysEvtMask` suppressed the event
-it posted.
+`timeout` is reserved until per-verb deadlines land. `delivered: false` is not an
+error reply: the verb ran, but the guest's `SysEvtMask` suppressed an event it
+posted. `suppressed` names those event classes. `keyup` is never listed: classic
+Mac OS does not queue key-up events and Executor masks that class for the whole
+session (`LM(SysEvtMask) = ~(1L << keyUp)` in `init.cpp`), so counting it would
+report every keystroke as undelivered.
 
 **Why base64 and not a raw payload.** A raw binary tail after the JSON line would
 break the property that makes this stream easy to speak: it is text end to end.
@@ -420,11 +430,11 @@ letting the agent work with a session it launched itself or was told about.
 | `type_text` | `text` |
 | `press_key` | `name`, `modifiers?` |
 | `key_down` / `key_up` | `name` |
-| `wait` | `ms` |
+| `wait` | `ms` → sleeps in the MCP process; no guest round trip, so it still works when the emulator is wedged |
 | `quit` | `force?` |
 
-Every tool except `attach` fails with `isError` and `code: "not-attached"` until a
-session has been attached.
+Every tool except `attach` and `wait` fails with `isError` until a session has
+been attached.
 
 `attach` takes `unix:<path>` or `tcp:<host>:<port>`; a TCP host must be loopback,
 because this socket injects input into a GUI. It validates the endpoint by sending

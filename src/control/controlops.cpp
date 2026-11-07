@@ -8,6 +8,7 @@
 #include <base/mactype.h>
 #include <EventMgr.h>
 #include <OSEvent.h>
+#include <SegmentLdr.h>
 #include <SysErr.h>
 #include <ToolboxEvent.h>
 #include <WindowMgr.h>
@@ -311,10 +312,38 @@ std::string base64RGBA(const std::vector<uint32_t> &pixels)
     return base64(bytes);
 }
 
-bool eventEnabled(int eventCode)
+/* Whether PostEvent() would refuse this event class.  keyUp is excluded:
+ * classic Mac OS never queues key-up events, and Executor masks it for the
+ * whole session (`LM(SysEvtMask) = ~(1L << keyUp)`, init.cpp), so counting it
+ * would report every keystroke as undelivered. */
+bool eventSuppressed(int eventCode)
 {
-    return (LM(SysEvtMask) & (1 << eventCode)) != 0;
+    return eventCode != keyUp && (LM(SysEvtMask) & (1 << eventCode)) == 0;
 }
+
+/* Collects the event classes a command found masked, for the reply's
+ * "suppressed" array.  Shared by the job's steps and its finalizer. */
+struct Delivery
+{
+    std::shared_ptr<std::vector<std::string>> suppressed
+        = std::make_shared<std::vector<std::string>>();
+
+    void check(int eventCode, const char *name) const
+    {
+        if(eventSuppressed(eventCode))
+            suppressed->push_back(name);
+    }
+
+    void finish(json::object &o) const
+    {
+        json::array names;
+        for(const std::string &name : *suppressed)
+            names.push_back(json::string_view(name));
+
+        o["delivered"] = suppressed->empty();
+        o["suppressed"] = std::move(names);
+    }
+};
 
 std::string frontWindowTitle()
 {
@@ -345,6 +374,31 @@ std::string frontWindowTitle()
     }
 
     return {};
+}
+
+/* The application the guest is running, as Executor tracks it in CurApName. */
+std::string currentAppName()
+{
+    const Byte *name = LM(CurApName);
+
+    unsigned len = name[0];
+    if(len > 33)
+        len = 33;
+
+    return std::string(reinterpret_cast<const char *>(name + 1), len);
+}
+
+/* Events sitting in the guest's event queue.  A queue that keeps growing while
+ * the application does not pump is the signature of a stuck guest. */
+int pendingEventCount()
+{
+    int count = 0;
+
+    for(EvQEl *qp = (EvQEl *)LM(EventQueue).qHead; qp && count < 256;
+        qp = (EvQEl *)qp->qLink)
+        count++;
+
+    return count;
 }
 
 std::string launchArgument()
@@ -538,17 +592,32 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
             unsigned long now = msecs_elapsed();
             unsigned long last = Responsiveness::instance().lastResponseMs();
             unsigned long since = now > last ? now - last : 0;
+            bool waiting = Responsiveness::instance().active();
+
+            short mods = ROMlib_GetModifiers();
+            json::object modifiers;
+            modifiers["shift"] = (mods & shiftKey) != 0;
+            modifiers["cmd"] = (mods & cmdKey) != 0;
+            modifiers["option"] = (mods & optionKey) != 0;
+            modifiers["control"] = (mods & ControlKey) != 0;
+            modifiers["caps"] = ROMlib_GetKey(MKV_CAPS);
 
             o["ok"] = true;
             o["tick"] = (int64_t)C_TickCount();
-            o["pumping"] = since <= 1000;
+            /* Inside WaitNextEvent/ModalDialog/tracking the application is
+             * behaving, even though it does not call back into the emulator. */
+            o["pumping"] = waiting || since <= 1000;
+            o["in_event_wait"] = waiting;
             o["since_response_ms"] = (int64_t)since;
             o["button"] = (LM(MBState) == 0);
             o["mouse"] = json::array{ (int64_t)LM(MouseLocation).h.get(),
                                       (int64_t)LM(MouseLocation).v.get() };
-            o["modifiers"] = (int64_t)ROMlib_GetModifiers();
+            o["modifiers"] = std::move(modifiers);
+            o["modifiers_raw"] = (int64_t)mods;
             o["dbltime"] = (int64_t)LM(DoubleTime);
+            o["app"] = currentAppName();
             o["front"] = frontWindowTitle();
+            o["events_pending"] = (int64_t)pendingEventCount();
             o["busy"] = JobQueue::instance().busy();
             return r;
         });
@@ -592,6 +661,12 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
 
             vdriver->captureARGB(rect, r.pixels);
 
+            /* The guest cursor is a host cursor and is never composited into
+             * the pixels, so the pointer has to be reported alongside. */
+            r.json["mouse"] = json::array{ (int64_t)LM(MouseLocation).h.get(),
+                                           (int64_t)LM(MouseLocation).v.get() };
+            r.json["button"] = (LM(MBState) == 0);
+
             r.json["ok"] = true;
             r.json["width"] = right - left;
             r.json["height"] = bottom - top;
@@ -633,18 +708,19 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         }
 
         bool down = cmd == "down";
-        auto delivered = std::make_shared<bool>(true);
+        Delivery delivery;
 
         auto job = std::make_shared<SequenceJob>(
             std::vector<SequenceJob::Step>{
                 { std::chrono::milliseconds(0),
-                  [down, delivered]
+                  [down, delivery]
                   {
-                      *delivered = *delivered && eventEnabled(down ? mouseDown : mouseUp);
+                      delivery.check(down ? mouseDown : mouseUp,
+                                     down ? "mousedown" : "mouseup");
                       EventSink::instance->mouseButtonEvent(down);
                   } },
             },
-            [delivered](json::object &o) { o["delivered"] = *delivered; });
+            [delivery](json::object &o) { delivery.finish(o); });
 
         reply.json = co_await submitJob(job);
     }
@@ -669,7 +745,7 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         gap = std::clamp(gap, 0L, 10000L);
         interval = std::clamp(interval, 0L, 10000L);
 
-        auto delivered = std::make_shared<bool>(true);
+        Delivery delivery;
         std::vector<SequenceJob::Step> steps;
 
         steps.push_back({ std::chrono::milliseconds(0),
@@ -679,23 +755,23 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         {
             steps.push_back(
                 { std::chrono::milliseconds(i == 0 ? 0 : interval),
-                  [delivered]
+                  [delivery]
                   {
-                      *delivered = *delivered && eventEnabled(mouseDown);
+                      delivery.check(mouseDown, "mousedown");
                       EventSink::instance->mouseButtonEvent(true);
                   } });
             steps.push_back(
                 { std::chrono::milliseconds(gap),
-                  [delivered]
+                  [delivery]
                   {
-                      *delivered = *delivered && eventEnabled(mouseUp);
+                      delivery.check(mouseUp, "mouseup");
                       EventSink::instance->mouseButtonEvent(false);
                   } });
         }
 
         auto job = std::make_shared<SequenceJob>(
             std::move(steps),
-            [delivered](json::object &o) { o["delivered"] = *delivered; });
+            [delivery](json::object &o) { delivery.finish(o); });
 
         reply.json = co_await submitJob(job);
     }
@@ -716,15 +792,15 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         duration = std::clamp(duration, 0L, 60000L);
         steps = std::clamp(steps, 1L, 100L);
 
-        auto delivered = std::make_shared<bool>(true);
+        Delivery delivery;
         std::vector<SequenceJob::Step> stepsList;
 
         stepsList.push_back({ std::chrono::milliseconds(0),
                               [x1, y1] { EventSink::instance->mouseMoved(x1, y1); } });
         stepsList.push_back({ std::chrono::milliseconds(0),
-                              [delivered]
+                              [delivery]
                               {
-                                  *delivered = *delivered && eventEnabled(mouseDown);
+                                  delivery.check(mouseDown, "mousedown");
                                   EventSink::instance->mouseButtonEvent(true);
                               } });
 
@@ -740,15 +816,15 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         }
 
         stepsList.push_back({ std::chrono::milliseconds(0),
-                              [delivered]
+                              [delivery]
                               {
-                                  *delivered = *delivered && eventEnabled(mouseUp);
+                                  delivery.check(mouseUp, "mouseup");
                                   EventSink::instance->mouseButtonEvent(false);
                               } });
 
         auto job = std::make_shared<SequenceJob>(
             std::move(stepsList),
-            [delivered](json::object &o) { o["delivered"] = *delivered; });
+            [delivery](json::object &o) { delivery.finish(o); });
 
         reply.json = co_await submitJob(job);
     }
@@ -768,16 +844,16 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
             co_return reply;
         }
 
-        auto delivered = std::make_shared<bool>(true);
+        Delivery delivery;
         std::vector<SequenceJob::Step> steps;
 
-        auto press = [stroke, delivered] {
+        auto press = [stroke, delivery] {
             setModifiers(stroke->modifiers, true);
-            *delivered = *delivered && eventEnabled(keyDown);
+            delivery.check(keyDown, "keydown");
             EventSink::instance->keyboardEvent(true, stroke->key);
         };
-        auto release = [stroke, delivered] {
-            *delivered = *delivered && eventEnabled(keyUp);
+        auto release = [stroke, delivery] {
+            delivery.check(keyUp, "keyup");
             EventSink::instance->keyboardEvent(false, stroke->key);
             setModifiers(stroke->modifiers, false);
         };
@@ -802,7 +878,7 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
 
         auto job = std::make_shared<SequenceJob>(
             std::move(steps),
-            [delivered](json::object &o) { o["delivered"] = *delivered; });
+            [delivery](json::object &o) { delivery.finish(o); });
 
         reply.json = co_await submitJob(job);
     }
@@ -820,7 +896,7 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         getInt(req, "gap_ms", gap);
         gap = std::clamp(gap, 0L, 10000L);
 
-        auto delivered = std::make_shared<bool>(true);
+        Delivery delivery;
         std::vector<SequenceJob::Step> steps;
 
         for(size_t i = 0; i < text.size(); i++)
@@ -845,17 +921,17 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
 
             steps.push_back(
                 { std::chrono::milliseconds(i == 0 ? 0 : gap),
-                  [key, mods, delivered]
+                  [key, mods, delivery]
                   {
                       setModifiers(mods, true);
-                      *delivered = *delivered && eventEnabled(keyDown);
+                      delivery.check(keyDown, "keydown");
                       EventSink::instance->keyboardEvent(true, key);
                   } });
             steps.push_back(
                 { std::chrono::milliseconds(gap),
-                  [key, mods, delivered]
+                  [key, mods, delivery]
                   {
-                      *delivered = *delivered && eventEnabled(keyUp);
+                      delivery.check(keyUp, "keyup");
                       EventSink::instance->keyboardEvent(false, key);
                       setModifiers(mods, false);
                   } });
@@ -870,10 +946,7 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
 
         auto job = std::make_shared<SequenceJob>(
             std::move(steps),
-            [delivered](json::object &o)
-            {
-                o["delivered"] = *delivered;
-            });
+            [delivery](json::object &o) { delivery.finish(o); });
 
         reply.json = co_await submitJob(job);
         reply.json["chars"] = (int64_t)text.size();

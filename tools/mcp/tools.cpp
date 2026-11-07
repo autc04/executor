@@ -4,10 +4,12 @@
 #include "png.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace json = boost::json;
 
@@ -52,6 +54,70 @@ json::object notAttached()
 {
     return toolError("not attached to an Executor session: call the attach tool "
                      "with an endpoint first");
+}
+
+/* A control reply with ok:false is a failed call, not a result whose text
+ * happens to mention an error: keep isError honest so a client can branch on
+ * it without parsing. */
+json::object resultOrError(const json::object &controlReply)
+{
+    const json::value *ok = controlReply.if_contains("ok");
+
+    if(ok && ok->is_bool() && ok->as_bool())
+        return toolReply(controlReply);
+
+    std::string text = "executor: ";
+
+    if(const json::value *code = controlReply.if_contains("code");
+       code && code->is_string())
+        text += std::string(code->as_string()) + ": ";
+
+    if(const json::value *error = controlReply.if_contains("error");
+       error && error->is_string())
+        text += std::string(error->as_string());
+    else
+        text += "the request failed without an error message";
+
+    return toolError(text);
+}
+
+bool intArgument(const json::object &args, const char *name, long &out)
+{
+    const json::value *v = args.if_contains(name);
+
+    if(!v || !v->is_int64())
+        return false;
+
+    out = (long)v->as_int64();
+    return true;
+}
+
+bool pairArgument(const json::object &args, const char *name, long &a, long &b)
+{
+    const json::value *v = args.if_contains(name);
+
+    if(!v || !v->is_array())
+        return false;
+
+    const json::array &arr = v->as_array();
+
+    if(arr.size() != 2 || !arr[0].is_int64() || !arr[1].is_int64())
+        return false;
+
+    a = (long)arr[0].as_int64();
+    b = (long)arr[1].as_int64();
+    return true;
+}
+
+bool stringArgument(const json::object &args, const char *name, std::string &out)
+{
+    const json::value *v = args.if_contains(name);
+
+    if(!v || !v->is_string())
+        return false;
+
+    out = std::string(v->as_string());
+    return true;
 }
 
 std::string downscaleRGBA(const std::string &rgba, int width, int height,
@@ -106,6 +172,16 @@ json::object pointProperty(const char *description)
     o["items"] = json::object{ { "type", "integer" } };
     o["minItems"] = 2;
     o["maxItems"] = 2;
+    return o;
+}
+
+json::object rectProperty(const char *description)
+{
+    json::object o = prop("array");
+    o["description"] = description;
+    o["items"] = json::object{ { "type", "integer" } };
+    o["minItems"] = 4;
+    o["maxItems"] = 4;
     return o;
 }
 
@@ -176,78 +252,139 @@ json::array toolList()
 
     tools.push_back(toolDefinition(
         "attach",
-        "Attach to a running Executor session. Must be called before any other "
-        "tool. endpoint is \"unix:<path>\" or \"tcp:<host>:<port>\" (loopback "
-        "only); the reply describes the attached session.",
+        "Attach to a running Executor session; nothing else works before this. "
+        "`endpoint` is \"unix:/path/to/socket\" (Executor prints it at startup, "
+        "usually $XDG_RUNTIME_DIR/executor/<pid>.sock, so it has to be passed "
+        "in) or \"tcp:<host>:<port>\" on loopback. Replaces any previous "
+        "session. The reply repeats the session's hello: proto, app (the "
+        "argument Executor was launched with, often empty and not the "
+        "application the guest is running), screen width/height/bpp and tick.",
         { { "endpoint", prop("string") } }, { "endpoint" }));
 
     tools.push_back(toolDefinition(
         "screenshot",
-        "Capture the emulated Mac screen (or a rectangle of it) as a PNG.",
-        { { "region", pointProperty("optional [left, top, right, bottom]") },
-          { "max_width", integerProperty("downscale so the image is at most this wide") } }));
+        "Capture the emulated Mac screen, or the rectangle `region` = "
+        "[left, top, right, bottom] in guest pixels, as a PNG plus a JSON "
+        "metadata block (width, height, screen_width, screen_height, mouse "
+        "[x,y], button). The Mac's own pointer is not drawn into the image, so "
+        "read `mouse` to know where it is. Coordinates are 1:1 with the screen: "
+        "crop with `region` to inspect detail, because `max_width` resamples "
+        "with nearest neighbour and makes 9-pixel Mac text unreadable. Take a "
+        "screenshot after the guest has had time to redraw.",
+        { { "region", rectProperty("optional [left, top, right, bottom] in guest "
+                                   "pixels; defaults to the whole screen") },
+          { "max_width", integerProperty("optional downscale so the image is at "
+                                         "most this wide") } }));
 
     tools.push_back(toolDefinition(
         "status",
-        "Tick count, pointer position, button/modifier state, whether the guest "
-        "recently pumped its event loop, front window title and whether input is busy.",
+        "State of the emulated Mac, without capturing anything. Fields: tick "
+        "(60 per second, guest clock); app (the application the guest is "
+        "running); front (title of its front window, empty when there is none); "
+        "mouse [x,y] and button (true while the button is held); modifiers "
+        "{shift, cmd, option, control, caps}; modifiers_raw; dbltime (the "
+        "double-click threshold in ticks); busy (an injected input sequence is "
+        "still running); events_pending (events queued but not yet consumed by "
+        "the application); pumping and in_event_wait. pumping is false when the "
+        "application has neither returned to its event loop nor been inside "
+        "WaitNextEvent/ModalDialog for a second: such an application ignores "
+        "input, so wait and look again rather than sending more.",
         {}));
 
     tools.push_back(toolDefinition(
         "click",
-        "Move the pointer to (x, y) and click. Use count=2 for a double click.",
-        { { "x", integerProperty("guest screen x") },
-          { "y", integerProperty("guest screen y") },
-          { "count", integerProperty("number of clicks (default 1)") } },
+        "Move the pointer to (x, y) and click; count=2 is a double click. The "
+        "reply's delivered/suppressed report whether the guest's event mask "
+        "accepted the events, not whether the application acted on them - "
+        "verify with a screenshot. Classic Mac OS consumes the click that "
+        "activates a background window, so activate with count 1 first and "
+        "then click or double-click. Clicking a menu-bar title only opens and "
+        "closes the menu; use button_down + move + button_up for menus.",
+        { { "x", integerProperty("guest screen x in pixels") },
+          { "y", integerProperty("guest screen y in pixels") },
+          { "count", integerProperty("number of clicks: 1 (default) or 2 for a "
+                                     "double click") } },
         { "x", "y" }));
 
     tools.push_back(toolDefinition(
-        "move", "Move the pointer to (x, y) without pressing a button.",
-        { { "x", integerProperty("guest screen x") },
-          { "y", integerProperty("guest screen y") } },
+        "move",
+        "Move the pointer to (x, y) without pressing a button. Reports only "
+        "that the move was posted; the guest may not redraw until it gets "
+        "around to it.",
+        { { "x", integerProperty("guest screen x in pixels") },
+          { "y", integerProperty("guest screen y in pixels") } },
         { "x", "y" }));
 
     tools.push_back(toolDefinition(
-        "button_down", "Press and hold the mouse button, optionally at (x, y).",
+        "button_down",
+        "Press and hold the mouse button, optionally moving to (x, y) first "
+        "(x and y must be given together). Combine with move and button_up to "
+        "operate menus and to rubber-band select.",
         { { "x", integerProperty("optional guest screen x") },
           { "y", integerProperty("optional guest screen y") } }));
 
     tools.push_back(toolDefinition(
-        "button_up", "Release the mouse button.",
+        "button_up",
+        "Release the mouse button, optionally at (x, y). Where the release "
+        "lands decides what a menu or a tracking loop does.",
         { { "x", integerProperty("optional guest screen x") },
           { "y", integerProperty("optional guest screen y") } }));
 
     tools.push_back(toolDefinition(
-        "drag", "Press at `from`, move to `to` over duration_ms, then release.",
-        { { "from", pointProperty("[x, y]") },
-          { "to", pointProperty("[x, y]") },
+        "drag",
+        "Press at `from`, move to `to` over duration_ms, then release. The "
+        "reliable way to choose a menu item, move or resize a window, and drag "
+        "a selection.",
+        { { "from", pointProperty("[x, y] to press at") },
+          { "to", pointProperty("[x, y] to release at") },
           { "duration_ms", integerProperty("default 300") } },
         { "from", "to" }));
 
     tools.push_back(toolDefinition(
-        "type_text", "Type printable ASCII text.",
+        "type_text",
+        "Type printable ASCII text into whatever has keyboard focus, as "
+        "individual key presses. Click into a text field first: a document "
+        "that was just opened has no insertion point. Characters that cannot "
+        "be produced by the current keyboard layout are rejected, so replace "
+        "non-ASCII text with press_key.",
         { { "text", prop("string") } }, { "text" }));
 
     tools.push_back(toolDefinition(
-        "press_key", "Press and release a key by name (e.g. Return, Tab, F5) or character.",
+        "press_key",
+        "Press and release one key: a single printable character, or a name - "
+        "Return, Enter, Tab, Space, Escape, Backspace, ForwardDelete, "
+        "LeftArrow, RightArrow, UpArrow, DownArrow, Home, End, PageUp, "
+        "PageDown, Help, Clear, F1..F15. Modifiers (shift, cmd, opt, ctrl, "
+        "caps) are pressed and released around the key, as real modifier "
+        "events. Classic Mac OS never queues key-up events, so the reply "
+        "normally reads delivered=true with suppressed=[\"keyup\"].",
         { { "name", prop("string") },
-          { "modifiers", stringArrayProperty("shift, cmd, opt, ctrl, caps") } },
+          { "modifiers", stringArrayProperty("optional shift, cmd, opt, ctrl, caps") } },
         { "name" }));
 
     tools.push_back(toolDefinition(
-        "key_down", "Press and hold a key.",
+        "key_down",
+        "Press and hold a key by name or character; release it with key_up. "
+        "Use for chorded shortcuts that press_key cannot express.",
         { { "name", prop("string") } }, { "name" }));
 
     tools.push_back(toolDefinition(
-        "key_up", "Release a key.",
+        "key_up",
+        "Release a key previously held with key_down.",
         { { "name", prop("string") } }, { "name" }));
 
     tools.push_back(toolDefinition(
-        "wait", "Wait for the given number of milliseconds.",
+        "wait",
+        "Sleep for ms in the MCP server; no round trip to the emulator, so it "
+        "still works when the guest is stuck. Put it between an input and the "
+        "screenshot that checks the result: a few hundred milliseconds for a "
+        "click, seconds after launching an application or opening a document.",
         { { "ms", integerProperty("milliseconds") } }, { "ms" }));
 
     tools.push_back(toolDefinition(
-        "quit", "Ask the running application to quit (Cmd-Q); force exits the emulator.",
+        "quit",
+        "Ask the guest application to quit (as Cmd-Q does); force=true exits "
+        "the emulator process instead, which ends the session.",
         { { "force", prop("boolean") } }));
 
     return tools;
@@ -258,6 +395,26 @@ json::object callTool(ToolState &state, const std::string &name,
 {
     if(name == "attach")
         return attachSession(state, args);
+
+    /* Pure timing, so it stays out of the guest round trip: waiting has to work
+     * even when the emulator is wedged or the session is gone. */
+    if(name == "wait")
+    {
+        long ms = 0;
+
+        if(!intArgument(args, "ms", ms))
+            return toolError("wait needs an integer ms");
+
+        ms = std::clamp(ms, 0L, 600000L);
+
+        if(ms > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+
+        json::object reply;
+        reply["ok"] = true;
+        reply["waited_ms"] = ms;
+        return toolReply(reply);
+    }
 
     if(!state.attached())
         return notAttached();
@@ -278,7 +435,7 @@ json::object callTool(ToolState &state, const std::string &name,
     };
 
     auto forwarded = [&](json::object command) {
-        return toolReply(request(std::move(command)));
+        return resultOrError(request(std::move(command)));
     };
 
     if(name == "screenshot")
@@ -286,14 +443,22 @@ json::object callTool(ToolState &state, const std::string &name,
         json::object command;
         command["cmd"] = "frame";
 
-        if(const json::value *region = args.if_contains("region");
-           region && region->is_array())
+        if(const json::value *region = args.if_contains("region"); region)
+        {
+            if(!region->is_array() || region->as_array().size() != 4)
+                return toolError("region must be [left, top, right, bottom]");
+
+            for(const json::value &v : region->as_array())
+                if(!v.is_int64())
+                    return toolError("region must be [left, top, right, bottom]");
+
             command["rect"] = *region;
+        }
 
         json::object reply = request(command);
 
-        if(!reply.contains("ok") || !reply.at("ok").as_bool())
-            return toolReply(reply);
+        if(!reply.contains("ok") || !reply.at("ok").is_bool() || !reply.at("ok").as_bool())
+            return resultOrError(reply);
 
         int width = (int)reply["width"].as_int64();
         int height = (int)reply["height"].as_int64();
@@ -316,6 +481,12 @@ json::object callTool(ToolState &state, const std::string &name,
         meta["screen_height"] = height;
         meta["format"] = "png";
 
+        /* The guest cursor is a host cursor and never appears in the pixels. */
+        if(const json::value *mouse = reply.if_contains("mouse"))
+            meta["mouse"] = *mouse;
+        if(const json::value *button = reply.if_contains("button"))
+            meta["button"] = *button;
+
         json::array content;
         content.push_back(textContent(json::serialize(meta)));
 
@@ -334,34 +505,47 @@ json::object callTool(ToolState &state, const std::string &name,
     {
         json::object reply = request(json::object{ { "cmd", "status" } });
         reply["endpoint"] = state.endpoint;
-        return toolReply(reply);
+        return resultOrError(reply);
     }
 
     if(name == "move")
-        return forwarded(json::object{ { "cmd", "move" },
-                                       { "x", args.at("x") },
-                                       { "y", args.at("y") } });
+    {
+        long x, y;
+
+        if(!intArgument(args, "x", x) || !intArgument(args, "y", y))
+            return toolError("move needs integer x and y");
+
+        return forwarded(json::object{ { "cmd", "move" }, { "x", x }, { "y", y } });
+    }
 
     if(name == "click")
     {
+        long x, y;
+        long count = 1;
+
+        if(!intArgument(args, "x", x) || !intArgument(args, "y", y))
+            return toolError("click needs integer x and y");
+
+        intArgument(args, "count", count);
+
         json::object command;
         command["cmd"] = "click";
-        command["x"] = args.at("x");
-        command["y"] = args.at("y");
-        if(const json::value *v = args.if_contains("count"); v && v->is_int64())
-            command["count"] = *v;
+        command["x"] = x;
+        command["y"] = y;
+        command["count"] = count;
         return forwarded(std::move(command));
     }
 
     if(name == "button_down" || name == "button_up")
     {
-        if(const json::value *x = args.if_contains("x"); x && x->is_int64())
+        long x, y;
+
+        if(args.if_contains("x") || args.if_contains("y"))
         {
-            json::object move;
-            move["cmd"] = "move";
-            move["x"] = *x;
-            move["y"] = args.at("y");
-            request(std::move(move));
+            if(!intArgument(args, "x", x) || !intArgument(args, "y", y))
+                return toolError("x and y must be given together, as integers");
+
+            request(json::object{ { "cmd", "move" }, { "x", x }, { "y", y } });
         }
 
         json::object command;
@@ -373,10 +557,16 @@ json::object callTool(ToolState &state, const std::string &name,
 
     if(name == "drag")
     {
+        long x1, y1, x2, y2;
+
+        if(!pairArgument(args, "from", x1, y1)
+           || !pairArgument(args, "to", x2, y2))
+            return toolError("drag needs integer from and to pairs");
+
         json::object command;
         command["cmd"] = "drag";
-        command["from"] = args.at("from");
-        command["to"] = args.at("to");
+        command["from"] = json::array{ x1, y1 };
+        command["to"] = json::array{ x2, y2 };
         if(const json::value *v = args.if_contains("duration_ms"); v && v->is_int64())
             command["duration_ms"] = *v;
         return forwarded(std::move(command));
@@ -384,26 +574,30 @@ json::object callTool(ToolState &state, const std::string &name,
 
     if(name == "type_text")
     {
-        json::object command;
-        command["cmd"] = "type";
-        command["text"] = args.at("text");
-        return forwarded(std::move(command));
+        std::string text;
+
+        if(!stringArgument(args, "text", text))
+            return toolError("type_text needs a text string");
+
+        return forwarded(json::object{ { "cmd", "type" }, { "text", text } });
     }
 
     if(name == "press_key" || name == "key_down" || name == "key_up")
     {
+        std::string keyName;
+
+        if(!stringArgument(args, "name", keyName))
+            return toolError("a key needs a name");
+
         json::object command;
         command["cmd"] = name == "press_key" ? "key"
                        : name == "key_down" ? "keydown"
                                             : "keyup";
-        command["name"] = args.at("name");
+        command["name"] = keyName;
         if(const json::value *v = args.if_contains("modifiers"); v && v->is_array())
             command["modifiers"] = *v;
         return forwarded(std::move(command));
     }
-
-    if(name == "wait")
-        return forwarded(json::object{ { "cmd", "wait" }, { "ms", args.at("ms") } });
 
     if(name == "quit")
     {
