@@ -158,6 +158,8 @@ public:
     void captureARGB(Rect rect, std::vector<uint32_t> &out) const;
 
 protected:
+    class ThreadPool;
+
     IEventListener *callbacks_ = nullptr;
 
     Framebuffer framebuffer_;
@@ -180,6 +182,20 @@ protected:
     void updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
                     const Executor::DirtyRects::Rects& rects);
 
+    /* The one framebuffer decode.  Pixels outside `rootlessRegion` are the
+     * rootless holes: their white backdrop becomes `dimPixel` (premultiplied
+     * black at some alpha, or 0 for fully transparent) and everything else is
+     * kept.  `dstOriginH`/`dstOriginV` are the screen coordinates that map to
+     * dst[0]; front-ends pass 0,0, a sub-rectangle capture passes the rect's
+     * top-left.  `threadpool` may be nullptr (the work runs inline) and must be
+     * nullptr when called off the GUI thread. */
+    void blitFramebuffer(const Framebuffer& fb,
+                         uint32_t* dst, int dstWidth, int dstHeight,
+                         const Executor::DirtyRects::Rects& rects,
+                         const std::vector<int16_t>& rootlessRegion,
+                         int dstOriginH, int dstOriginV,
+                         uint32_t dimPixel, ThreadPool* threadpool) const;
+
     virtual void requestUpdate() = 0;
 
     // Re-evaluate whether the guest should have the mouse captured and apply
@@ -194,7 +210,6 @@ protected:
 
     void commitRootlessRegion();
 
-    class ThreadPool;
     std::unique_ptr<ThreadPool> threadpool_;
 };
 
