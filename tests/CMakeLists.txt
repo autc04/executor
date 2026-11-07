@@ -120,4 +120,4 @@ else()
     )
 endif()
 
-target_compile_features(tests PRIVATE cxx_std_17)
+target_compile_features(tests PRIVATE cxx_std_20)

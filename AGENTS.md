@@ -15,11 +15,11 @@ Two setups are supported, and the build/test commands differ slightly.
 
 - **Nix dev shell (flake + direnv).** The repo ships `flake.nix`. If a dev shell
   is available, use it: run commands as `direnv exec . <command>` (or from inside
-  `nix develop`). It provides CMake, a C++17 compiler, Qt 6, Boost, bison, perl,
+  `nix develop`). It provides CMake, a C++20 compiler, Qt 6, Boost, bison, perl,
   ruby, ninja, and the optional front-end libraries. Prefer it unless told
   otherwise.
 - **Plain environment.** A normal C/C++ toolchain plus CMake is enough. Do not
-  install Nix just to work on Executor. You need CMake ≥ 3.12, a C++17 compiler,
+  install Nix just to work on Executor. You need CMake ≥ 3.12, a C++20 compiler,
   Qt 6, Boost, bison, perl and ruby. SDL2/SDL, Wayland (waylandpp) and X11 are
   optional, for the extra front-ends; readline is optional, for the cxmon
   debugger.
@@ -173,7 +173,8 @@ witness (always `nullptr`): two conventions can share one signature
 - Namespace `Executor` for all emulator code; no new global-scope code.
 - Allman brace style, 4 spaces, no tabs. Omit braces only for single-line
   `if`/`else`/`for` bodies.
-- C++17 — `if constexpr`, structured bindings, `std::optional`, etc.
+- C++20 — concepts, ranges, `if constexpr`, structured bindings,
+  `std::optional`, `std::span`, etc.
 - `src/.clang-format` is authoritative; run `clang-format` before committing.
 - Mac types come from `<ExMacTypes.h>` and the generated headers under
   `build/src/api/`; never hand-edit generated files.

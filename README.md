@@ -86,7 +86,7 @@ Building and Running
 --------------------
 
 Requirements:
-* a modern C++17 compiler
+* a C++20 compiler
 * CMake 3.12 or later
 * Qt 6
 * Boost

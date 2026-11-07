@@ -16,7 +16,7 @@ if( NOT EXISTS "${CMAKE_SOURCE_DIR}/syn68k/CMakeLists.txt" )
 endif()
 
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 
 if(WIN32)
     add_compile_definitions(
