@@ -1072,7 +1072,7 @@ OSErr Executor::PBHGetVolParms(HParmBlkPtr pb, Boolean async)
 {
     LONGINT dir;
     HVCB *vcbp;
-    getvolparams_info_t *infop;
+    GetVolParmsInfoBuffer *infop;
     OSErr err;
     INTEGER rc, nused;
 
@@ -1084,7 +1084,7 @@ OSErr Executor::PBHGetVolParms(HParmBlkPtr pb, Boolean async)
                           pb->ioParam.ioNamePtr, &dir, false);
     if(vcbp)
     {
-        infop = (getvolparams_info_t *)pb->ioParam.ioBuffer;
+        infop = (GetVolParmsInfoBuffer *)pb->ioParam.ioBuffer;
         rc = pb->ioParam.ioReqCount;
         nused = 0;
         if(roomfor(infop, vMVersion, rc))

@@ -204,12 +204,12 @@ enum
     bHasPersonalAccessPrivileges,
     bHasFolderLock,
     bHasShortName,
-    bHasDesktopMgr,
-    bHasMoveRename,
+    // bHasDesktopMgr (= 12) comes from the generated FileMgr.h
+    bHasMoveRename = 13,
     bHasCopyFile,
     bHasOpenDeny,
-    bHasExtFSVol,
-    bNoSysDir,
+    // bHasExtFSVol (= 16) comes from the generated FileMgr.h
+    bNoSysDir = 17,
     bAccessCntl,
     bNoBootBlks,
     bNoDeskItems,
@@ -221,17 +221,6 @@ enum
     bLocalWList,
     bLimitFCBs,
 };
-
-typedef struct
-{
-    GUEST_STRUCT;
-    GUEST<INTEGER> vMVersion;
-    GUEST<ULONGINT> vMAttrib;
-    GUEST<LONGINT> vMLocalHand;
-    GUEST<LONGINT> vMServerAdr;
-    GUEST<LONGINT> vMVolumeGrade;
-    GUEST<INTEGER> vMForeignPrivID;
-} getvolparams_info_t;
 
 #define HARDLOCKED (1 << 7)
 #define SOFTLOCKED (1 << 15)
@@ -304,6 +293,5 @@ std::string expandPath(std::string);
 static_assert(sizeof(hfs_access_t) == 16);
 static_assert(sizeof(fcbrec) == 94);
 static_assert(sizeof(fcbhidden) == 32714);
-static_assert(sizeof(getvolparams_info_t) == 20);
 }
 #endif /* !defined(__rsys_file__) */
