@@ -14,8 +14,7 @@ using namespace Executor;
 #define LOWER(x) ((x) | 0x20) /* converts to lower case if x is A-Z */
 
 
-void Executor::C_ROMlib_Fdec2str(DecForm *volatile sp2, Decimal *volatile sp,
-                                 Decstr volatile dp)
+void Executor::C_ROMlib_Fdec2str(DecForm *sp2, Decimal *sp, Decstr dp)
 
 {
     int i, j, exponent, expsize, beforedecimal, afterdecimal;
@@ -158,9 +157,9 @@ void Executor::C_ROMlib_Fdec2str(DecForm *volatile sp2, Decimal *volatile sp,
     };
 }
 
-static void C_ROMlib_Fxstr2dec(Decstr volatile sp2, GUEST<INTEGER> *volatile sp,
-                                  Decimal *volatile dp2, Byte *volatile dp,
-                                  INTEGER lastchar)
+static void C_ROMlib_Fxstr2dec(Decstr sp2, GUEST<INTEGER> *sp,
+                               Decimal *dp2, Byte *dp,
+                               INTEGER lastchar)
 {
     int index, expsgn, implicitexp;
 
@@ -250,14 +249,14 @@ abortlookahead:
                            dp2->sig[0], dp2->sig + 1, toHost(dp2->exp));
 }
 
-void Executor::C_ROMlib_Fcstr2dec(Decstr volatile sp2, GUEST<INTEGER> *volatile sp,
-                                  Decimal *volatile dp2, Byte *volatile dp)
+void Executor::C_ROMlib_Fcstr2dec(Decstr sp2, GUEST<INTEGER> *sp,
+                                  Decimal *dp2, Byte *dp)
 {
     C_ROMlib_Fxstr2dec(sp2, sp, dp2, dp, 32767);
 }
 
-void Executor::C_ROMlib_Fpstr2dec(Decstr volatile sp2, GUEST<INTEGER> *volatile sp,
-                                  Decimal *volatile dp2, Byte *volatile dp)
+void Executor::C_ROMlib_Fpstr2dec(Decstr sp2, GUEST<INTEGER> *sp,
+                                  Decimal *dp2, Byte *dp)
 {
     C_ROMlib_Fxstr2dec(sp2, sp, dp2, dp, sp2[0]);
 }

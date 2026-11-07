@@ -275,7 +275,7 @@ static int32_t C_mpwIOCtl(MPWFile *file, int32_t cmd, void* param)
             break;
 
         case kFIOINTERACTIVE:
-            if (auto *e = getEntry(file->cookie))
+            if (getEntry(file->cookie))
             {
                 file->err = 0;
                 return 0;

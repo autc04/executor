@@ -101,7 +101,7 @@ f2d (snd_time x)
 #endif
 
 static inline void
-wait_on_channel(volatile SndChannelPtr vchanp)
+wait_on_channel(SndChannelPtr vchanp)
 {
     while(!qempty_p(vchanp) || SND_CHAN_CMDINPROG_P(vchanp))
         syncint_check_interrupt();
@@ -803,7 +803,7 @@ OSErr Executor::C_SndDoCommand(SndChannelPtr chanp, SndCommand *cmdp,
                     retval = queueFull;
                 else
                 {
-                    volatile SndChannelPtr vchanp = chanp;
+                    SndChannelPtr vchanp = chanp;
 
                     while(qfull_p(vchanp))
                         syncint_check_interrupt();

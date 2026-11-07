@@ -262,7 +262,7 @@ bool QtVideoDriver::setMode(int width, int height, int bpp, bool grayscale_p)
     std::condition_variable initEndCond;
     bool initEnded = false;
 
-    QMetaObject::invokeMethod(qapp, [=, &initEndMutex, &initEndCond, &initEnded] {
+    QMetaObject::invokeMethod(qapp, [=, this, &initEndMutex, &initEndCond, &initEnded] {
 #ifdef __APPLE__
         macosx_hide_menu_bar(500, 0, 1000, 1000);
         QVector<ScreenGeometry> screenGeometries = getScreenGeometries();
@@ -474,7 +474,7 @@ void QtVideoDriver::setCursor(char *cursor_data,
                               uint16_t cursor_mask[16],
                               int hotspot_x, int hotspot_y)
 {
-    QMetaObject::invokeMethod(qapp, [=] {
+    QMetaObject::invokeMethod(qapp, [=, this] {
         static QCursor theCursor(Qt::ArrowCursor);
 
         if(cursor_data)
@@ -497,7 +497,7 @@ void QtVideoDriver::setCursor(char *cursor_data,
 
 void QtVideoDriver::setCursorVisible(bool show_p)
 {
-    QMetaObject::invokeMethod(qapp, [=] {
+    QMetaObject::invokeMethod(qapp, [=, this] {
         if(show_p)
             setCursor(nullptr, nullptr, 0, 0);
         else

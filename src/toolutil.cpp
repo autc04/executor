@@ -544,7 +544,7 @@ INTEGER Executor::C_AngleFromSlope(Fixed s)
     retval = ulp - (ULONGINT *)sloptab + 90;
 #else
     {
-        ULONGINT *volatile temp;
+        ULONGINT *temp;
 
         temp = (ULONGINT *)sloptab;
         retval = ulp - temp + 90;

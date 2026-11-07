@@ -66,7 +66,7 @@ static gestaltentry_t gtable[] = {
 
     /*  gestaltFontMgrAttr,		0,	*/
     {
-        gestaltFSAttr, gestaltStandardFile58 | gestaltHasFSSpecCalls,
+        gestaltFSAttr, (int)gestaltStandardFile58 | (int)gestaltHasFSSpecCalls,
     },
     /*  gestaltFXfrMgrAttr,		0,	*/
     /*  gestaltHardwareAttr,	0,	*/

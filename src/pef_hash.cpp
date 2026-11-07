@@ -88,9 +88,9 @@ PEFComputeHashTableExponent(int32_t count)
         retval = kExponentLimit;
     else
 #if defined(__USE_ISOC9X)
-        retval = floor(log2((double)count / kAverageChainLimit)) + 1;
+        retval = floor(log2(count / (double)kAverageChainLimit)) + 1;
 #else
-        retval = floor_log2((double)count / kAverageChainLimit) + 1;
+        retval = floor_log2(count / (double)kAverageChainLimit) + 1;
 #endif
 
     return retval;

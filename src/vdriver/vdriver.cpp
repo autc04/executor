@@ -371,7 +371,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
     int nextRect = 0;
     std::mutex mut;
     
-    threadpool_->run([=, &rectList, &nextRect, &mut] {
+    threadpool_->run([=, this, &rectList, &nextRect, &mut] {
         ZoneScopedN("VideoDriver::updateBuffer work");
         for(;;)
         {

@@ -83,7 +83,7 @@ void EventSink::mouseWheelEvent(int deltaX, int deltaY, int h, int v)
 
 void EventSink::keyboardEvent(bool down, unsigned char rawMkvkey)
 {
-    runOnEmulatorThread([=]() {
+    runOnEmulatorThread([=, this]() {
         auto mkvkey = ROMlib_right_to_left_key_map(rawMkvkey);
 
         ROMlib_SetKey(mkvkey, down);

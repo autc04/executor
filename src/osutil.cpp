@@ -633,7 +633,7 @@ static void setdefaults()
     LM(SPValid) = VALID;
     LM(SPAlarm) = 0;
     LM(SPATalkB) = LM(SPATalkA) = LM(SPConfig) = 0;
-    LM(SPPortB) = LM(SPPortA) = baud9600 | stop10 | data8 | noParity;
+    LM(SPPortB) = LM(SPPortA) = (INTEGER)baud9600 | (INTEGER)stop10 | (INTEGER)data8 | (INTEGER)noParity;
     LM(SPPrint) = 0;
     LM(SPFont) = kFontIDGeneva - 1;
     LM(SPKbd) = 0x63;
