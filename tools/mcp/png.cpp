@@ -1,12 +1,12 @@
 #include "png.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <string>
+#include <png.h>
 
-#ifdef HAVE_ZLIB
-#include <zlib.h>
-#endif
+#include <csetjmp>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace Executor::mcp
 {
@@ -14,135 +14,60 @@ namespace Executor::mcp
 namespace
 {
 
-uint32_t crc32(const std::string &data, uint32_t crc = 0)
+void writeData(png_structp png, png_bytep data, png_size_t length)
 {
-    static uint32_t table[256];
-    static bool initialized = false;
-
-    if(!initialized)
-    {
-        for(uint32_t n = 0; n < 256; n++)
-        {
-            uint32_t c = n;
-            for(int k = 0; k < 8; k++)
-                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            table[n] = c;
-        }
-        initialized = true;
-    }
-
-    crc = ~crc;
-
-    for(uint8_t b : data)
-        crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8);
-
-    return ~crc;
+    auto *out = static_cast<std::string *>(png_get_io_ptr(png));
+    out->append(reinterpret_cast<const char *>(data), length);
 }
 
-uint32_t adler32(const std::string &data)
+void flushData(png_structp)
 {
-    uint32_t a = 1, b = 0;
-
-    for(uint8_t byte : data)
-    {
-        a = (a + byte) % 65521;
-        b = (b + a) % 65521;
-    }
-
-    return (b << 16) | a;
-}
-
-void appendBE32(std::string &out, uint32_t v)
-{
-    out += (char)((v >> 24) & 0xFF);
-    out += (char)((v >> 16) & 0xFF);
-    out += (char)((v >> 8) & 0xFF);
-    out += (char)(v & 0xFF);
-}
-
-void appendChunk(std::string &png, const char *type, const std::string &data)
-{
-    appendBE32(png, (uint32_t)data.size());
-
-    std::string typed(type, 4);
-    typed += data;
-
-    png += typed;
-    appendBE32(png, crc32(typed));
-}
-
-/* A zlib stream for the PNG IDAT chunk.  Uses real compression when zlib is
- * available and stored (uncompressed) deflate blocks otherwise. */
-std::string deflateZlib(const std::string &raw)
-{
-#ifdef HAVE_ZLIB
-    uLongf bound = compressBound(raw.size());
-    std::string out;
-    out.resize(bound);
-
-    if(compress2(reinterpret_cast<Bytef *>(out.data()), &bound,
-                 reinterpret_cast<const Bytef *>(raw.data()), raw.size(), 6)
-       == Z_OK)
-    {
-        out.resize(bound);
-        return out;
-    }
-    /* fall through to the stored form */
-#endif
-
-    std::string z;
-    z += (char)0x78; /* zlib header, no preset dictionary */
-    z += (char)0x01;
-
-    size_t offset = 0;
-    while(offset < raw.size())
-    {
-        size_t n = std::min<size_t>(65535, raw.size() - offset);
-        bool last = offset + n == raw.size();
-
-        z += (char)(last ? 1 : 0);
-        z += (char)(n & 0xFF);
-        z += (char)((n >> 8) & 0xFF);
-        z += (char)((~n) & 0xFF);
-        z += (char)(((~n) >> 8) & 0xFF);
-        z.append(raw, offset, n);
-        offset += n;
-    }
-
-    appendBE32(z, adler32(raw));
-    return z;
 }
 
 }
 
 std::string encodePngRGBA(int width, int height, const std::string &rgba)
 {
-    std::string raw;
-    raw.reserve((size_t)height * (1 + (size_t)width * 4));
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr,
+                                              nullptr, nullptr);
+    if(!png)
+        throw std::runtime_error("libpng: cannot create write struct");
 
-    for(int y = 0; y < height; y++)
+    png_infop info = png_create_info_struct(png);
+    if(!info)
     {
-        raw += '\0'; /* filter type 0 */
-        raw.append(rgba, (size_t)y * width * 4, (size_t)width * 4);
+        png_destroy_write_struct(&png, nullptr);
+        throw std::runtime_error("libpng: cannot create info struct");
     }
 
-    std::string z = deflateZlib(raw);
+    std::string out;
+    std::vector<png_bytep> rows((size_t)height);
 
-    std::string ihdr;
-    appendBE32(ihdr, (uint32_t)width);
-    appendBE32(ihdr, (uint32_t)height);
-    ihdr += (char)8; /* bit depth */
-    ihdr += (char)6; /* colour type: RGBA */
-    ihdr += (char)0; /* compression */
-    ihdr += (char)0; /* filter */
-    ihdr += (char)0; /* interlace */
+    /* libpng reports errors with longjmp; do not let a C++ exception unwind
+     * through its frames. */
+    if(setjmp(png_jmpbuf(png)))
+    {
+        png_destroy_write_struct(&png, &info);
+        throw std::runtime_error("libpng: failed to encode the screenshot");
+    }
 
-    std::string png = "\x89PNG\r\n\x1a\n";
-    appendChunk(png, "IHDR", ihdr);
-    appendChunk(png, "IDAT", z);
-    appendChunk(png, "IEND", std::string());
+    png_set_write_fn(png, &out, writeData, flushData);
 
-    return png;
+    png_set_IHDR(png, info, (png_uint_32)width, (png_uint_32)height, 8,
+                 PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+
+    for(int y = 0; y < height; y++)
+        rows[(size_t)y] =
+            (png_bytep)(rgba.data() + (size_t)y * (size_t)width * 4);
+
+    png_write_image(png, rows.data());
+    png_write_end(png, nullptr);
+
+    png_destroy_write_struct(&png, &info);
+
+    return out;
 }
 
 }

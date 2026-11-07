@@ -6,6 +6,12 @@ target_compile_features(executor-tool PRIVATE cxx_std_20)
 
 find_package(Boost REQUIRED CONFIG COMPONENTS json)
 
+# executor-mcp is optional: it needs libpng for screenshot output.
 if(NOT WIN32)
-    add_subdirectory(mcp)
+    find_package(PNG)
+    if(PNG_FOUND)
+        add_subdirectory(mcp)
+    else()
+        message(STATUS "executor-mcp will not be built: libpng not found")
+    endif()
 endif()

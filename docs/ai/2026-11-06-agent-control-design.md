@@ -419,8 +419,8 @@ declares only a `tools` capability.
 
 Responsibilities that belong here, not in the emulator:
 
-- Decoding the socket's base64, PNG encoding (zlib `compress2` when available, with
-  a stored-deflate fallback), and base64 again for the MCP image block;
+- Decoding the socket's base64, PNG encoding via **libpng** (the tool is only
+  built when CMake finds it), and base64 again for the MCP image block;
   `max_width` downscaling. Two base64 round trips per screenshot is the accepted
   cost of a JSON-only control stream.
 - Process spawning (with `--headless --control auto --size … --bpp …` defaults) and
@@ -524,9 +524,8 @@ Where the implementation deviates from the plan, and what is still missing:
   robustness gap.
 - **`busy`** is emitted when more than 32 input jobs are queued; `status.busy`
   reports the same condition.
-- **PNG compression** uses zlib (`compress2`) when CMake finds it, otherwise
-  stored deflate blocks. A blank 640×480 frame is ~5 KB compressed, ~1.2 MB
-  stored.
+- **PNG output uses libpng.** `executor-mcp` is only built when CMake finds
+  libpng; `flake.nix` provides it. A blank 640×480 frame is ~5 KB.
 - **No automated tests** for the control layer or the MCP tool yet; the native
   suite passes unchanged (269 tests, `ctest -LE xfail`). The obvious additions
   are the keymap reverse lookup, job-queue ordering under fake time, and a

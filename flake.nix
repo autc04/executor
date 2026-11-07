@@ -146,7 +146,7 @@
                 });
               in
               with pkgs;
-              [ qt6.qtbase boost readline SDL2 ]
+              [ qt6.qtbase boost readline SDL2 libpng ]
               ++ lib.optionals stdenv.isLinux [ SDL wayland patchedWaylandPP ];
             src = ./.;
             hardeningDisable = [ "all" ];
@@ -156,7 +156,7 @@
             name = "executor2000";
             nativeBuildInputs = with pkgs; [ cmake bison perl ruby pkg-config ninja ];
             buildInputs = with pkgs;
-              [ boost readline ];
+              [ boost readline libpng ];
             src = ./.;
             cmakeFlags = [ "-DFRONT_ENDS=headless" "-DNO_STATIC_BOOST=YES" ];
             hardeningDisable = [ "all" ];
