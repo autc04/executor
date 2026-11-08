@@ -11,6 +11,12 @@ input through the same `EventSink` a real user goes through, so it can drive any
 classic application; it cannot start or restart the emulator, and it does not
 know which session you mean until `attach` is called.
 
+For a session you drive interactively, start Executor with
+`--control … --no-suspend-events`: otherwise switching the window to the
+background tells the application it is suspended and it deactivates its front
+window, so the next injected click only reactivates it. The `attach` reply's
+`suspend_events` says which kind of session this is.
+
 Protocol and design: `docs/ai/2026-11-06-agent-control-design.md`. Findings
 from the first agent-driven run: `docs/ai/2026-11-07-executor-mcp-test-findings.md`.
 

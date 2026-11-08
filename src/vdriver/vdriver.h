@@ -97,8 +97,6 @@ public:
     static std::unique_ptr<EventSink> instance;
 private:
     GUEST<uint32_t> keytransState = 0;
-
-    void runOnEmulatorThread(std::function<void ()> f);
 };
 
 class VideoDriver
@@ -221,6 +219,15 @@ extern std::unique_ptr<VideoDriver> vdriver;
  * floor(dpr * screen_scale), clamped to at least 1.  The default of 1 therefore
  * gives 1x on a standard display and 2x on a high-DPI (dpr == 2) display. */
 extern double screen_scale;
+
+/* Whether losing the foreground tells the guest.  Front-ends call
+ * IEventListener::suspendEvent()/resumeEvent() when their window goes to the
+ * back or comes back, which posts a Mac OS suspend/resume event and makes the
+ * application deactivate its windows.  An agent driving an interactive session
+ * usually wants the application to keep believing it is frontmost, so
+ * --no-suspend-events clears this while still releasing whatever the host will
+ * no longer send a release for. */
+extern bool send_suspend_resume_events;
 
 }
 #endif /* !_VDRIVER_H_ */

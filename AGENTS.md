@@ -93,7 +93,8 @@ build/executor path/to/disk-image.dsk
 
 The application is a **positional argument after the options**; `--help` lists
 them. Useful options: `--logtraps`, `--debug`,
-`--debug-cmd`, `--break`, `--keyboards`, `--headless`.
+`--debug-cmd`, `--break`, `--keyboards`, `--headless`, `--control`,
+`--no-suspend-events`.
 
 - The GUI front-ends need a real window server, so a GUI run blocks and cannot
   work inside a sandbox that blocks one. Run those outside such a sandbox.

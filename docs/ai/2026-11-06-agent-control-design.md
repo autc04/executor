@@ -367,7 +367,7 @@ Failures: `{"id":1,"ok":false,"code":"timeout","error":"..."}`.
 
 | `cmd` | params | result fields |
 |---|---|---|
-| `hello` | — | `proto`, `app`, `width`, `height`, `bpp`, `tick` |
+| `hello` | — | `proto`, `app`, `width`, `height`, `bpp`, `tick`, `suspend_events` |
 | `screen` | — | `width`, `height`, `bpp`, `rowBytes`, `rootless` |
 | `status` | — | `tick`, `pumping`, `in_event_wait`, `since_response_ms`, `button`, `mouse`, `modifiers` (object), `modifiers_raw`, `dbltime`, `app`, `front`, `events_pending`, `busy` |
 | `frame` | `rect?` `[l,t,r,b]` | `width`, `height`, `format`, `data` (base64 RGBA bytes), `mouse`, `button` |
@@ -422,6 +422,16 @@ The server starts **unattached**; the agent selects a session with the `attach`
 tool. That keeps the harness configuration constant (`executor-mcp`, no arguments,
 since a PID-derived socket path cannot be written into a config) while still
 letting the agent work with a session it launched itself or was told about.
+
+**An interactive session an agent drives should run with `--no-suspend-events`.**
+Otherwise every time the Executor window goes to the background the guest is told
+it is suspended and the application deactivates its front window; injected input
+then has to reactivate it first, and a click that only activates a window is
+consumed. The flag suppresses the suspend and resume events but keeps the input
+release that belongs to the focus change, and in that mode the release also posts
+the key-up and mouse-up events, because an application that still believes it is
+frontmost must see them. `hello` reports the setting as `suspend_events`, so an
+agent can tell which kind of session it attached to.
 
 | Tool | Arguments |
 |---|---|

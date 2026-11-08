@@ -591,6 +591,9 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
             r.json["height"] = vdriver->height();
             r.json["bpp"] = vdriver->bpp();
             r.json["tick"] = (int64_t)C_TickCount();
+            /* Whether the guest is told when Executor goes to the background:
+             * an agent driving an interactive session needs it to be off. */
+            r.json["suspend_events"] = send_suspend_resume_events;
             return r;
         });
         reply.json = std::move(result.json);

@@ -50,6 +50,13 @@ is exempt (its bit is the lock state, not a held key). The release reads `LM(Key
 rather than host-side bookkeeping, so it also covers keys injected through the control
 socket.
 
+With `--no-suspend-events` the guest is not told about the focus change at all, so
+an agent driving an interactive session can keep working while Executor sits in
+the background and the application does not deactivate its windows. The release
+still happens, but now also posts the key-up and mouse-up events: an application
+that keeps believing it is frontmost must see them, whereas one that was suspended
+would never have received them, so in the default mode only the state is cleared.
+
 **`IEventListener`**: interface consumed by each front-end. Calling
 `mouseButtonEvent(down, h, v)` atomically calls `mouseMoved` then `mouseButtonEvent`,
 ensuring the event position is always current. `mouseWheelEvent(deltaX, deltaY, h, v)`

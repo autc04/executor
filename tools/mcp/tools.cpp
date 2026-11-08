@@ -258,7 +258,11 @@ json::array toolList()
         "in) or \"tcp:<host>:<port>\" on loopback. Replaces any previous "
         "session. The reply repeats the session's hello: proto, app (the "
         "argument Executor was launched with, often empty and not the "
-        "application the guest is running), screen width/height/bpp and tick.",
+        "application the guest is running), screen width/height/bpp, tick, and "
+        "suspend_events (whether losing focus tells the application it has gone "
+        "to the background - false when Executor was started with "
+        "--no-suspend-events, which is what an agent driving an interactive "
+        "session wants).",
         { { "endpoint", prop("string") } }, { "endpoint" }));
 
     tools.push_back(toolDefinition(

@@ -237,6 +237,12 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
         ("playback", po::value(&flag_playback), "play back events from file")
         ("control", po::value(&controlEndpoint),
             "expose an agent control socket: auto, unix:<path>, or tcp:<host>:<port>")
+        ("no-suspend-events", pox::inverted_bool_switch(&send_suspend_resume_events),
+            "do not tell the application that Executor went to the background, so an "
+            "agent can keep driving an interactive session without the application "
+            "deactivating its windows.  Held keys and the mouse button are still "
+            "released, with the key-up and mouse-up events the application would have "
+            "received")
         ("timewarp", pox::value<Ratio>()
             ->validator([](Ratio r) { return r.numer > 0 && r.denom > 0; })
             ->notifier([&](Ratio r) { ROMlib_SetTimewarp(r.numer, r.denom); })
@@ -465,6 +471,7 @@ int main(int argc, char **argv)
 
     auto executorThread = std::thread([&] {
         tracy::SetThreadName("emulator");
+        noteEmulatorThread();
         try
         {
             if(ERROR_ENABLED_P(ERROR_SEGFAULT))
