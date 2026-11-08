@@ -106,6 +106,18 @@ void EventSink::keyboardEvent(bool down, unsigned char rawMkvkey)
 
 void EventSink::suspendEvent()
 {
+    runOnEmulatorThread([] {
+        for(unsigned key = 0; key < 128; key++)
+            if(key != MKV_CAPS && ROMlib_GetKey(key))
+                ROMlib_SetKey(key, false);
+
+        if(LM(MBState) == 0)
+        {
+            LM(MBState) = 0xFF;
+            Responsiveness::instance().setButtonDown(false);
+        }
+    });
+
     runOnEmulatorThread(&sendsuspendevent);
 }
 
