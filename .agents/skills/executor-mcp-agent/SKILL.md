@@ -61,6 +61,10 @@ the application did with the events. The screenshot is the only ground truth.
   field first.
 - `press_key` takes one character or a name (`Return`, `Tab`, `Escape`,
   `LeftArrow`, `F5`, …) plus modifiers.
+- A modifier can be named as the key: `key_down "cmd"` holds it across further
+  requests (real chords), `key_up "cmd"` releases it. Use that to let go of a
+  modifier that got stuck; do not send a fake ⌘-keypress as a workaround.
+  `caps` is not a name: its bit is the caps *lock* state.
 - Classic Mac OS never queues key-up events and Executor masks them for the
   whole session, so a key reply normally reads
   `delivered: true, suppressed: ["keyup"]`. That is normal — do not "fix" it by
@@ -103,15 +107,22 @@ document's tool palette.
 
 ## When nothing happens
 
-1. `status`: is `pumping` true? Is `busy` stuck non-zero? Is `events_pending`
+1. `status.modifiers`: if any of `shift`/`cmd`/`option`/`control` is true while
+   nobody is holding it, every click is a *modified* click and the application
+   will ignore it. Release it with `key_up` naming that modifier (`cmd`,
+   `shift`, `opt`, `ctrl`) and try again. A modifier can be left down when the
+   session loses the foreground while it is held; Executor releases held keys on
+   focus loss, but a session that was already running before that fix, or a
+   client that used `key_down` without `key_up`, can still strand one.
+2. `status`: is `pumping` true? Is `busy` stuck non-zero? Is `events_pending`
    growing?
-2. Screenshot: is there an alert or a modal dialog you missed, possibly under
+3. Screenshot: is there an alert or a modal dialog you missed, possibly under
    another window?
-3. Is the application actually frontmost (`app`, and the Application menu at the
+4. Is the application actually frontmost (`app`, and the Application menu at the
    right end of the menu bar)?
-4. Is the click landing where you think? The pointer is invisible in
+5. Is the click landing where you think? The pointer is invisible in
    screenshots — compare `mouse` with the intended target, and crop the target
    area to check.
-5. `session ended: executor closed the control connection` means the emulator
+6. `session ended: executor closed the control connection` means the emulator
    is gone; the server is unattached now and needs a new `attach` (with the new
    socket path, since it contains the pid).

@@ -351,26 +351,33 @@ json::array toolList()
 
     tools.push_back(toolDefinition(
         "press_key",
-        "Press and release one key: a single printable character, or a name - "
+        "Press and release one key: a single printable character, a name - "
         "Return, Enter, Tab, Space, Escape, Backspace, ForwardDelete, "
         "LeftArrow, RightArrow, UpArrow, DownArrow, Home, End, PageUp, "
-        "PageDown, Help, Clear, F1..F15. Modifiers (shift, cmd, opt, ctrl, "
-        "caps) are pressed and released around the key, as real modifier "
-        "events. Classic Mac OS never queues key-up events, so the reply "
-        "normally reads delivered=true with suppressed=[\"keyup\"].",
+        "PageDown, Help, Clear, F1..F15 - or a modifier (shift, cmd, opt, "
+        "ctrl), which is then tapped. Modifiers listed in `modifiers` are "
+        "pressed and released around the key, as real modifier events; do not "
+        "also name the same modifier as the key. Classic Mac OS never queues "
+        "key-up events, so the reply normally reads delivered=true with "
+        "suppressed=[\"keyup\"].",
         { { "name", prop("string") },
           { "modifiers", stringArrayProperty("optional shift, cmd, opt, ctrl, caps") } },
         { "name" }));
 
     tools.push_back(toolDefinition(
         "key_down",
-        "Press and hold a key by name or character; release it with key_up. "
-        "Use for chorded shortcuts that press_key cannot express.",
+        "Press and hold a key by name, character, or modifier (shift, cmd, opt, "
+        "ctrl); release it with key_up. Holding a modifier across several "
+        "requests is how you build a chord that press_key cannot express. "
+        "Check status.modifiers afterwards: a modifier that stays true after "
+        "the session went to the background is a stuck key, and key_up <name> "
+        "is how you let go of it.",
         { { "name", prop("string") } }, { "name" }));
 
     tools.push_back(toolDefinition(
         "key_up",
-        "Release a key previously held with key_down.",
+        "Release a key previously held with key_down; accepts the same names, "
+        "including modifiers.",
         { { "name", prop("string") } }, { "name" }));
 
     tools.push_back(toolDefinition(

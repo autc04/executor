@@ -96,11 +96,47 @@ nothing changed on screen and `front` never changed. A real host mouse event
 revived the session, after which the Finder redrew with its folder window
 re-laid out.
 
-Not diagnosed. Hypothesis: the release landed on the menu title bar and left
-the guest inside Executor's menu tracking loop, waiting for an event the host
-queue never delivered. `events_pending` and `in_event_wait` exist to make the
-next occurrence diagnosable; reproducing it under `--logtraps` (see the
-`executor-guest-debugging` skill) is the next step.
+**Status: open, not reproducible.** The sequence was replayed later, on the same
+live session and on a fresh headless one: the menu opens on the button-down,
+closes on the button-up on its title bar, and menus keep working afterwards;
+`pumping` stayed true throughout a 15 s poll. Whatever produced the 30 s without
+a single `SystemTask`/`WaitNextEvent`/`ModalDialog` was not the menu release.
+`events_pending` and `in_event_wait` exist to make the next occurrence
+diagnosable; the next step is a run under `--logtraps` (see the
+`executor-guest-debugging` skill).
+
+### B11. Input has no effect because a modifier is stuck (found while chasing B10)
+
+The live session was in a state where every injected click was accepted by the
+event mask, the pointer moved, the guest pumped every ~60 ms — and nothing
+reacted: icons never highlighted, windows never activated, the screen did not
+change. `status` reported `modifiers: 384`, i.e. `cmdKey|btnState`: the guest
+believed Command was held, so every click was a ⌘-click. One command key
+press/release cleared the bit and input worked again (Apple menu opens and
+closes, a dialog's Cancel button closes it).
+
+Nobody in that session had pressed Command through the API, and a *completed*
+`key`/`type` command cannot leave a modifier down — it presses and releases it
+symmetrically. The plausible origin is the host: no front-end released held
+keys when the window lost the foreground, and the Wayland front-end learns about
+focus only through the toplevel `activated` state, after which the key-up for a
+held modifier is never delivered.
+
+Both halves are fixed:
+
+- `EventSink::suspendEvent()` — which every front-end calls when the window
+  loses the foreground — now clears every bit still set in `LM(KeyMap)` (caps
+  lock excepted, it is a lock) and releases a held mouse button, before the
+  suspend event reaches the guest.
+- `key`/`keydown`/`keyup` accept modifier names (`shift`, `cmd`, `opt`, `ctrl`),
+  so a modifier can be held across requests and a stuck one can be released with
+  `key_up "cmd"` instead of the ⌘-O press/release that was used here as a
+  workaround.
+
+The raw `modifiers` bitmask is what made this hard: `384` is not readable at a
+glance, and `btnState` is set while the button is *up* (`ROMlib_GetModifiers()`
+inverts it), so every sample carries `0x80` and "no modifiers" reads as `128`.
+That is why `status` now also reports a `modifiers` object (B5).
 
 ## Workflow traps (documentation, not bugs)
 
@@ -125,5 +161,6 @@ next occurrence diagnosable; reproducing it under `--logtraps` (see the
 | `delivered`/`suppressed`, `keyUp` is normal | `key`-family descriptions |
 | Meaning of `pumping`, `in_event_wait`, `events_pending`, `app`, `front`, `modifiers` | `status` description |
 | `count: 2` is a double click; the first click may only activate | `click` description |
+| A stuck modifier makes every click a modified click; `key_up <modifier>` clears it | `status` description, `key_down`/`key_up` descriptions, skill triage |
 | "input → wait → screenshot, `ok` is not proof" | `initialize.instructions` |
 | Menus, activation clicks, app launching, modal alerts, wedged-guest triage | `executor-mcp-agent` skill |

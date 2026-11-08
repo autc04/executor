@@ -321,6 +321,11 @@ All of it goes through `EventSink::instance`, i.e. the same path as real input.
   keys). Modifiers: `shift`, `cmd`, `opt`, `ctrl`, `caps`. Modifiers are applied as
   real key down/up events around the key, because `EventSink` derives
   `ROMlib_GetModifiers()` from the key state bitmap.
+  A modifier may also be *named as the key* (`keydown`/`keyup name: "cmd"`), which is
+  the only way to hold one across several requests and the only way to let go of one
+  that a lost key-up left down; `key` on a modifier taps it. Combining a modifier name
+  with `modifiers` is a `bad-request`. `caps` is deliberately not a name: its KeyMap
+  bit is the lock state, so releasing it would switch caps off.
 - `type` → per-character `keydown`/`keyup` with a gap (default `gap_ms` 30).
 
 **Character → keycode.** Build a reverse map from the KCHR resource the same way
@@ -370,7 +375,7 @@ Failures: `{"id":1,"ok":false,"code":"timeout","error":"..."}`.
 | `down` / `up` | `button?` | `delivered`, `suppressed` |
 | `click` | `x`, `y`, `count?`, `gap_ms?`, `interval_ms?` | `delivered`, `suppressed` |
 | `drag` | `from`, `to`, `duration_ms?`, `steps?` | `delivered`, `suppressed` |
-| `key` / `keydown` / `keyup` | `name`, `modifiers?` | `delivered`, `suppressed` |
+| `key` / `keydown` / `keyup` | `name` (character, named key, or modifier `shift`/`cmd`/`opt`/`ctrl`), `modifiers?` | `delivered`, `suppressed` |
 | `type` | `text`, `gap_ms?` | `chars`, `delivered`, `suppressed` |
 | `wait` | `ms` | — |
 | `quit` | `force?` | — |

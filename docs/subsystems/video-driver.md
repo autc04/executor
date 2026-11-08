@@ -39,6 +39,17 @@ It queues the work on the emulator thread through `runOnEmulatorThread()`
 (`src/base/emulator_thread.*`), a shared mutex-protected queue drained at the next
 interrupt safe point.
 
+**Held input across a focus change**: every front-end reports losing the foreground
+through `IEventListener::suspendEvent()` (Qt and SDL focus events, X11 `FocusOut`,
+Wayland's `activated` configure state), because a host only delivers the releases for
+keys it still has focus for. `EventSink::suspendEvent()` therefore clears every bit
+still set in `LM(KeyMap)` and releases a held mouse button before the suspend event
+reaches the guest. Otherwise a modifier held while the user switched windows stays
+down in the guest, and every later click silently becomes a modified click. Caps lock
+is exempt (its bit is the lock state, not a held key). The release reads `LM(KeyMap)
+rather than host-side bookkeeping, so it also covers keys injected through the control
+socket.
+
 **`IEventListener`**: interface consumed by each front-end. Calling
 `mouseButtonEvent(down, h, v)` atomically calls `mouseMoved` then `mouseButtonEvent`,
 ensuring the event position is always current. `mouseWheelEvent(deltaX, deltaY, h, v)`

@@ -494,6 +494,25 @@ const NamedKey namedKeys[] = {
     { "F13", MKV_F13 }, { "F14", MKV_F14 }, { "F15", MKV_F15 },
 };
 
+/* A modifier key has no character of its own, so it can only be named.  Caps
+ * lock is left out on purpose: its KeyMap bit is the lock state, so "releasing"
+ * it would switch caps off. */
+const NamedKey modifierNames[] = {
+    { "shift", MKV_LEFTSHIFT },
+    { "cmd", MKV_CLOVER }, { "command", MKV_CLOVER }, { "clover", MKV_CLOVER },
+    { "opt", MKV_LEFTOPTION }, { "option", MKV_LEFTOPTION },
+    { "ctrl", MKV_LEFTCNTL }, { "control", MKV_LEFTCNTL },
+};
+
+bool isModifierName(const std::string &name)
+{
+    for(const NamedKey &m : modifierNames)
+        if(name == m.name)
+            return true;
+
+    return false;
+}
+
 struct Stroke
 {
     uint8_t key = 0;
@@ -505,6 +524,13 @@ std::optional<Stroke> resolveKey(const std::string &name, uint16_t extraModifier
     for(const NamedKey &n : namedKeys)
         if(name == n.name)
             return Stroke{ n.key, extraModifiers };
+
+    /* Naming a modifier presses or releases it on its own, which is the only
+     * way to hold one across several requests - or to let go of one that a
+     * lost key-up left down. */
+    for(const NamedKey &m : modifierNames)
+        if(name == m.name)
+            return Stroke{ m.key, extraModifiers };
 
     if(name.size() == 1)
     {
@@ -834,6 +860,16 @@ asio::awaitable<Reply> Executor::control::runVerb(std::string_view requestLine)
         if(!getString(req, "name", name))
         {
             reply.json = errorObject("bad-request", "key needs name");
+            co_return reply;
+        }
+
+        /* The key would be pressed twice, and which one the "modifiers" entry
+         * was meant to release would be ambiguous. */
+        if(isModifierName(name) && req.if_contains("modifiers"))
+        {
+            reply.json = errorObject(
+                "bad-request",
+                "a modifier key cannot also be listed in \"modifiers\"");
             co_return reply;
         }
 
