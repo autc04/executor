@@ -279,8 +279,10 @@ json::array toolList()
     tools.push_back(toolDefinition(
         "status",
         "State of the emulated Mac, without capturing anything. Fields: tick "
-        "(60 per second, guest clock); app (the application the guest is "
-        "running); front (title of its front window, empty when there is none); "
+        "(60 per second, guest clock); app (the one application Executor is "
+        "running - there is no application switching, so this is what every "
+        "click and key goes to); front (title of its front window, empty when "
+        "there is none); "
         "mouse [x,y] and button (true while the button is held); modifiers "
         "{shift, cmd, option, control, caps}; modifiers_raw; dbltime (the "
         "double-click threshold in ticks); busy (an injected input sequence is "
@@ -297,8 +299,9 @@ json::array toolList()
         "reply's delivered/suppressed report whether the guest's event mask "
         "accepted the events, not whether the application acted on them - "
         "verify with a screenshot. Classic Mac OS consumes the click that "
-        "activates a background window, so activate with count 1 first and "
-        "then click or double-click. Clicking a menu-bar title only opens and "
+        "only activates a window, so in a window that is not in front use "
+        "count 1 to activate it first and click or double-click afterwards. "
+        "Clicking a menu-bar title only opens and "
         "closes the menu; use button_down + move + button_up for menus.",
         { { "x", integerProperty("guest screen x in pixels") },
           { "y", integerProperty("guest screen y in pixels") },
@@ -390,8 +393,10 @@ json::array toolList()
 
     tools.push_back(toolDefinition(
         "quit",
-        "Ask the guest application to quit (as Cmd-Q does); force=true exits "
-        "the emulator process instead, which ends the session.",
+        "Ask the guest application to quit (as Cmd-Q does); that returns to "
+        "Executor's Browser, which is the only way to reach another "
+        "application. force=true exits the emulator process instead, which ends "
+        "the session.",
         { { "force", prop("boolean") } }));
 
     return tools;

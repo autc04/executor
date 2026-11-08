@@ -28,6 +28,19 @@ Every input tool reports only that the events were **posted**. The control
 protocol's `delivered`/`suppressed` describe the guest's event mask, not what
 the application did with the events. The screenshot is the only ground truth.
 
+## One application at a time
+
+Executor runs **a single Mac application**. There is no application switcher,
+no application menu, and nothing running in the background: the desktop and its
+folder windows are Executor's own Browser, which is not running while another
+application is. So clicking the desktop or a Finder window while ClarisWorks is
+front does nothing at all — it cannot bring anything forward. Switching
+applications means quitting the current one back to the Browser and launching
+another.
+
+"Activate a window" therefore only ever means *make one of the running
+application's own windows front*. `status.front` names that window.
+
 ## Coordinates and screenshots
 
 - Coordinates are **guest pixels**, 1:1 with the top-level screenshot. The
@@ -43,9 +56,10 @@ the application did with the events. The screenshot is the only ground truth.
 ## Mouse
 
 - `click` posts down and up at the same point; `count: 2` is a double click.
-- **The click that activates a background window is consumed.** Clicking an
-  icon in an inactive window needs: `click` (activate) → `click` (select) →
-  `click count: 2` (open). Watch the title bar for the active-window look.
+- **A click that only activates a window is consumed.** In a window that is not
+  in front, the first click activates it, so selecting an icon there needs a
+  second click and opening it a double click after that (`click` → `click` →
+  `click count: 2`). `status.front` tells you which window is in front.
 - **`click` cannot use a menu.** Down opens the menu and the up at the same
   point closes it again. Instead:
   `button_down(x=menu title, y≈10)` → `move(item)` → `button_up`, or a single
@@ -69,14 +83,14 @@ the application did with the events. The screenshot is the only ground truth.
   whole session, so a key reply normally reads
   `delivered: true, suppressed: ["keyup"]`. That is normal — do not "fix" it by
   retrying.
-- A real key press needs the application to be frontmost; a document window
-  that is merely visible receives nothing.
+- Keys go to the **front window** of the running application; a window that is
+  merely visible receives nothing, so click into it first.
 
 ## Reading `status`
 
 | Field | Meaning and what to do |
 |---|---|
-| `app`, `front` | Application the guest runs and the title of its front window. During a launch `front` still belongs to the previous process. |
+| `app`, `front` | The one application Executor is running, and the title of its front window. During a launch `front` still names a window of the previous application. |
 | `pumping`, `in_event_wait` | `pumping: false` means the application has neither returned to its event loop nor been inside `WaitNextEvent`/`ModalDialog` for a second: it is stuck and **will ignore input**. Stop clicking, `wait`, look again. |
 | `events_pending` | Events queued and not yet consumed. A number that keeps growing while `pumping` is false is a stuck guest, not slow input. |
 | `busy` | An injected sequence (click/drag/type) is still running. |
@@ -85,8 +99,8 @@ the application did with the events. The screenshot is the only ground truth.
 
 ## Recipes
 
-**Launch an application from the Finder.** Screenshot → the icon is in a
-folder window: activate that window (`click` on its title bar), then
+**Launch an application from the Browser.** Screenshot → the icon is in a
+folder window: bring that window to the front (`click` on its title bar), then
 `click count: 2` on the icon → `wait(5000)` → screenshot. Classic apps show
 splash screens and modal alerts before any window; read them from the
 screenshot instead of assuming the launch failed. ClarisWorks 3.0, for example,
@@ -118,8 +132,10 @@ document's tool palette.
    growing?
 3. Screenshot: is there an alert or a modal dialog you missed, possibly under
    another window?
-4. Is the application actually frontmost (`app`, and the Application menu at the
-   right end of the menu bar)?
+4. `status.app`: is that the application you meant? Exactly one runs at a time,
+   so a click on the desktop or on a Finder window cannot bring another one
+   forward — if the wrong application is running, quit it back to the Browser
+   and launch the right one.
 5. Is the click landing where you think? The pointer is invisible in
    screenshots — compare `mouse` with the intended target, and crop the target
    area to check.

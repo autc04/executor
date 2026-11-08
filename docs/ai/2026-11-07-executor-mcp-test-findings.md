@@ -143,9 +143,11 @@ That is why `status` now also reports a `modifiers` object (B5).
 - **A plain `click` cannot use a menu.** It posts down and up at the same point,
   so a menu opens and closes immediately. Menus need `button_down` on the title,
   `move` to the item, then `button_up` (or `drag`).
-- **The first click on an inactive window is consumed by activation.** A double
-  click on an icon in a background window therefore needs three clicks: activate,
-  then `click count: 2`.
+- **The first click on a window that is not in front is consumed by
+  activation.** A double click on an icon in such a window therefore needs three
+  clicks: activate, then `click count: 2`. There is no application-level
+  version of this: Executor runs one application at a time, so clicking the
+  desktop can never bring another program forward.
 - **`click` says nothing about the effect.** Every input needs a `wait` and a
   screenshot; the tool replies only report that the events were posted.
 - **Downscaling destroys classic-Mac text.** `max_width` is a nearest-neighbour
