@@ -239,6 +239,11 @@ void _gui_fatal(const char *file, int line, const char *fn,
     vsprintf(errbuf, fmt, ap);
     va_end(ap);
 
+    /* send output to the debug stream first */
+    err_printf("%s:%d; fatal error in `%s': %s\n",
+               notdir(file), line, fn, errbuf);
+    flush_stream();
+
     if(LM(WWExist) == EXIST_YES)
     {
         char buf[10340];
@@ -257,11 +262,6 @@ void _gui_fatal(const char *file, int line, const char *fn,
                      "Restart", nullptr, nullptr,
                      nullptr, nullptr, nullptr);
     }
-
-    /* also sent output to the debug stream */
-    err_printf("%s:%d; fatal error in `%s': %s\n",
-               notdir(file), line, fn, errbuf);
-    flush_stream();
 
     ExitToShell();
 
