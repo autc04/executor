@@ -53,7 +53,6 @@
 #include <rsys/appearance.h>
 #include <hfs/hfs_plus.h>
 #include <base/cpu.h>
-#include <base/emulator_thread.h>
 #include <base/debugger.h>
 #include <base/fault_handler.h>
 #include <base/profiling.h>
@@ -471,7 +470,6 @@ int main(int argc, char **argv)
 
     auto executorThread = std::thread([&] {
         tracy::SetThreadName("emulator");
-        noteEmulatorThread();
         try
         {
             if(ERROR_ENABLED_P(ERROR_SEGFAULT))

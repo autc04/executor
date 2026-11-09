@@ -8,7 +8,6 @@
 #include <FontMgr.h>
 #include <rsys/executor.h>
 #include <osevent/osevent.h>
-#include <base/emulator_thread.h>
 
 #include <cstdlib>
 #include <string>
@@ -77,9 +76,6 @@ public:
 #endif
 
         Executor::InitMemory(thingOnStack);
-
-        /* This thread runs the emulator for the whole test binary. */
-        noteEmulatorThread();
 
         EventSink::instance = std::make_unique<EventSink>();
         vdriver = std::make_unique<MockVDriver>(EventSink::instance.get());
