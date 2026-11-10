@@ -22,7 +22,7 @@ void Executor::C_ReadPartialResource(Handle res, int32_t offset, Ptr buffer,
     err = ROMlib_findres(res, &map, &tr, &rr);
     if(err == noErr)
     {
-        if(rr->doff[0] == 0xff && rr->doff[1] == 0xff && rr->doff[2] == 0xff)
+        if(resource_not_written_p(rr))
             err = resNotFound;
         else
         {

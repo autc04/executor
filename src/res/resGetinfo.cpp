@@ -110,6 +110,13 @@ LONGINT Executor::ROMlib_SizeResource(Handle res, Boolean usehandle)
     if(LM(ResErr) != noErr)
         /*-->*/ return -1;
 
+    /* Added and not written yet, there is nothing on disk: its handle's
+       size (0 for an empty one). THINK C 6 converting a project re-adds an
+       unloaded CODE resource's empty handle under a new ID, then asks its
+       size; the read at offset $FFFFFF failed (eofErr). */
+    if(resource_not_written_p(rr))
+        return *res ? GetHandleSize(res) : 0;
+
     if(usehandle && *res)
         retval = GetHandleSize(res);
     else
@@ -141,7 +148,10 @@ LONGINT Executor::ROMlib_SizeResource(Handle res, Boolean usehandle)
             }
             else
             {
-                if(l[2] != COMPRESSED_FLAGS)
+                /* both headers mgetres decompresses (resOpen.cpp: version
+                   8, and 7.5.5's version 9) keep the uncompressed size in
+                   the same place */
+                if(l[2] != COMPRESSED_FLAGS && l[2] != COMPRESSED_FLAGS_V9)
                 {
                     ROMlib_setreserr(CantDecompress);
                     return -1;
