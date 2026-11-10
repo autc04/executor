@@ -110,6 +110,13 @@ LONGINT Executor::ROMlib_SizeResource(Handle res, Boolean usehandle)
     if(LM(ResErr) != noErr)
         /*-->*/ return -1;
 
+    /* Added and not written yet, there is nothing on disk: its handle's
+       size (0 for an empty one). THINK C 6 converting a project re-adds an
+       unloaded CODE resource's empty handle under a new ID, then asks its
+       size; the read at offset $FFFFFF failed (eofErr). */
+    if(rr->doff[0] == 0xFF && rr->doff[1] == 0xFF && rr->doff[2] == 0xFF)
+        return *res ? GetHandleSize(res) : 0;
+
     if(usehandle && *res)
         retval = GetHandleSize(res);
     else

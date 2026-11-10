@@ -351,3 +351,19 @@ TEST_F(ResourceTest, CompressedVersion9SizeOnDisk)
     EXPECT_EQ(noErr, ResError());
 }
 
+/* Added and not written yet, a resource has nothing on disk: its size is
+   its handle's, 0 for an empty one (THINK C 6, converting a project, adds
+   an empty handle and asks). */
+TEST_F(ResourceTest, AddedSizeOnDisk)
+{
+    Handle e = NewEmptyHandle();
+    AddResource(e, 'QUUX', 1, PSTR(""));
+    ASSERT_EQ(noErr, ResError());
+    EXPECT_EQ(0, GetResourceSizeOnDisk(e));
+    EXPECT_EQ(noErr, ResError());
+
+    Handle f = NewHandle(8);
+    AddResource(f, 'QUUX', 2, PSTR(""));
+    EXPECT_EQ(8, GetResourceSizeOnDisk(f));
+    EXPECT_EQ(noErr, ResError());
+}
