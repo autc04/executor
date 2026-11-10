@@ -235,6 +235,22 @@ static Handle addCompressed8(uint32_t size, uint8_t ratio, uint8_t expansion,
     return h;
 }
 
+/* The decompressor is passed the working buffer's size: ratio + 1 256ths
+   of the uncompressed size and the expansion, and 4 bytes more. */
+TEST_F(ResourceTest, CompressedWorkingSize)
+{
+    addCode(dcmp8Code, std::size(dcmp8Code), 200);
+    addCompressed8(64, 0x40, 4, 0);
+    reopen();
+
+    Handle h = GetResource('QUUX', 128);
+    ASSERT_EQ(noErr, ResError());
+    ASSERT_NE(nullptr, h);
+    EXPECT_EQ(64, GetHandleSize(h));
+    EXPECT_EQ(0x600DF00Du, *(GUEST<uint32_t>*)*h);
+    EXPECT_EQ(((0x40 + 1) * (64 + 4)) / 256 + 4, *(GUEST<int32_t>*)(*h + 4));
+}
+
 /* A preloaded compressed resource finds its decompressor in the file
    being opened, whatever handle the map on disk names for it. */
 TEST_F(ResourceTest, CompressedPreload)

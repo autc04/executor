@@ -116,7 +116,7 @@ Handle Executor::ROMlib_mgetres(resmaphand map, resref *rr)
 
 static bool
 decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offsetp,
-                 Handle *dcmp_handlep, Ptr *workspacep)
+                 Handle *dcmp_handlep, Ptr *workspacep, int32_t *working_sizep)
 {
     bool retval;
     OSErr err;
@@ -182,6 +182,19 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
             working_size = std::max(final_size, working_size);
 #endif
 
+            /* The decompressor's 4th argument is the working buffer's
+               size, as System 7.5.5's Resource Manager computes it:
+               (ratio + 1) 256ths of the uncompressed size plus the
+               expansion, and 4 bytes; 4 when the ratio is 0. 'dcmp' 0
+               bounds its table by it: given the compressed length,
+               AppleScript's 300K of code came out corrupted. */
+            {
+                uint32_t ratio = info.workingBufferFractionalRatio;
+                uint32_t base = final_size + info.expansionBufferSize;
+                *working_sizep = (ratio ? ((ratio + 1) * base) >> 8 : 0) + 4;
+            }
+            working_size = std::max(working_size, *working_sizep);
+
             *workspacep = NewPtr(working_size);
             if(!*workspacep)
                 retval = false;
@@ -215,6 +228,7 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
     int32_t dcmp_offset = 0;
     Handle dcmp_handle = nullptr;
     Ptr dcmp_workspace = nullptr;
+    int32_t working_size = 0;
     int32_t uncompressed_size = 0;
     Ptr xxx;
     OSErr err;
@@ -226,7 +240,8 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
     if(compressed_p)
     {
         if(!decompress_setup((*map)->resfn, &dlen, &uncompressed_size,
-                             &dcmp_offset, &dcmp_handle, &dcmp_workspace))
+                             &dcmp_offset, &dcmp_handle, &dcmp_workspace,
+                             &working_size))
         {
             if(LM(ResErr) == noErr)
                 compressed_p = false;
@@ -281,7 +296,7 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
                 state = hlock_return_orig_state(dcmp_handle);
                 dcmp = (ResourceDecompressionUPP)*dcmp_handle;
                 HLock(retval);
-                dcmp(xxx, *retval, dcmp_workspace, dlen);
+                dcmp(xxx, *retval, dcmp_workspace, working_size);
                 HUnlock(retval);
                 SetHandleSize(retval, uncompressed_size);
                 HSetState(dcmp_handle, state);
