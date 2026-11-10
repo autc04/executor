@@ -114,7 +114,12 @@ Handle Executor::ROMlib_mgetres(resmaphand map, resref *rr)
    starts with three entry offsets -- init(header), decompress(source,
    dest, header) and cleanup(header) -- and decompresses in place: the
    compressed bytes sit at the end of the destination handle. */
-using dcmp9HeaderProcPtr = UPP<void(Ptr header)>;
+
+/* Where the version 9 'dcmp' entry point at index i starts. */
+static Ptr dcmp9_entry(Ptr code, size_t i)
+{
+    return code + ((GUEST<INTEGER> *)code)[i];
+}
 
 /* TODO: decompress_setup also has to pass back the decompressed size
    we need to adjust down the size of "dlen" down below where we read
@@ -156,32 +161,29 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
 
     if(info.typeFlags == COMPRESSED_FLAGS_V9)
     {
-        /* tag, version and attributes, uncompressed size, dcmp ID, then
-           two words for the decompressor; the first is how many bytes
-           beyond the uncompressed size the handle needs. The header is
-           passed to each entry point. */
-        uint8_t hdr[18];
-        memcpy(hdr, &info, sizeof info);
-        LONGINT more = sizeof hdr - sizeof info;
-        retval = FSReadAll(rn, inout(more), (Ptr)hdr + sizeof info) == noErr;
-        INTEGER id = (hdr[12] << 8) | hdr[13];
-        int32_t slack = (hdr[14] << 8) | hdr[15];
+        dcomp_info_v9_t info9;
+
+        /* The version 9 header is longer than the one just read: read it
+           again in full, from the start. */
+        SetFPos(rn, fsFromStart, master_save_pos);
+        len = sizeof info9;
+        retval = FSReadAll(rn, inout(len), (Ptr)&info9) == noErr;
         if(retval)
         {
             GUEST<LONGINT> save_pos;
             GetFPos(rn, &save_pos);
-            *dcmp_handlep = GetResource("dcmp"_4, id);
+            *dcmp_handlep = GetResource("dcmp"_4, info9.dcmpID);
             SetFPos(rn, fsFromStart, save_pos);
             if(*dcmp_handlep)
                 LoadResource(*dcmp_handlep);
             retval = *dcmp_handlep && **dcmp_handlep;
         }
-        if(retval && (*v9_headerp = NewPtr(sizeof hdr)))
+        if(retval && (*v9_headerp = NewPtr(sizeof info9)))
         {
-            memcpy(*v9_headerp, hdr, sizeof hdr);
-            *dlenp -= sizeof hdr;
-            *final_sizep = info.uncompressedSize;
-            *offsetp = slack;
+            memcpy(*v9_headerp, &info9, sizeof info9);
+            *dlenp -= sizeof info9;
+            *final_sizep = info9.uncompressedSize;
+            *offsetp = info9.handleSlack;
         }
         else
             retval = false;
@@ -333,29 +335,14 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
             {
                 SignedByte state = hlock_return_orig_state(dcmp_handle);
                 Ptr code = *dcmp_handle;
-                auto entry = [&](int i) {
-                    return code + ((GUEST<INTEGER> *)code)[i];
-                };
+                ResourceDecompressionV9InitUPP init(dcmp9_entry(code, 0));
+                ResourceDecompressionV9UPP decompress(dcmp9_entry(code, 1));
+                ResourceDecompressionV9CleanupUPP cleanup(dcmp9_entry(code, 2));
+
                 HLock(retval);
-                ((dcmp9HeaderProcPtr)entry(0))(v9_header);
-                {
-                    /* decompress is a Pascal function, its result
-                       unused */
-                    LONGINT saved0 = EM_D0, saved1 = EM_D1, saved2 = EM_D2,
-                            savea0 = EM_A0, savea1 = EM_A1;
-                    PUSHUW(0);
-                    PUSHADDR(US_TO_SYN68K(xxx));
-                    PUSHADDR(US_TO_SYN68K(*retval));
-                    PUSHADDR(US_TO_SYN68K(v9_header));
-                    execute68K(US_TO_SYN68K(entry(1)));
-                    POPUW();
-                    EM_D0 = saved0;
-                    EM_D1 = saved1;
-                    EM_D2 = saved2;
-                    EM_A0 = savea0;
-                    EM_A1 = savea1;
-                }
-                ((dcmp9HeaderProcPtr)entry(2))(v9_header);
+                init(v9_header);
+                decompress(xxx, *retval, v9_header);
+                cleanup(v9_header);
                 HUnlock(retval);
                 SetHandleSize(retval, uncompressed_size);
                 HSetState(dcmp_handle, state);
