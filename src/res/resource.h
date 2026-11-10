@@ -76,6 +76,13 @@ struct resref
     GUEST<Handle> rhand;
 };
 
+/* A resource that has been added but not written to the file yet has no data
+   area: its offset is the -1 sentinel. */
+static inline bool resource_not_written_p(const resref *rr)
+{
+    return rr->doff[0] == 0xFF && rr->doff[1] == 0xFF && rr->doff[2] == 0xFF;
+}
+
 struct empty_resource_template_t
 {
     GUEST_STRUCT;
@@ -196,6 +203,7 @@ enum
 {
     COMPRESSED_TAG = 0xa89f6572,
     COMPRESSED_FLAGS = 0x120801,
+    COMPRESSED_FLAGS_V9 = 0x120901
 };
 
 struct dcomp_info_t
@@ -207,6 +215,22 @@ struct dcomp_info_t
     GUEST<uint8_t> workingBufferFractionalRatio;
     GUEST<uint8_t> expansionBufferSize;
     GUEST<INTEGER> dcmpID;
+};
+
+/* System 7.5.5's compressed resource header.  Unlike dcomp_info_t it carries
+   the 'dcmp' ID in the position version 8 uses for the working buffer
+   fields, and the whole struct is handed to the 'dcmp' entry points, so it
+   has to match the file byte for byte. */
+struct dcomp_info_v9_t
+{
+    GUEST_STRUCT;
+    GUEST<LONGINT> compressedResourceTag;
+    GUEST<LONGINT> typeFlags;
+    GUEST<LONGINT> uncompressedSize;
+    GUEST<INTEGER> dcmpID;
+    GUEST<INTEGER> handleSlack; /* bytes the handle needs beyond
+                                   uncompressedSize */
+    GUEST<INTEGER> dcmpSpecific; /* handed to the 'dcmp', unused here */
 };
 
 struct res_sorttype_t
@@ -222,6 +246,7 @@ static_assert(sizeof(typref) == 8);
 static_assert(sizeof(resref) == 12);
 static_assert(sizeof(empty_resource_template_t) == 286);
 static_assert(sizeof(dcomp_info_t) == 16);
+static_assert(sizeof(dcomp_info_v9_t) == 18);
 }
 #define __MYRESOURCE__
 #endif /* __MYRESOURCE__ */
