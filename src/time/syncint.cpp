@@ -58,17 +58,14 @@ namespace
      * dereferencing the freed thread descriptor. */
     std::atomic<bool> waitingThreadActive{false};
 
-    /* SIGALRM is process-directed, so it can be delivered to any thread that
-     * does not block it.  Only the emulator thread should be eligible: its
-     * handler assumes it runs there and forwards the interrupt to itself.
+    /* Only the emulator thread should get SIGALRM, but it can be delivered
+     * to any thread that does not block it.
      *
      * Block it before any thread can be created so that threads spawned from
-     * static initializers inherit the block.  SyncintTimer's constructor does
+     * static initializers inherit the block. SyncintTimer's constructor does
      * this too, but it runs during ordinary static initialization; Tracy's
      * Profiler is constructed with init_priority(105) and starts its worker
-     * threads before that.  Those threads would otherwise inherit an
-     * unblocked SIGALRM and could receive the timer signal.  This initializer
-     * therefore has to run earlier than 105. */
+     * threads before that. This initializer therefore has to run earlier than 105. */
     struct BlockSigalrmEarly
     {
         BlockSigalrmEarly()

@@ -2,6 +2,7 @@
 
 #include <ToolboxEvent.h>
 
+#include <base/emulator_thread.h>
 #include <rsys/adb.h>
 #include <rsys/toolevent.h>
 #include <osevent/osevent.h>
@@ -25,18 +26,12 @@ bool wheelDebug()
 
 std::unique_ptr<EventSink> EventSink::instance;
 
-Interrupt eventInterrupt {
-    [] {
-        EventSink::instance->pumpEvents();
-    }
-};
+bool Executor::send_suspend_resume_events = true;
 
 void EventSink::mouseButtonEvent(bool down)
 {
-    /* This runs on the GUI thread, before the work item is marshalled to the
-     * emulator thread.  The tracker needs the host button state to tell a
-     * mouse-down tracking loop (button held, so click-through is irrelevant)
-     * apart from an idle application. */
+    // The responsiveness tracker needs the host button state to tell a
+    // mouse-down tracking loopapart from a stuck/modal application
     Responsiveness::instance().setButtonDown(down);
 
     runOnEmulatorThread([=]() {
@@ -111,12 +106,41 @@ void EventSink::keyboardEvent(bool down, unsigned char rawMkvkey)
 
 void EventSink::suspendEvent()
 {
-    runOnEmulatorThread(&sendsuspendevent);
+    runOnEmulatorThread([this] {
+        bool synthesizeEvents = !send_suspend_resume_events;
+
+        for(unsigned key = 0; key < 128; key++)
+        {
+            if(key == MKV_CAPS || !ROMlib_GetKey(key))
+                continue;
+
+            /* keyboardEvent() maps right-hand modifiers onto their left twins,
+             * so it cannot clear those; take them out directly. */
+            if(synthesizeEvents && ROMlib_right_to_left_key_map(key) == key)
+                keyboardEvent(false, key);
+            else
+                ROMlib_SetKey(key, false);
+        }
+
+        if(LM(MBState) == 0)
+        {
+            if(synthesizeEvents)
+                mouseButtonEvent(false);
+            else
+            {
+                LM(MBState) = 0xFF;
+                Responsiveness::instance().setButtonDown(false);
+            }
+        }
+        if(send_suspend_resume_events)
+            sendsuspendevent();
+    });
 }
 
 void EventSink::resumeEvent(bool updateClipboard /* TODO: does this really make sense? */)
 {
-    runOnEmulatorThread([=]() { sendresumeevent(updateClipboard); });
+    if(send_suspend_resume_events)
+        runOnEmulatorThread([=]() { sendresumeevent(updateClipboard); });
 }
 
 void EventSink::requestQuit()
@@ -126,23 +150,5 @@ void EventSink::requestQuit()
 
 void EventSink::wake()
 {
-    eventInterrupt.trigger();
-}
-
-void EventSink::runOnEmulatorThread(std::function<void ()> f)
-{
-    std::lock_guard lk(mutex_);
-    todo_.push_back(f);
-    eventInterrupt.trigger();
-}
-
-void EventSink::pumpEvents()
-{
-    std::vector<std::function<void()>> todo;
-    {
-        std::lock_guard lk(mutex_);
-        todo = std::move(todo_);
-    }
-    for(const auto& f : todo)
-        f();
+    wakeEmulatorThread();
 }

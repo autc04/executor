@@ -94,16 +94,9 @@ public:
     virtual void requestQuit() override;
     virtual void wake() override;
 
-    void pumpEvents();
-
     static std::unique_ptr<EventSink> instance;
 private:
     GUEST<uint32_t> keytransState = 0;
-
-    std::mutex mutex_;
-    std::vector<std::function<void ()>> todo_;
-
-    void runOnEmulatorThread(std::function<void ()> f);
 };
 
 class VideoDriver
@@ -154,7 +147,17 @@ public:
     bool isGrayscale() { return framebuffer_.grayscale; }
     bool isRootless() { return framebuffer_.rootless; }
 
+    /* Copies `rect` (clamped to the screen) out of the guest framebuffer as
+     * tightly packed, top-down ARGB8888.  Reads the guest's actual pixels --
+     * no rootless hole mapping and no desktop dim.  `rect` is in guest screen
+     * coordinates; `out` receives width*height pixels of the clamped rect.
+     *
+     * Must be called on the emulator thread. */
+    void captureARGB(Rect rect, std::vector<uint32_t> &out) const;
+
 protected:
+    class ThreadPool;
+
     IEventListener *callbacks_ = nullptr;
 
     Framebuffer framebuffer_;
@@ -177,6 +180,20 @@ protected:
     void updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
                     const Executor::DirtyRects::Rects& rects);
 
+    /* The one framebuffer decode.  Pixels outside `rootlessRegion` are the
+     * rootless holes: their white backdrop becomes `dimPixel` (premultiplied
+     * black at some alpha, or 0 for fully transparent) and everything else is
+     * kept.  `dstOriginH`/`dstOriginV` are the screen coordinates that map to
+     * dst[0]; front-ends pass 0,0, a sub-rectangle capture passes the rect's
+     * top-left.  `threadpool` may be nullptr (the work runs inline) and must be
+     * nullptr when called off the GUI thread. */
+    void blitFramebuffer(const Framebuffer& fb,
+                         uint32_t* dst, int dstWidth, int dstHeight,
+                         const Executor::DirtyRects::Rects& rects,
+                         const std::vector<int16_t>& rootlessRegion,
+                         int dstOriginH, int dstOriginV,
+                         uint32_t dimPixel, ThreadPool* threadpool) const;
+
     virtual void requestUpdate() = 0;
 
     // Re-evaluate whether the guest should have the mouse captured and apply
@@ -191,7 +208,6 @@ protected:
 
     void commitRootlessRegion();
 
-    class ThreadPool;
     std::unique_ptr<ThreadPool> threadpool_;
 };
 
@@ -203,6 +219,15 @@ extern std::unique_ptr<VideoDriver> vdriver;
  * floor(dpr * screen_scale), clamped to at least 1.  The default of 1 therefore
  * gives 1x on a standard display and 2x on a high-DPI (dpr == 2) display. */
 extern double screen_scale;
+
+/* Whether losing the foreground tells the guest.  Front-ends call
+ * IEventListener::suspendEvent()/resumeEvent() when their window goes to the
+ * back or comes back, which posts a Mac OS suspend/resume event and makes the
+ * application deactivate its windows.  An agent driving an interactive session
+ * usually wants the application to keep believing it is frontmost, so
+ * --no-suspend-events clears this while still releasing whatever the host will
+ * no longer send a release for. */
+extern bool send_suspend_resume_events;
 
 }
 #endif /* !_VDRIVER_H_ */

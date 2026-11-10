@@ -56,6 +56,7 @@
 #include <base/debugger.h>
 #include <base/fault_handler.h>
 #include <base/profiling.h>
+#include <control/controlserver.h>
 #include <error/error.h>
 #include <debug/mon_debugger.h>
 #include <PowerCore.h>
@@ -102,6 +103,9 @@ static bool mouse_capture_enabled = true;
 static std::vector<std::string> debugCommands;
 static std::string keyboard;
 static bool list_keyboards_p = false;
+
+/* Empty means no agent control socket. */
+static std::string controlEndpoint;
 
 static bool flag_headless = false;
 static std::optional<fs::path> flag_record, flag_playback;
@@ -230,6 +234,14 @@ static std::vector<std::string> parseCommandLine(int& argc, char **argv)
 #endif
         ("record", po::value(&flag_record), "record events to file")
         ("playback", po::value(&flag_playback), "play back events from file")
+        ("control", po::value(&controlEndpoint),
+            "expose an agent control socket: auto, unix:<path>, or tcp:<host>:<port>")
+        ("no-suspend-events", pox::inverted_bool_switch(&send_suspend_resume_events),
+            "do not tell the application that Executor went to the background, so an "
+            "agent can keep driving an interactive session without the application "
+            "deactivating its windows.  Held keys and the mouse button are still "
+            "released, with the key-up and mouse-up events the application would have "
+            "received")
         ("timewarp", pox::value<Ratio>()
             ->validator([](Ratio r) { return r.numer > 0 && r.denom > 0; })
             ->notifier([&](Ratio r) { ROMlib_SetTimewarp(r.numer, r.denom); })
@@ -541,12 +553,20 @@ int main(int argc, char **argv)
             base::Debugger::instance->setBreakOnProcessEntry(breakOnProcessStart);
             RunDebuggerCommands(debugCommands);
 
+            /* Start the control socket only now: its existence means the
+             * session is usable, so no readiness handshake is needed. */
+            control::startServer(controlEndpoint);
+
             executor_main();
-            ExitToShell();   
+            ExitToShell();
         }
         catch(const ExitToShellException& e)
         {
         }
+
+        /* Stop answering control requests; queued commands are cancelled, not
+         * completed (see docs/ai/2026-11-06-agent-control-design.md). */
+        control::requestStop();
 
         vdriver->endEventLoop();
 
@@ -558,6 +578,10 @@ int main(int argc, char **argv)
 
     vdriver->runEventLoop();
     executorThread.join();
+
+    /* Join the control io thread before vdriver is destroyed, so no frame read
+     * can touch a freed framebuffer. */
+    control::join();
 
     vdriver.reset();
 

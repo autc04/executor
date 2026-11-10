@@ -87,6 +87,11 @@ public:
     /* The host time recorded by the last noteResponse()/reset(). */
     unsigned long lastResponseMs() const;
 
+    /* True while the guest is inside a call that is allowed to block
+     * (WaitNextEvent, ModalDialog, a tracking loop).  An application in there
+     * is not stuck, so it must not be reported as failing to pump. */
+    bool active() const { return activeDepth_ > 0; }
+
 private:
     Responsiveness();
 

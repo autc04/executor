@@ -6,6 +6,7 @@
 
 #include <thread>
 #include <condition_variable>
+#include <algorithm>
 
 using namespace Executor;
 
@@ -307,16 +308,32 @@ void VideoDriver::commitRootlessRegion()
     rootlessRegionDirty_ = false;
 }
 
+namespace
+{
+inline uint32_t fiveToEight(uint32_t x)
+{
+    return (x << 3) | (x >> 2);
+}
+
+inline uint32_t argbFrom16(uint16_t pix)
+{
+    return 0xFF000000
+        | (fiveToEight((pix >> 10) & 31) << 16)
+        | (fiveToEight((pix >> 5) & 31) << 8)
+        | fiveToEight(pix & 31);
+}
+}
+
 template<int depth>
 struct IndexedPixelGetter
 {
     uint8_t *src;
     int shift;
-    std::array<uint32_t, 256>& colors;
+    const std::array<uint32_t, 256>& colors;
 
     static constexpr uint8_t mask = (1 << depth) - 1;
 
-    IndexedPixelGetter(std::array<uint32_t, 256>& colors, uint8_t *line, int x)
+    IndexedPixelGetter(const std::array<uint32_t, 256>& colors, uint8_t *line, int x)
         : colors(colors)
     {
         src = line + x * depth / 8;
@@ -336,43 +353,40 @@ struct IndexedPixelGetter
     }
 };
 
-void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
-                                const Executor::DirtyRects::Rects& rects)
+void VideoDriver::blitFramebuffer(const Framebuffer& fb,
+                                  uint32_t* buffer, int bufferWidth, int bufferHeight,
+                                  const Executor::DirtyRects::Rects& rects,
+                                  const std::vector<int16_t>& rootlessRegion,
+                                  int dstOriginH, int dstOriginV,
+                                  uint32_t dimPixel, ThreadPool* threadpool) const
 {
     ZoneScoped;
-    auto before = std::chrono::high_resolution_clock::now();
-    
-    if(!threadpool_)
-        threadpool_ = std::make_unique<ThreadPool>();
-    
-    int width = std::min(fb.width, bufferWidth);
-    int height = std::min(fb.height, bufferHeight);
+    [[maybe_unused]] auto before = std::chrono::high_resolution_clock::now();
 
-    /* Pixels outside the rootless region are the desktop, which shows through
-     * the window as transparent (dimPixel == 0) or, while the guest is
-     * captured, as 50% black.  The buffer is premultiplied ARGB, so black at
-     * alpha a is just a << 24. */
-    uint32_t dimPixel = 0;
-    if(desktopDim_ > 0.0f)
+    int width = std::min(fb.width, dstOriginH + bufferWidth);
+    int height = std::min(fb.height, dstOriginV + bufferHeight);
+
+    /* Only build a fallback region when the caller has none (the non-rootless
+     * front-ends, and screenshot capture).  It must not be inserted into the
+     * caller's vector: that one is owned by the GUI thread. */
+    const std::vector<int16_t>* region = &rootlessRegion;
+    std::vector<int16_t> fullRegion;
+
+    if(region->empty())
     {
-        unsigned a = (unsigned)(desktopDim_ * 255.0f + 0.5f);
-        if(a > 255)
-            a = 255;
-        dimPixel = a << 24;
-    }
-
-    if(!rootlessRegion_.size())
-        rootlessRegion_.insert(rootlessRegion_.end(),
+        fullRegion.insert(fullRegion.end(),
             { 0, 0, (int16_t)width, RGN_STOP,
             (int16_t)height, 0, (int16_t)width, RGN_STOP,
             RGN_STOP });
+        region = &fullRegion;
+    }
 
     Executor::DirtyRects::Rects rectList = rects;
     int nextRect = 0;
     std::mutex mut;
-    
-    threadpool_->run([=, this, &rectList, &nextRect, &mut] {
-        ZoneScopedN("VideoDriver::updateBuffer work");
+
+    auto work = [=, this, &rectList, &nextRect, &mut] {
+        ZoneScopedN("VideoDriver::blitFramebuffer work");
         for(;;)
         {
             Executor::DirtyRects::Rect r;
@@ -391,20 +405,23 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 else
                     ++nextRect;
             }
-            ZoneScopedN("VideoDriver::updateBuffer rect");
+            ZoneScopedN("VideoDriver::blitFramebuffer rect");
             
-            assert(r.left >= 0 && r.right >= 0 && r.left <= width && r.bottom <= height);
-            
-            RegionProcessor rgnP(rootlessRegion_.begin());
+            assert(r.left >= dstOriginH && r.right <= dstOriginH + bufferWidth);
+            assert(r.top >= dstOriginV && r.bottom <= dstOriginV + bufferHeight);
+
+            RegionProcessor rgnP(region->begin());
 
             for(int y = r.top; y < r.bottom; y++)
             {
                 while(y >= rgnP.bottom())
                     rgnP.advance();
 
-                auto blitLine = [this, &rgnP, buffer, bufferWidth, bufferHeight, y, &r, dimPixel](auto getPixel) {
+                auto blitLine = [&rgnP, buffer, bufferWidth, y, &r, dimPixel, dstOriginH, dstOriginV](auto getPixel) {
                     auto rowIt = rgnP.row.begin();
                     int x = r.left;
+                    int xOff = -dstOriginH;
+                    uint32_t* dst = buffer + (size_t)(y - dstOriginV) * bufferWidth;
 
                     while(x < r.right)
                     {
@@ -421,7 +438,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                         for(; x < nextX; x++)
                         {
                             uint32_t pixel = getPixel();
-                            buffer[y * bufferWidth + x] = pixel == 0xFFFFFFFF ? dimPixel : pixel;
+                            dst[x + xOff] = pixel == 0xFFFFFFFF ? dimPixel : pixel;
                         }
                         
                         if(x >= r.right)
@@ -430,7 +447,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                         nextX = std::min(r.right, (int)*rowIt++);
 
                         for(; x < nextX; x++)
-                            buffer[y * bufferWidth + x] = getPixel();
+                            dst[x + xOff] = getPixel();
                     }
                 };
 
@@ -455,16 +472,7 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                         {
                             auto *src16 = reinterpret_cast<GUEST<uint16_t>*>(src);
                             src16 += r.left;
-                            blitLine([&] {
-                                uint16_t pix = *src16++;
-                                auto fiveToEight = [](uint32_t x) {
-                                    return (x << 3) | (x >> 2);
-                                };
-                                return 0xFF000000
-                                    | (fiveToEight((pix >> 10) & 31) << 16)
-                                    | (fiveToEight((pix >> 5) & 31) << 8)
-                                    | fiveToEight(pix & 31);
-                            });
+                            blitLine([&] { return argbFrom16(*src16++); });
                         }
                         break;
 
@@ -479,11 +487,15 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
                 }
             }
         }
-    });
-    
-    auto after = std::chrono::high_resolution_clock::now();
-    
+    };
+
+    if(threadpool)
+        threadpool->run(work);
+    else
+        work();
+
 #if 0
+    auto after = std::chrono::high_resolution_clock::now();
     static int sum = 0, count = 0;
 
     if(count > 100)
@@ -494,4 +506,51 @@ void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int buff
 
     std::cout << double(sum)/count << std::endl;
 #endif
+}
+
+void VideoDriver::updateBuffer(const Framebuffer& fb, uint32_t* buffer, int bufferWidth, int bufferHeight,
+                               const Executor::DirtyRects::Rects& rects)
+{
+    if(!threadpool_)
+        threadpool_ = std::make_unique<ThreadPool>();
+
+    /* Pixels outside the rootless region are the desktop, which shows through
+     * the window as transparent (dimPixel == 0) or, while the guest is
+     * captured, as 50% black.  The buffer is premultiplied ARGB, so black at
+     * alpha a is just a << 24. */
+    uint32_t dimPixel = 0;
+    if(desktopDim_ > 0.0f)
+    {
+        unsigned a = (unsigned)(desktopDim_ * 255.0f + 0.5f);
+        if(a > 255)
+            a = 255;
+        dimPixel = a << 24;
+    }
+
+    blitFramebuffer(fb, buffer, bufferWidth, bufferHeight, rects,
+                    rootlessRegion_, 0, 0, dimPixel, threadpool_.get());
+}
+
+void VideoDriver::captureARGB(Rect rect, std::vector<uint32_t> &out) const
+{
+    const Framebuffer &fb = framebuffer_;
+
+    int left = std::clamp<int>(rect.left.get(), 0, fb.width);
+    int top = std::clamp<int>(rect.top.get(), 0, fb.height);
+    int right = std::clamp<int>(rect.right.get(), left, fb.width);
+    int bottom = std::clamp<int>(rect.bottom.get(), top, fb.height);
+    int width = right - left;
+    int height = bottom - top;
+
+    out.resize((size_t)width * (size_t)height);
+    if(width <= 0 || height <= 0 || !fb.data)
+        return;
+
+    Executor::DirtyRects::Rects rects;
+    rects.push_back({ top, left, bottom, right });
+
+    /* Screenshots are the guest's own pixels: an empty region means "no
+     * rootless holes", the dim is irrelevant and there is no thread pool --
+     * this runs on the emulator thread and must not touch GUI-thread state. */
+    blitFramebuffer(fb, out.data(), width, height, rects, {}, left, top, 0, nullptr);
 }

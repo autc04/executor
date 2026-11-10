@@ -35,8 +35,27 @@ avoid unbounded growth.
 
 **`EventSink`**: implements `IEventListener` and translates host input events (mouse
 clicks, key presses, wheel motion, suspend/resume) into entries on the Mac event queue.
-It uses an internal mutex-protected work queue so that events posted from the host GUI
-thread are picked up by `pumpEvents()` on the emulator thread.
+It queues the work on the emulator thread through `runOnEmulatorThread()`
+(`src/base/emulator_thread.*`), a shared mutex-protected queue drained at the next
+interrupt safe point.
+
+**Held input across a focus change**: every front-end reports losing the foreground
+through `IEventListener::suspendEvent()` (Qt and SDL focus events, X11 `FocusOut`,
+Wayland's `activated` configure state), because a host only delivers the releases for
+keys it still has focus for. `EventSink::suspendEvent()` therefore clears every bit
+still set in `LM(KeyMap)` and releases a held mouse button before the suspend event
+reaches the guest. Otherwise a modifier held while the user switched windows stays
+down in the guest, and every later click silently becomes a modified click. Caps lock
+is exempt (its bit is the lock state, not a held key). The release reads `LM(KeyMap)
+rather than host-side bookkeeping, so it also covers keys injected through the control
+socket.
+
+With `--no-suspend-events` the guest is not told about the focus change at all, so
+an agent driving an interactive session can keep working while Executor sits in
+the background and the application does not deactivate its windows. The release
+still happens, but now also posts the key-up and mouse-up events: an application
+that keeps believing it is frontmost must see them, whereas one that was suspended
+would never have received them, so in the default mode only the state is cleared.
 
 **`IEventListener`**: interface consumed by each front-end. Calling
 `mouseButtonEvent(down, h, v)` atomically calls `mouseMoved` then `mouseButtonEvent`,
@@ -83,7 +102,8 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
 |--------|-------------|
 | `dirty_rect_accrue(t,l,b,r)` | Record a modified rectangle |
 | `DirtyRects::getAndClear()` | Retrieve and reset the dirty rect list |
-| `EventSink::pumpEvents()` | Drain the pending-event queue on the emulator thread |
+| `captureARGB(rect, out)` | Copy a rectangle of the guest framebuffer out as ARGB8888; emulator thread only |
+| `runOnEmulatorThread()` | Queue work for the emulator thread, drained at the next interrupt safe point |
 | `EventSink::mouseWheelEvent()` | Marshal a host wheel event to `ROMlib_handleWheelEvent()` |
 | `set_refresh_rate(hz)` | Change the screen refresh frequency |
 | `QtVideoDriver::setMode()` | Resize the Qt window and reallocate the framebuffer |
@@ -98,6 +118,11 @@ the front-end. `windRootless.cpp` determines per-window compositing geometry.
   mechanism between the two.
 - **Minimum resolution**: `VDRIVER_MIN_SCREEN_WIDTH = 512`, `VDRIVER_MIN_SCREEN_HEIGHT = 342`
   (matching the original 512×342 Mac screen). Front-ends should reject smaller sizes.
+- **Screenshots / agent control**: `VideoDriver::captureARGB()` copies raw guest
+  pixels (no rootless hole mapping, no desktop dim) and is only ever called from
+  an emulator-thread task, so geometry and pixels come from one point in guest
+  execution. Input from the `--control` socket goes through `EventSink`, exactly
+  like real input. See `docs/ai/2026-11-06-agent-control-design.md`.
 - **`EventRecorder`**: records/replays raw input events for regression testing. When
   active it wraps `EventSink` and forwards events to the recorder before passing them
   on.
