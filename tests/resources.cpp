@@ -323,3 +323,31 @@ TEST_F(ResourceTest, CompressedVersion9)
     EXPECT_EQ(16u, *(GUEST<uint32_t>*)(*h + 4));
 }
 
+/* Not loaded, a compressed resource's size is its uncompressed size, with
+   either header. */
+TEST_F(ResourceTest, CompressedSizeOnDisk)
+{
+    addCompressed8(64, 0, 0, 0);
+    reopen();
+
+    SetResLoad(false);
+    Handle h = Get1Resource('QUUX', 128);
+    SetResLoad(true);
+    ASSERT_NE(nullptr, h);
+    EXPECT_EQ(64, GetResourceSizeOnDisk(h));
+    EXPECT_EQ(noErr, ResError());
+}
+
+TEST_F(ResourceTest, CompressedVersion9SizeOnDisk)
+{
+    addCompressed9(48);
+    reopen();
+
+    SetResLoad(false);
+    Handle h = Get1Resource('QUUX', 128);
+    SetResLoad(true);
+    ASSERT_NE(nullptr, h);
+    EXPECT_EQ(48, GetResourceSizeOnDisk(h));
+    EXPECT_EQ(noErr, ResError());
+}
+
