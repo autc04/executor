@@ -628,11 +628,17 @@ INTEGER Executor::C_HOpenResFile(INTEGER vref, LONGINT dirid, ConstStringPtr fn,
     LM(TopMapHndl) = (Handle)map;
     LM(CurMap) = f;
 
-    /* check for resprload bits */
-
+    /* The handle fields on disk are junk: clear them all before any
+       preload, which may look up other resources in this map (a
+       compressed one needs its 'dcmp'). */
     WALKTANDR(map, i, tr, j, rr)
     rr->rhand = 0;
     rr->ratr &= ~resChanged;
+    EWALKTANDR(tr, rr)
+
+    /* check for resprload bits */
+
+    WALKTANDR(map, i, tr, j, rr)
     if(rr->ratr & resPreload)
         ROMlib_mgetres(map, rr);
     EWALKTANDR(tr, rr)

@@ -179,3 +179,73 @@ TEST_F(ResourceTest, Modify1)
     ASSERT_EQ(0xABABABAB, *(GUEST<uint32_t>*)*h1);
     ASSERT_EQ(0xFEEDFACE, *(GUEST<uint32_t>*)*h2);
 }
+
+/* Compressed resources, with decompressors of our own (68k code, in the
+   test file as 'dcmp' 200).
+
+   Header version 8: dcmp(source, dest, working, size), Pascal. Copies the
+   payload's first long to dest[0] and puts the 4th argument in dest[1]. */
+static const uint16_t dcmp8Code[] = {
+    0x206F, 0x0010, /* movea.l 16(sp),a0   source */
+    0x226F, 0x000C, /* movea.l 12(sp),a1   dest */
+    0x22D0,         /* move.l  (a0),(a1)+ */
+    0x22AF, 0x0004, /* move.l  4(sp),(a1)  the 4th argument */
+    0x205F,         /* movea.l (sp)+,a0 */
+    0x4FEF, 0x0010, /* lea     16(sp),sp */
+    0x4ED0,         /* jmp     (a0) */
+};
+
+static void addCode(const uint16_t *code, size_t words, short id)
+{
+    Handle h = NewHandle(words * 2);
+    for(size_t i = 0; i < words; i++)
+        ((GUEST<uint16_t>*)*h)[i] = code[i];
+    AddResource(h, 'dcmp', id, PSTR(""));
+    EXPECT_EQ(noErr, ResError());
+}
+
+static void put32(Ptr p, uint32_t v)
+{
+    *(GUEST<uint32_t>*)p = v;
+}
+
+static void put16(Ptr p, uint16_t v)
+{
+    *(GUEST<uint16_t>*)p = v;
+}
+
+/* A 'QUUX' 128 compressed for 'dcmp' 200 with a version 8 header: an
+   uncompressed size, the working buffer's ratio and the expansion. */
+static Handle addCompressed8(uint32_t size, uint8_t ratio, uint8_t expansion,
+                             short attrs)
+{
+    Handle h = NewHandle(16 + 8);
+    put32(*h, 0xA89F6572);
+    put32(*h + 4, 0x00120801);
+    put32(*h + 8, size);
+    (*h)[12] = ratio;
+    (*h)[13] = expansion;
+    put16(*h + 14, 200);
+    put32(*h + 16, 0x600DF00D);
+    put32(*h + 20, 0);
+    AddResource(h, 'QUUX', 128, PSTR(""));
+    EXPECT_EQ(noErr, ResError());
+    SetResAttrs(h, resCompressed | attrs);
+    ChangedResource(h);
+    return h;
+}
+
+/* A preloaded compressed resource finds its decompressor in the file
+   being opened, whatever handle the map on disk names for it. */
+TEST_F(ResourceTest, CompressedPreload)
+{
+    addCompressed8(64, 0, 0, resPreload);
+    addCode(dcmp8Code, std::size(dcmp8Code), 200);
+    reopen();
+
+    Handle h = Get1Resource('QUUX', 128);
+    ASSERT_NE(nullptr, h);
+    EXPECT_EQ(64, GetHandleSize(h));
+    EXPECT_EQ(0x600DF00Du, *(GUEST<uint32_t>*)*h);
+}
+
