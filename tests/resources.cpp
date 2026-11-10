@@ -195,6 +195,28 @@ static const uint16_t dcmp8Code[] = {
     0x4ED0,         /* jmp     (a0) */
 };
 
+/* Header version 9: three entry offsets, then init(header),
+   decompress(source, dest, header): INTEGER and cleanup(header), Pascal.
+   decompress copies the payload's first long to dest[0] and puts the
+   header's uncompressed size in dest[1]. */
+static const uint16_t dcmp9Code[] = {
+    0x0006, 0x000C, 0x0006, /* init, decompress, cleanup */
+    /* 6: init and cleanup */
+    0x205F,         /* movea.l (sp)+,a0 */
+    0x588F,         /* addq.l  #4,sp */
+    0x4ED0,         /* jmp     (a0) */
+    /* 12: decompress */
+    0x206F, 0x000C, /* movea.l 12(sp),a0   source */
+    0x226F, 0x0008, /* movea.l 8(sp),a1    dest */
+    0x22D0,         /* move.l  (a0),(a1)+ */
+    0x206F, 0x0004, /* movea.l 4(sp),a0    header */
+    0x22A8, 0x0008, /* move.l  8(a0),(a1)  its uncompressed size */
+    0x426F, 0x0010, /* clr.w   16(sp)      noErr */
+    0x205F,         /* movea.l (sp)+,a0 */
+    0x4FEF, 0x000C, /* lea     12(sp),sp */
+    0x4ED0,         /* jmp     (a0) */
+};
+
 static void addCode(const uint16_t *code, size_t words, short id)
 {
     Handle h = NewHandle(words * 2);
@@ -235,6 +257,26 @@ static Handle addCompressed8(uint32_t size, uint8_t ratio, uint8_t expansion,
     return h;
 }
 
+/* The same with a version 9 header: the decompressor's ID and the bytes
+   beyond the uncompressed size the handle needs, 0. */
+static Handle addCompressed9(uint32_t size)
+{
+    Handle h = NewHandle(18 + 8);
+    put32(*h, 0xA89F6572);
+    put32(*h + 4, 0x00120901);
+    put32(*h + 8, size);
+    put16(*h + 12, 200);
+    put16(*h + 14, 0);
+    put16(*h + 16, 0);
+    put32(*h + 18, 0x600DF00D);
+    put32(*h + 22, 0);
+    AddResource(h, 'QUUX', 128, PSTR(""));
+    EXPECT_EQ(noErr, ResError());
+    SetResAttrs(h, resCompressed);
+    ChangedResource(h);
+    return h;
+}
+
 /* The decompressor is passed the working buffer's size: ratio + 1 256ths
    of the uncompressed size and the expansion, and 4 bytes more. */
 TEST_F(ResourceTest, CompressedWorkingSize)
@@ -263,5 +305,21 @@ TEST_F(ResourceTest, CompressedPreload)
     ASSERT_NE(nullptr, h);
     EXPECT_EQ(64, GetHandleSize(h));
     EXPECT_EQ(0x600DF00Du, *(GUEST<uint32_t>*)*h);
+}
+
+/* Header version 9 (System 7.5.5's compressed resources): its own entry
+   points; decompressed in place from the end of the handle. */
+TEST_F(ResourceTest, CompressedVersion9)
+{
+    addCode(dcmp9Code, std::size(dcmp9Code), 200);
+    addCompressed9(16);
+    reopen();
+
+    Handle h = GetResource('QUUX', 128);
+    ASSERT_EQ(noErr, ResError());
+    ASSERT_NE(nullptr, h);
+    EXPECT_EQ(16, GetHandleSize(h));
+    EXPECT_EQ(0x600DF00Du, *(GUEST<uint32_t>*)*h);
+    EXPECT_EQ(16u, *(GUEST<uint32_t>*)(*h + 4));
 }
 
