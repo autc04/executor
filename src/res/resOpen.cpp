@@ -16,6 +16,7 @@
 #include <prefs/prefs.h>
 #include <base/functions.impl.h>
 #include <algorithm>
+#include <optional>
 
 using namespace Executor;
 
@@ -128,7 +129,7 @@ static Ptr dcmp9_entry(Ptr code, size_t i)
 static bool
 decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offsetp,
                  Handle *dcmp_handlep, Ptr *workspacep, int32_t *working_sizep,
-                 Ptr *v9_headerp)
+                 std::optional<dcomp_info_v9_t> *v9_headerp)
 {
     bool retval = false;
     OSErr err;
@@ -140,7 +141,7 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
     *offsetp = 0;
     *dcmp_handlep = nullptr;
     *workspacep = nullptr;
-    *v9_headerp = nullptr;
+    *v9_headerp = std::nullopt;
 
     GetFPos(rn, &master_save_pos);
     len = sizeof info;
@@ -178,15 +179,13 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
                 LoadResource(*dcmp_handlep);
             retval = *dcmp_handlep && **dcmp_handlep;
         }
-        if(retval && (*v9_headerp = NewPtr(sizeof info9)))
+        if(retval)
         {
-            memcpy(*v9_headerp, &info9, sizeof info9);
+            *v9_headerp = info9;
             *dlenp -= sizeof info9;
             *final_sizep = info9.uncompressedSize;
             *offsetp = info9.handleSlack;
         }
-        else
-            retval = false;
     }
     else if(info.typeFlags == COMPRESSED_FLAGS)
     {
@@ -269,7 +268,7 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
     Handle dcmp_handle = nullptr;
     Ptr dcmp_workspace = nullptr;
     int32_t working_size = 0;
-    Ptr v9_header = nullptr;
+    std::optional<dcomp_info_v9_t> v9_header;
     int32_t uncompressed_size = 0;
     Ptr xxx;
     OSErr err;
@@ -323,8 +322,6 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
         {
             if(dcmp_workspace)
                 DisposePtr(dcmp_workspace);
-            if(v9_header)
-                DisposePtr(v9_header);
             DisposeHandle(rr->rhand);
             rr->rhand = nullptr;
             retval = nullptr;
@@ -335,18 +332,18 @@ static Handle mgetres_helper(resmaphand map, resref *rr, int32_t dlen,
             {
                 SignedByte state = hlock_return_orig_state(dcmp_handle);
                 Ptr code = *dcmp_handle;
+                Ptr header = (Ptr)&*v9_header;
                 ResourceDecompressionV9InitUPP init(dcmp9_entry(code, 0));
                 ResourceDecompressionV9UPP decompress(dcmp9_entry(code, 1));
                 ResourceDecompressionV9CleanupUPP cleanup(dcmp9_entry(code, 2));
 
                 HLock(retval);
-                init(v9_header);
-                decompress(xxx, *retval, v9_header);
-                cleanup(v9_header);
+                init(header);
+                decompress(xxx, *retval, header);
+                cleanup(header);
                 HUnlock(retval);
                 SetHandleSize(retval, uncompressed_size);
                 HSetState(dcmp_handle, state);
-                DisposePtr(v9_header);
             }
             else if(dcmp_handle)
             {
