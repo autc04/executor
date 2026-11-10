@@ -196,6 +196,7 @@ enum
 {
     COMPRESSED_TAG = 0xa89f6572,
     COMPRESSED_FLAGS = 0x120801,
+    COMPRESSED_FLAGS_V9 = 0x120901
 };
 
 struct dcomp_info_t

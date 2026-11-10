@@ -115,10 +115,6 @@ Handle Executor::ROMlib_mgetres(resmaphand map, resref *rr)
    dest, header) and cleanup(header) -- and decompresses in place: the
    compressed bytes sit at the end of the destination handle. */
 using dcmp9HeaderProcPtr = UPP<void(Ptr header)>;
-enum
-{
-    COMPRESSED_FLAGS_V9 = 0x120901,
-};
 
 /* TODO: decompress_setup also has to pass back the decompressed size
    we need to adjust down the size of "dlen" down below where we read
@@ -129,7 +125,7 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
                  Handle *dcmp_handlep, Ptr *workspacep, int32_t *working_sizep,
                  Ptr *v9_headerp)
 {
-    bool retval;
+    bool retval = false;
     OSErr err;
     LONGINT len;
     dcomp_info_t info;
@@ -190,9 +186,7 @@ decompress_setup(INTEGER rn, int32_t *dlenp, int32_t *final_sizep, int32_t *offs
         else
             retval = false;
     }
-    else if(info.typeFlags != COMPRESSED_FLAGS)
-        retval = false;
-    else
+    else if(info.typeFlags == COMPRESSED_FLAGS)
     {
         GUEST<LONGINT> save_pos;
 

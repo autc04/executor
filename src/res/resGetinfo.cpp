@@ -151,7 +151,7 @@ LONGINT Executor::ROMlib_SizeResource(Handle res, Boolean usehandle)
                 /* both headers mgetres decompresses (resOpen.cpp: version
                    8, and 7.5.5's version 9) keep the uncompressed size in
                    the same place */
-                if(l[2] != COMPRESSED_FLAGS && l[2] != 0x120901)
+                if(l[2] != COMPRESSED_FLAGS && l[2] != COMPRESSED_FLAGS_V9)
                 {
                     ROMlib_setreserr(CantDecompress);
                     return -1;
