@@ -54,9 +54,9 @@ else()
     target_compile_definitions(executor-tracy INTERFACE EXECUTOR_TRACY=0)
 endif()
 
-if(WIN32 AND MSVC)
-    # compiler uses msvc-style command line
-    # only clang supported at the moment
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # clang-cl uses the msvc-style command line, but needs -Xclang for
+    # frontend warnings. MSVC itself does not understand these flags.
     add_compile_options(
         -Xclang -Wall -Xclang -Wextra
 
