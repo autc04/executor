@@ -1095,7 +1095,7 @@ TEST_F(LocalVolumeFixture, RepStalenessFollowsCandidates)
     // MacItemFactory, the upgrade target here, keeps Finder info in an xattr on
     // the file; there is no sidecar to remove.
     const std::string path = host("doc").string();
-    ASSERT_EQ(0, removexattr(path.c_str(), XATTR_FINDERINFO_NAME));
+    ASSERT_EQ(0, removexattr(path.c_str(), XATTR_FINDERINFO_NAME, 0));
 #else
     ASSERT_TRUE(fs::remove(host("%doc"))); // the AppleDouble sidecar
     bumpMtime("");
