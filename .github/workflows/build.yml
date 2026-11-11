@@ -1,0 +1,202 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: Linux (GCC, CMake)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ cmake ninja-build bison ruby perl \
+            libboost-all-dev qt6-base-dev libsdl2-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run tests
+        run: ctest --test-dir build -LE xfail --no-compress-output -T test --output-on-failure
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-linux
+          path: build/Testing/
+
+  macos:
+    name: macOS (Clang, CMake)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install prerequisites
+        run: brew install boost qt@6 ninja bison ruby
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBISON_COMMAND="$(brew --prefix bison)/bin/bison" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)/lib/cmake"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run tests
+        run: ctest --test-dir build -LE xfail --no-compress-output -T test --output-on-failure
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-macos
+          path: build/Testing/
+
+  windows-msvc:
+    name: Windows (MSVC, CMake)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Bison
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          install: bison
+
+      - name: Add Bison to PATH
+        shell: pwsh
+        run: echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          arch: win64_msvc2022_64
+
+      - name: Install Boost
+        shell: pwsh
+        run: |
+          $Url = "https://archives.boost.io/release/1.90.0/binaries/boost_1_90_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$env:RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$env:RUNNER_TEMP\boost.exe" -ArgumentList "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\boost"
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
+            -DBOOST_INCLUDEDIR=C:\boost `
+            -DBOOST_LIBRARYDIR=C:\boost\lib64-msvc-14.3 `
+            -DBoost_COMPILER=-vc143 `
+            -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build
+
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir build -LE xfail --no-compress-output -T test --output-on-failure
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-windows-msvc
+          path: build/Testing/
+
+  nix:
+    name: Nix ${{ matrix.package }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-latest
+        package:
+          - default
+          - headless
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # flake sources only include submodule contents when checked out recursively
+          submodules: recursive
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Set up Cachix
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: autc04
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build .#${{ matrix.package }}
+        run: nix build .#${{ matrix.package }} --print-build-logs
+
+  nix-windows:
+    name: Nix cross-build .#windows (Linux host)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Set up Cachix
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: autc04
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build .#windows
+        run: nix build .#windows --print-build-logs
