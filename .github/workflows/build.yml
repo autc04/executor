@@ -76,8 +76,8 @@ jobs:
           name: test-results-macos
           path: build/Testing/
 
-  windows-msvc:
-    name: Windows (MSVC)
+  windows-clang:
+    name: Windows (clang-cl)
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -123,6 +123,10 @@ jobs:
         with:
           arch: x64
 
+      - name: Show compiler versions
+        shell: pwsh
+        run: clang-cl --version
+
       - name: Configure
         shell: pwsh
         run: |
@@ -130,7 +134,7 @@ jobs:
           # directory name is not one of the lib* directories find_package searches,
           # so point Boost_DIR at the package directory itself.
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
             -DBoost_DIR=C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0 `
             -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
@@ -147,7 +151,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results-windows-msvc
+          name: test-results-windows-clang
           path: build/Testing/
 
   nix:
