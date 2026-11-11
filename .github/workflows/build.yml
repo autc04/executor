@@ -107,21 +107,32 @@ jobs:
           version: '6.8.*'
           arch: win64_msvc2022_64
 
-      - name: Install Boost
-        shell: pwsh
-        run: |
-          $Url = "https://archives.boost.io/release/1.90.0/binaries/boost_1_90_0-msvc-14.3-64.exe"
-          (New-Object System.Net.WebClient).DownloadFile($Url, "$env:RUNNER_TEMP\boost.exe")
-          Start-Process -Wait -FilePath "$env:RUNNER_TEMP\boost.exe" -ArgumentList "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\boost"
-          # Start-Process does not report the installer's exit code, so verify the result.
-          if (-not (Test-Path C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0\BoostConfig.cmake)) {
-            throw "Boost install incomplete: no BoostConfig.cmake in C:\boost"
-          }
-
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Build Boost
+        shell: pwsh
+        run: |
+          # Build only the compiled Boost libraries Executor links, as static
+          # libraries, with the same clang-cl toolchain as the rest of the build.
+          # Boost's CMake build installs BoostConfig.cmake, which is what
+          # find_package(Boost CONFIG) consumes.
+          $Url = "https://archives.boost.io/release/1.90.0/source/boost_1_90_0.tar.gz"
+          $Archive = "$env:RUNNER_TEMP\boost_1_90_0.tar.gz"
+          (New-Object System.Net.WebClient).DownloadFile($Url, $Archive)
+          tar -xzf $Archive -C $env:RUNNER_TEMP
+
+          cmake -B "$env:RUNNER_TEMP\boost-build" -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBOOST_INCLUDE_LIBRARIES="filesystem;program_options;json" `
+            -DBUILD_TESTING=OFF `
+            -DCMAKE_INSTALL_PREFIX=C:\boost `
+            "$env:RUNNER_TEMP\boost_1_90_0"
+          cmake --build "$env:RUNNER_TEMP\boost-build" --target install
 
       - name: Show compiler versions
         shell: pwsh
@@ -130,13 +141,11 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          # The installer's CMake configs live in lib64-msvc-<toolset>\cmake, whose
-          # directory name is not one of the lib* directories find_package searches,
-          # so point Boost_DIR at the package directory itself.
+          # Boost's CMake install writes BoostConfig.cmake to lib/cmake/Boost-<version>.
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
-            -DBoost_DIR=C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0 `
+            -DBoost_DIR=C:\boost\lib\cmake\Boost-1.90.0 `
             -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
 
       - name: Build
