@@ -179,7 +179,7 @@ witness (always `nullptr`): two conventions can share one signature
   `if`/`else`/`for` bodies.
 - C++20 — concepts, ranges, `if constexpr`, structured bindings,
   `std::optional`, `std::span`, etc.
-- `src/.clang-format` is authoritative; run `clang-format` before committing.
+- `src/.clang-format` is not authoritative, clang-format is unable to match the existing coding style with sufficient accuracy. Consider it a rough guideline.
 - Mac types come from `<ExMacTypes.h>` and the generated headers under
   `build/src/api/`; never hand-edit generated files.
 
