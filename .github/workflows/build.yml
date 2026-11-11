@@ -154,6 +154,82 @@ jobs:
           name: test-results-windows-clang
           path: build/Testing/
 
+
+  windows-msvc:
+    name: Windows (msvc)
+    if: false
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Bison
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          install: bison
+
+      - name: Add Bison to PATH
+        shell: pwsh
+        run: echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          arch: win64_msvc2022_64
+
+      - name: Install Boost
+        shell: pwsh
+        run: |
+          $Url = "https://archives.boost.io/release/1.90.0/binaries/boost_1_90_0-msvc-14.3-64.exe"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$env:RUNNER_TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$env:RUNNER_TEMP\boost.exe" -ArgumentList "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\boost"
+          # Start-Process does not report the installer's exit code, so verify the result.
+          if (-not (Test-Path C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0\BoostConfig.cmake)) {
+            throw "Boost install incomplete: no BoostConfig.cmake in C:\boost"
+          }
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          # The installer's CMake configs live in lib64-msvc-<toolset>\cmake, whose
+          # directory name is not one of the lib* directories find_package searches,
+          # so point Boost_DIR at the package directory itself.
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
+            -DBoost_DIR=C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0 `
+            -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build
+
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir build -LE xfail --no-compress-output -T test --output-on-failure
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-windows-msvc
+          path: build/Testing/
+
   nix:
     name: Nix ${{ matrix.package }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
