@@ -87,6 +87,7 @@ public:
     mac_string getVolumeName() const;
 
     LocalVolume(VCB& vcb, fs::path root);
+    virtual ~LocalVolume();
 
     virtual void PBGetCatInfo(CInfoPBPtr pb) override;
     virtual void PBGetFInfo(ParmBlkPtr pb) override;

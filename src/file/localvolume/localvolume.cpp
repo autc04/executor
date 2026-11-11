@@ -89,6 +89,19 @@ static std::unique_ptr<CNIDMapper> createCNIDMapper(const fs::path& root,
     }
 }
 
+struct LocalVolume::FCBExtension
+{
+    filecontrolblock *fcb;
+    short refNum;
+    std::unique_ptr<OpenFile> access;
+    FileItemPtr file;
+
+    FCBExtension() = default;
+    FCBExtension(filecontrolblock *fcb, short refNum)
+        : fcb(fcb), refNum(refNum)
+    {}
+};
+
 LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     : Volume(vcb), root(root)
 {
@@ -117,6 +130,8 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
     itemFactories.push_back(std::make_unique<ExtensionItemFactory>());
     defaultItemFactory = itemFactories.back().get();
 }
+
+LocalVolume::~LocalVolume() = default;
 
 bool LocalVolume::isHidden(const fs::directory_entry& e)
 {
@@ -283,20 +298,6 @@ mac_string LocalVolume::getVolumeName() const
 {
     return mac_string(mac_string_view(vcb.vcbVN));
 }
-
-
-struct LocalVolume::FCBExtension
-{
-    filecontrolblock *fcb;
-    short refNum;
-    std::unique_ptr<OpenFile> access;
-    FileItemPtr file;
-
-    FCBExtension() = default;
-    FCBExtension(filecontrolblock *fcb, short refNum)
-        : fcb(fcb), refNum(refNum)
-    {}
-};
 
 LocalVolume::FCBExtension& LocalVolume::getFCBX(short refNum)
 {
