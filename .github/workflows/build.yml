@@ -120,32 +120,40 @@ jobs:
 
           # Build only the compiled Boost libraries Executor links, as static
           # libraries, with the same clang-cl toolchain as the rest of the build.
-          # Boost's CMake build installs BoostConfig.cmake, which is what
-          # find_package(Boost CONFIG) consumes.  Extract the archive ourselves
-          # with Expand-Archive so this does not depend on which 'tar' the
-          # MSYS2 setup action put on PATH.
+          # The release archive is a Boost.Build tree (it has no superproject
+          # CMakeLists.txt); 'b2 install' generates the CMake config files that
+          # find_package(Boost CONFIG) consumes.
           $Url = "https://archives.boost.io/release/1.90.0/source/boost_1_90_0.zip"
           $Archive = "$env:RUNNER_TEMP\boost_1_90_0.zip"
           $Source = "$env:RUNNER_TEMP\boost_1_90_0"
-          $Build = "$env:RUNNER_TEMP\boost-build"
           Invoke-WebRequest -Uri $Url -OutFile $Archive
           Expand-Archive -Path $Archive -DestinationPath $env:RUNNER_TEMP -Force
-          if (-not (Test-Path "$Source\CMakeLists.txt")) {
+          if (-not (Test-Path "$Source\bootstrap.bat")) {
             throw "Boost source not found at $Source"
           }
 
-          $Libs = "filesystem;program_options;json"
-          cmake -S $Source -B $Build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=clang-cl `
-            -DCMAKE_CXX_COMPILER=clang-cl `
-            -DBUILD_SHARED_LIBS=OFF `
-            "-DBOOST_INCLUDE_LIBRARIES=$Libs" `
-            -DBUILD_TESTING=OFF `
-            -DCMAKE_INSTALL_PREFIX=C:\boost
-          if ($LASTEXITCODE -ne 0) { throw "Boost configure failed" }
-          cmake --build "$Build" --target install
-          if ($LASTEXITCODE -ne 0) { throw "Boost build failed" }
+          Push-Location $Source
+          try {
+            .\bootstrap.bat
+            if ($LASTEXITCODE -ne 0) { throw "Boost bootstrap failed" }
+
+            .\b2.exe install `
+              --prefix=C:\boost `
+              --with-filesystem `
+              --with-program_options `
+              --with-json `
+              toolset=clang-win `
+              address-model=64 `
+              architecture=x86 `
+              variant=release `
+              link=static `
+              runtime-link=shared `
+              threading=multi `
+              -j4
+            if ($LASTEXITCODE -ne 0) { throw "Boost build failed" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Show compiler versions
         shell: pwsh
