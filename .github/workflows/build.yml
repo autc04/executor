@@ -115,24 +115,37 @@ jobs:
       - name: Build Boost
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
           # Build only the compiled Boost libraries Executor links, as static
           # libraries, with the same clang-cl toolchain as the rest of the build.
           # Boost's CMake build installs BoostConfig.cmake, which is what
-          # find_package(Boost CONFIG) consumes.
-          $Url = "https://archives.boost.io/release/1.90.0/source/boost_1_90_0.tar.gz"
-          $Archive = "$env:RUNNER_TEMP\boost_1_90_0.tar.gz"
-          (New-Object System.Net.WebClient).DownloadFile($Url, $Archive)
-          tar -xzf $Archive -C $env:RUNNER_TEMP
+          # find_package(Boost CONFIG) consumes.  Extract the archive ourselves
+          # with Expand-Archive so this does not depend on which 'tar' the
+          # MSYS2 setup action put on PATH.
+          $Url = "https://archives.boost.io/release/1.90.0/source/boost_1_90_0.zip"
+          $Archive = "$env:RUNNER_TEMP\boost_1_90_0.zip"
+          $Source = "$env:RUNNER_TEMP\boost_1_90_0"
+          $Build = "$env:RUNNER_TEMP\boost-build"
+          Invoke-WebRequest -Uri $Url -OutFile $Archive
+          Expand-Archive -Path $Archive -DestinationPath $env:RUNNER_TEMP -Force
+          if (-not (Test-Path "$Source\CMakeLists.txt")) {
+            throw "Boost source not found at $Source"
+          }
 
-          cmake -B "$env:RUNNER_TEMP\boost-build" -G Ninja `
+          $Libs = "filesystem;program_options;json"
+          cmake -S $Source -B $Build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DCMAKE_C_COMPILER=clang-cl `
+            -DCMAKE_CXX_COMPILER=clang-cl `
             -DBUILD_SHARED_LIBS=OFF `
-            -DBOOST_INCLUDE_LIBRARIES="filesystem;program_options;json" `
+            "-DBOOST_INCLUDE_LIBRARIES=$Libs" `
             -DBUILD_TESTING=OFF `
-            -DCMAKE_INSTALL_PREFIX=C:\boost `
-            "$env:RUNNER_TEMP\boost_1_90_0"
-          cmake --build "$env:RUNNER_TEMP\boost-build" --target install
+            -DCMAKE_INSTALL_PREFIX=C:\boost
+          if ($LASTEXITCODE -ne 0) { throw "Boost configure failed" }
+          cmake --build "$Build" --target install
+          if ($LASTEXITCODE -ne 0) { throw "Boost build failed" }
 
       - name: Show compiler versions
         shell: pwsh
