@@ -123,7 +123,7 @@ Executor 2000 should be able to use native Mac files on macOS, AppleDouble
 file pairs (`foo` and `%foo`) as used by older executor verions, as well as
 files written by Basilisk or SheepShaver (`foo`, `.rsrc/foo` and `.finf/foo`).
 
-Executor 2000 also builds for 64-bit Windows (MSVC or MinGW); see
+Executor 2000 also builds for 64-bit Windows (Visual Studio with clang-cl, or MinGW); see
 [docs/building-on-windows.md](docs/building-on-windows.md) for instructions
 (note that that page still describes an older 32-bit Visual Studio setup).
 
