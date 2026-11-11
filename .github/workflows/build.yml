@@ -86,15 +86,12 @@ jobs:
           submodules: recursive
 
       - name: Install Bison
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
           update: false
           install: bison
-
-      - name: Add Bison to PATH
-        shell: pwsh
-        run: echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -167,7 +164,7 @@ jobs:
             -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
             -DBoost_DIR=C:\boost\lib\cmake\Boost-1.90.0 `
-            -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
+            -DBISON_COMMAND="${{ steps.msys2.outputs.msys2-location }}\usr\bin\bison.exe"
 
       - name: Build
         shell: pwsh
@@ -196,15 +193,12 @@ jobs:
           submodules: recursive
 
       - name: Install Bison
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
           update: false
           install: bison
-
-      - name: Add Bison to PATH
-        shell: pwsh
-        run: echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -243,7 +237,7 @@ jobs:
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
             -DBoost_DIR=C:\boost\lib64-msvc-14.3\cmake\Boost-1.90.0 `
-            -DBISON_COMMAND=C:\msys64\usr\bin\bison.exe
+            -DBISON_COMMAND="${{ steps.msys2.outputs.msys2-location }}\usr\bin\bison.exe"
 
       - name: Build
         shell: pwsh
