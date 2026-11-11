@@ -157,7 +157,11 @@ trap shape it cannot convert, rather than silently falling back to a macro.
 - **`GeneratedDispatcherTrap`**: owns the `std::unordered_map` from selector value to
   `SelectorEntry`; sub-traps register themselves with `addSelector()`.
 - **`UPP<Ret(Args...), CallConv>`**: a typed wrapper around a `void*` pointer that
-  represents a callable in the guest address space.
+  represents a callable in the guest address space. Calling it marshals the
+  arguments and translates pointer arguments with `US_TO_SYN68K`, which is defined
+  for anything inside a mapped guest region — guest RAM, video memory, the host
+  stack and Executor's globals all qualify (see §3 of `docs/architecture.md`), so
+  passing `&local` is fine while host heap memory outside the guest heap is not.
 
 ## Key Functions
 

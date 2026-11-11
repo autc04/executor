@@ -12,12 +12,13 @@ through syn68k.
 
 ## Key Concepts
 
-**Address space**: The entire Mac guest address space is a single flat byte array in host
-memory. `ROMlib_offset` is the host base address of that array. The type
-`syn68k_addr_t` (a `uint32_t`) is a guest address. The macros `SYN68K_TO_US(addr)` and
-`US_TO_SYN68K(ptr)` translate between guest addresses and host pointers. Null-tolerant
-variants (`SYN68K_TO_US_CHECK0`, `US_TO_SYN68K_CHECK0`) handle the zero address
-without crashing.
+**Address space**: `syn68k_addr_t` (a `uint32_t`) is a guest address; `SYN68K_TO_US(addr)`
+and `US_TO_SYN68K(ptr)` translate between guest addresses and host pointers, and the
+null-tolerant variants (`SYN68K_TO_US_CHECK0`, `US_TO_SYN68K_CHECK0`) handle the zero
+address without crashing. On 64-bit hosts the guest space is not one block: RAM, video
+memory, the host stack and Executor's globals are separate mapped regions
+(`SetupMemoryMapping`, `src/mman/mman.cpp`), so a pointer to a stack local is a valid
+argument to guest code. See §3 of `docs/architecture.md`.
 
 **Block caching**: syn68k groups 68K instructions into basic blocks and compiles each
 block once. `ROMlib_destroy_blocks(start, count, flush_only_faulty)` invalidates cached

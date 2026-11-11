@@ -59,12 +59,25 @@ The Mac ran on big-endian 68K hardware. Executor runs on little-endian x86-64. E
 
 ### The guest address space
 
-The guest address space is a contiguous region of host memory allocated at startup. The pointer `ROMlib_offset` is the host base address of that region. A 32-bit guest address `addr` translates to host pointer `ROMlib_offset + addr`. The macros in `syn68k_public.h` perform this translation:
+A guest address (`syn68k_addr_t`, a `uint32_t`) is translated to a host pointer by the macros in `syn68k_public.h`:
 
 ```cpp
 SYN68K_TO_US(addr)   // guest address → host pointer
 US_TO_SYN68K(ptr)    // host pointer → guest address
 ```
+
+On 32-bit hosts the guest space is one contiguous allocation and the translation is arithmetic: `ROMlib_offset` is its host base, so `host = ROMlib_offset + guest`. On 64-bit hosts several host regions have to be reachable through 32-bit guest addresses at once, so `SetupMemoryMapping()` (`src/mman/mman.cpp`) fills a table (`ROMlib_offsets[]` / `ROMlib_sizes[]`) indexed by the top two bits of the guest address:
+
+| Index | Guest addresses | Region |
+|-------|-----------------|--------|
+| 0 | `0x0000_0000`–`0x3FFF_FFFF` | The emulated Mac's RAM (the allocation handed to `InitMemory`) |
+| 1 | `0x4000_0000`–`0x7FFF_FFFF` | Video memory, once the front-end has allocated it |
+| 2 | `0x8000_0000`–`0xBFFF_FFFF` | The calling thread's stack (16 MB below the frame that called `InitMemory`) |
+| 3 | `0xC000_0000`–`0xFFFF_FFFF` | Executor's own statics and globals (`_etext`..`_end`) |
+
+Each row is a 1 GB slot of the guest address space, of which only `ROMlib_sizes[i]` bytes are backed. With `-DTWENTYFOUR=YES` the table has eight 2 MB entries instead: 0–1 hold the 4 MB of RAM, 4–5 a 4 MB stack window, 7 Executor's statics, and addresses outside every entry are remapped by `remapOutOfRangeAddressCallback`, which copies things like string literals into the system heap on demand.
+
+This is why host stack variables can be passed to emulated code: a local in an Executor function lies inside block 2, so `US_TO_SYN68K(&local)` is a valid guest address — `C_Color2Index` relies on it to hand its search proc a result word (`src/quickdraw/qColorMgr.cpp`). Host heap memory outside the guest heap is *not* mapped, and `US_TO_SYN68K` aborts on it (`syn68k/runtime/init.c`).
 
 The `_CHECK0` and `_CHECK0_CHECKNEG1` variants handle null (0) and `-1` sentinel values that several Mac APIs use.
 
@@ -93,7 +106,7 @@ LM(TheZone)   // returns GUEST<THz>&
 LM(ROMBase)   // returns GUEST<uint32_t>&
 ```
 
-`LM()` simply computes `*(GUEST<T>*)(ROMlib_offset + lm.address)`. Never hardcode raw addresses.
+`LM()` simply computes `*(GUEST<T>*)(ROMlib_offset + lm.address)` — `ROMlib_offset` is `ROMlib_offsets[0]`, which works here because low-memory globals live in the first, guest-RAM block. Never hardcode raw addresses.
 
 ---
 
@@ -229,15 +242,17 @@ The major Mac managers are implemented across `src/`:
 
 ## 7. Memory Layout
 
-The guest address space is a single flat allocation on the host. From low to high:
+Guest RAM is a single flat allocation on the host. From low to high:
 
 ```
 0x0000 – 0x03FF   Low-memory globals (68K trap vectors, OS state)
 0x0400 – …        System Zone (SysZone) — OS heap
- …                Application Stack (grows downward from StackBase)
+ …                The emulated Mac's stack (grows downward from StackBase)
  …                Application Zone (ApplZone) — application heap
  …                Temporary Memory region
 ```
+
+The Mac's stack shown here lives inside guest RAM; the *host* stack is a separate mapped region — block 2 in §3.
 
 Sizes are configurable:
 

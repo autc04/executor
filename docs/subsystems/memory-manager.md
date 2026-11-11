@@ -9,7 +9,9 @@ The Memory Manager implements the classic Mac OS heap allocator, providing `NewH
 full complement of zone-based allocation traps. It manages a flat region of the guest
 address space divided into a system zone (`SysZone`) and an application zone
 (`ApplZone`), with an optional temporary memory zone. All structures reside in the
-guest address space and are accessed through `GUEST<T>` wrappers.
+guest address space and are accessed through `GUEST<T>` wrappers. The heap is not the
+whole of the guest-visible memory, though: the host stack and Executor's own globals
+are mapped into it as well (see §3 of `docs/architecture.md`).
 
 ## Key Concepts
 

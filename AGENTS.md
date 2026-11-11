@@ -138,6 +138,11 @@ usually little-endian.
 - Low-memory globals are accessed only via `LM(Name)` (`LM(ROMBase)`,
   `LM(TheZone)`, …); never hardcode their addresses.
 - Address translation: `SYN68K_TO_US(addr)` / `US_TO_SYN68K(ptr)`.
+- The mapped guest space is wider than the Mac heap: RAM, video memory, the
+  host stack and Executor's own globals are all addressable from guest code
+  (`SetupMemoryMapping`, `src/mman/mman.cpp`). A stack local is therefore a
+  valid pointer argument to an emulated routine; host heap memory outside the
+  guest heap is not.
 
 ### Trap dispatch
 

@@ -45,9 +45,12 @@ inline GUEST<T>& LM(LowMemGlobal<T> lm)
 }
 ```
 
-**`ROMlib_offset`**: the host base address of the flat guest memory array. Adding a
-`syn68k_addr_t` to `ROMlib_offset` yields a host pointer. This value is set during
-memory initialisation and never changes during a session.
+**`ROMlib_offset`**: `ROMlib_offsets[0]`, the offset of the guest-RAM block. Adding a
+`syn68k_addr_t` in that block to `ROMlib_offset` yields a host pointer, which is what
+`LM()` relies on for low-memory globals. It is not a universal base: on 64-bit hosts
+video memory, the host stack and Executor's globals are separate mapped blocks (see §3
+of `docs/architecture.md`), so use `SYN68K_TO_US()` for anything general. The value is
+set during memory initialisation and never changes during a session.
 
 **`GUEST<T>`**: the byte-swapping wrapper for any value that lives in guest memory.
 Assigning a host value to a `GUEST<T>` stores it in big-endian order; reading from a
