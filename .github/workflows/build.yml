@@ -124,7 +124,7 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
-            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR\lib\cmake" `
+            -DCMAKE_PREFIX_PATH="C:\boost;$env:QT_ROOT_DIR\lib\cmake" `
             -DBOOST_INCLUDEDIR=C:\boost `
             -DBOOST_LIBRARYDIR=C:\boost\lib64-msvc-14.3 `
             -DBoost_COMPILER=-vc143 `
