@@ -677,6 +677,9 @@ if(WIN32 AND NOT MSVC)
     # Boost's 'superior' build system doesn't manage library dependencies correctly
     # but relies on MSVC's autolink feature, which doesn't exist on mingw.
     target_link_libraries(romlib bcrypt)
+    # Boost.Asio's Windows backend is Winsock (controlserver.cpp), and MinGW has
+    # no autolink pragmas.  mswsock provides AcceptEx.
+    target_link_libraries(romlib ws2_32 mswsock)
 endif()
 
 target_link_libraries(romlib resources)
