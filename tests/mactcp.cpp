@@ -10,6 +10,8 @@
  * depends on the machine having a network, a route, or a name server.
  */
 
+#ifndef _WIN32
+
 #include "gtest/gtest.h"
 
 #include "compat.h"
@@ -556,3 +558,5 @@ TEST(MacTCP, HttpFetch)
     DisposePtr(reqBuff);
     DisposePtr(rcvBuff);
 }
+
+#endif
