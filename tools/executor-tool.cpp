@@ -51,8 +51,10 @@ using namespace Executor;
 
 /* defined in cxmon's mon_disass.cpp; controls generic_print_address()'s
  * substitution of low-memory global names */
-extern bool lookup_lowmem;
-
+extern "C" 
+{
+    extern bool lookup_lowmem;
+}
 namespace
 {
 #if !defined(_WIN32)
