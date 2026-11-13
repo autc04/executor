@@ -60,6 +60,9 @@ plugins.
   is set because the wrapper only knows how to wrap ELF executables. The
   platform plugins are installed in `$out/bin/platforms`, which is where this
   Qt build searches (it appends `platforms` to the application directory).
+- **Winsock is linked explicitly.** Boost.Asio's Windows backend is Winsock, and
+  MinGW has no autolink pragmas. `src/CMakeLists.txt` links `ws2_32` and
+  `mswsock` (`AcceptEx`) into `romlib` for the MinGW build, alongside `bcrypt`.
 - **Tests are not built.** `tests/CMakeLists.txt` unconditionally calls
   `gtest_discover_tests()`, which tries to run the freshly built test binary at
   build time — impossible for a cross build. The derivation therefore passes
