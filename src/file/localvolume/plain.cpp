@@ -198,12 +198,15 @@ size_t PlainDataFork::write(size_t offset, void *p, size_t n)
 #endif
 
 
-std::unique_ptr<OpenFile> PlainRep::open(int8_t permission)
+// OpenFile is qualified because <windows.h> declares the Win16 API function
+// OpenFile, and these definitions are at global scope (this file relies on
+// "using namespace Executor"), where the two would be ambiguous.
+std::unique_ptr<Executor::OpenFile> PlainRep::open(int8_t permission)
 {
     return std::make_unique<PlainDataFork>(item_.path(), permission);
 }
 
-std::unique_ptr<OpenFile> PlainRep::openRF(int8_t permission)
+std::unique_ptr<Executor::OpenFile> PlainRep::openRF(int8_t permission)
 {
     return std::make_unique<EmptyFork>();
 }
