@@ -89,6 +89,9 @@ public:
     LocalVolume(VCB& vcb, fs::path root);
     virtual ~LocalVolume();
 
+    // Close the CNID store (see CloseLocalVolumeCNIDStores()).
+    void closeCNIDStore();
+
     virtual void PBGetCatInfo(CInfoPBPtr pb) override;
     virtual void PBGetFInfo(ParmBlkPtr pb) override;
     virtual void PBHGetFInfo(HParmBlkPtr pb) override;

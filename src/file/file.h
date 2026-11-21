@@ -178,6 +178,10 @@ extern fcbrec *PRNTOFPERR(INTEGER prn, OSErr *errp);
 
 class Volume;
 void MountLocalVolumes();
+
+// Intended for teardown of the test environment only: closes every LocalVolume's
+// CNID store so its LMDB files can be deleted while the volumes stay mounted.
+void CloseLocalVolumeCNIDStores();
 std::optional<FSSpec> nativePathToFSSpec(const fs::path& p);
 std::optional<FSSpec> cmdlinePathToFSSpec(const std::string& p);
 

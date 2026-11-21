@@ -64,6 +64,10 @@ public:
     // LMDB overrides it to open a write transaction and to retry on map growth.
     // The callback must be re-runnable: a retry starts from the state before it.
     virtual void withTransaction(const std::function<void()>& f) { f(); }
+
+    // Release the backend's host resources. Idempotent; the mapper is unusable
+    // afterwards. Only CloseLocalVolumeCNIDStores() calls this.
+    virtual void close() {}
 };
 
 // A short alias for the record type used by callers that only need the value.

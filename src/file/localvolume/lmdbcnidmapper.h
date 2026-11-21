@@ -47,6 +47,8 @@ public:
     LMDBCNIDMapper(fs::path root, mac_string volumeName);
     ~LMDBCNIDMapper();
 
+    virtual void close() override;
+
     // Readable, deterministic directory name for a volume root: "root" for
     // "/", "drive-C" for "C:/", and "path-..." for anything else. The config
     // DB stores the canonical root, so a name collision is detected rather than
