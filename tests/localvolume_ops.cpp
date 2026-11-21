@@ -1032,6 +1032,7 @@ TEST_F(LocalVolumeFixture, EvictionPreservesIdentity)
     hostDir("b");
     for(int i = 0; i < 20; i++)
         hostFile("b/g" + std::to_string(i));
+    bumpMtime(""); // make the change deterministic on coarse-timestamp hosts
     auto b = fmGet(rootDirID_, "b");
     ASSERT_TRUE(b.has_value());
     (void)fmList(b->cnid); // evicts the least-recently-used directory ('a')
