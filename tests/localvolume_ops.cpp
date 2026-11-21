@@ -536,7 +536,8 @@ TEST_F(LocalVolumeFixture, MacBinaryMoveOntoAliasFails)
 // A file's CNID survives a rename and a subsequent move.
 TEST_F(LocalVolumeFixture, CnidStableAcrossRenameThenMove)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostDir("src");
     hostDir("dst");
     hostFile("src/f", "x");
@@ -1164,7 +1165,8 @@ TEST_F(LocalVolumeFixture, CrossDirectoryHostMoveIsDeleteCreate)
 // entry is named, whether or not the host reused the inode.)
 TEST_F(LocalVolumeFixture, ReplacedFileReclaimsItsName)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("doc", "first");
     auto before = fmGet(rootDirID_, "doc");
     ASSERT_TRUE(before.has_value());
@@ -1313,7 +1315,8 @@ TEST_F(LocalVolumeFixture, SidecarNameWinsOverMacBinary)
 // name, and re-derives the Mac name.
 TEST_F(LocalVolumeFixture, SameDirectoryHostRenameKeepsCnid)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("old", "data");
     auto before = fmGet(rootDirID_, "old");
     ASSERT_TRUE(before.has_value());
@@ -1346,7 +1349,8 @@ TEST_F(LocalVolumeFixture, ListingOrderIsMacNamePrefixMajor)
 // CNIDs; deleting one leaves the other's CNID alone.
 TEST_F(LocalVolumeFixture, HardLinkedNamesAreDistinct)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("orig", "data");
     boost::system::error_code ec;
     fs::create_hard_link(host("orig"), host("link"), ec);
@@ -1370,7 +1374,8 @@ TEST_F(LocalVolumeFixture, HardLinkedNamesAreDistinct)
 // alone; the new name is a new entry.
 TEST_F(LocalVolumeFixture, AddedHardLinkGetsNewCnid)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("orig", "data");
     auto orig = fmGet(rootDirID_, "orig");
     ASSERT_TRUE(orig.has_value());
@@ -1395,7 +1400,8 @@ TEST_F(LocalVolumeFixture, AddedHardLinkGetsNewCnid)
 // untouched.
 TEST_F(LocalVolumeFixture, RenamingOneHardLinkKeepsItsCnid)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("a", "data");
     boost::system::error_code ec;
     fs::create_hard_link(host("a"), host("b"), ec);
@@ -1425,7 +1431,8 @@ TEST_F(LocalVolumeFixture, RenamingOneHardLinkKeepsItsCnid)
 // place, and the rename is recovered on a fresh lookup.
 TEST_F(LocalVolumeFixture, HostRenameRecoveredWhileFileIsOpen)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostFile("old", "hello, world");
     auto before = fmGet(rootDirID_, "old");
     ASSERT_TRUE(before.has_value());
@@ -1730,7 +1737,8 @@ TEST_F(LocalVolumeFixture, StatFailureDoesNotRenumberChild)
 // access retries. (This path had no direct test; it passes today.)
 TEST_F(LocalVolumeFixture, DirectoryRenameRecoveredByCnidAccess)
 {
-    requireInodeIdentity();
+    if(!haveInodeIdentity())
+        GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
     hostDir("d");
     hostFile("d/f/inner", "x");
 
