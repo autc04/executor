@@ -1001,6 +1001,7 @@ TEST_F(LocalVolumeFixture, EnumerationContinuesPastUnreadableFile)
 // names a directory enumeration happily returns, but this host has no such
 // rules, so nothing is filtered here. (The Win32 rules are compiled only into
 // the Windows build.)
+#ifndef _WIN32
 TEST(Filenames, PosixHostDoesNotFilterWin32StyleNames)
 {
     EXPECT_TRUE(isAddressableFilename(fs::path("aux")));
@@ -1008,6 +1009,7 @@ TEST(Filenames, PosixHostDoesNotFilterWin32StyleNames)
     EXPECT_TRUE(isAddressableFilename(fs::path("trailing.")));
     EXPECT_TRUE(isAddressableFilename(fs::path("dir") / "a:b"));
 }
+#endif
 
 // Phase 5.2: eviction under the item budget is transparent - re-accessing an
 // evicted directory rebuilds the same names and CNIDs from the mapper.
