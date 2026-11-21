@@ -7,6 +7,7 @@
 #include <MenuMgr.h>
 #include <FontMgr.h>
 #include <rsys/executor.h>
+#include <rsys/paths.h>
 #include <osevent/osevent.h>
 
 #include <cstdlib>
@@ -61,14 +62,18 @@ public:
 
     virtual void SetUp() override
     {
-        // The persistent CNID database lives under the test tree, and InitPaths
-        // reads ExecutorDirectoryMap, so isolate both before ROMlib_fileinit.
+        // The persistent CNID database is not scratch, so keep it outside the
+        // tree TearDown deletes: that tree then holds only files the tests
+        // themselves own. InitPaths reads ExecutorDirectoryMap, so set it before
+        // ROMlib_fileinit.
         tempDir = fs::current_path()
             / fs::unique_path("temptest-%%%%-%%%%-%%%%-%%%%");
         fs::create_directory(tempDir);
         ExecutorTestTempDir = tempDir;
 
-        const std::string dirMap = (tempDir / "cnidmap").string();
+        const fs::path dbDir = tempDir.parent_path()
+            / fs::unique_path("cnidmap-%%%%-%%%%");
+        const std::string dirMap = dbDir.string();
 #ifdef _WIN32
         _putenv_s("ExecutorDirectoryMap", dirMap.c_str());
 #else
@@ -124,6 +129,11 @@ public:
 
     virtual void TearDown() override
     {
+        // The mounted LocalVolumes hold their CNID stores (LMDB environments)
+        // open, and on Windows those files cannot be deleted while they are.
+        CloseLocalVolumeCNIDStores();      // teardown of the test environment only
+        if(!ROMlib_DirectoryMap.empty())
+            fs::remove_all(ROMlib_DirectoryMap);
         if(!tempDir.empty())
             fs::remove_all(tempDir);
     }

@@ -314,6 +314,11 @@ LMDBCNIDMapper::LMDBCNIDMapper(fs::path root, mac_string volumeName)
 
 LMDBCNIDMapper::~LMDBCNIDMapper() = default;
 
+void LMDBCNIDMapper::close()
+{
+    env_.close();
+}
+
 std::optional<CNIDRecord> LMDBCNIDMapper::getMapping(lmdb::txn& txn, CNID cnid)
 {
     Bytes keyBytes = cnidKey(cnid);

@@ -133,6 +133,11 @@ LocalVolume::LocalVolume(VCB& vcb, fs::path root)
 
 LocalVolume::~LocalVolume() = default;
 
+void LocalVolume::closeCNIDStore()
+{
+    itemCache->closeCNIDMapper();
+}
+
 bool LocalVolume::isHidden(const fs::directory_entry& e)
 {
     for(auto& itemFactory : itemFactories)
@@ -1117,6 +1122,14 @@ void Executor::MountLocalVolumes()
 #else
     MountLocalVolume("/");
 #endif
+}
+
+void Executor::CloseLocalVolumeCNIDStores()
+{
+    for(VCBExtra *vcbp = (VCBExtra *)LM(VCBQHdr).qHead; vcbp;
+        vcbp = (VCBExtra *)vcbp->vcb.qLink)
+        if(auto volume = dynamic_cast<LocalVolume*>(vcbp->volume))
+            volume->closeCNIDStore();
 }
 
 std::optional<FSSpec> Executor::nativePathToFSSpec(const fs::path& p)
