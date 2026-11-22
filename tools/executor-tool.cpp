@@ -36,8 +36,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -55,15 +57,19 @@ extern "C"
 }
 namespace
 {
+#if !defined(_WIN32)
+    int g_savedFd[2] = { -1, -1 };
+#endif
+
     bool g_verbose = false;
     bool g_lowmem = false;
-    int g_savedFd[2] = { -1, -1 };
 
     /* Executor's start-up prints machine-level chatter to stdout/stderr
      * ("Volume ... mounted ...", "PBOpenWD: ..."), which would corrupt the
      * tool's own, parseable output.  Silence it while it runs. */
     void silenceOutput()
     {
+#if !defined(_WIN32)
         if(g_verbose)
             return;
         std::cout.flush();
@@ -77,10 +83,12 @@ namespace
             ::dup2(devnull, 2);
             ::close(devnull);
         }
+#endif        
     }
 
     void unsilenceOutput()
     {
+#if !defined(_WIN32)
         if(g_savedFd[0] < 0)
             return;
         std::cout.flush();
@@ -90,6 +98,7 @@ namespace
         ::close(g_savedFd[0]);
         ::close(g_savedFd[1]);
         g_savedFd[0] = g_savedFd[1] = -1;
+#endif
     }
 }
 

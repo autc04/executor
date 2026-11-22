@@ -196,6 +196,9 @@ public:
     void deleteItem(ItemPtr item);
     void renameItem(ItemPtr item, mac_string_view newName);
     void moveItem(ItemPtr item, DirectoryItemPtr newParent, mac_string_view newName = {});
+
+    // Close the CNID store's host resources (see CloseLocalVolumeCNIDStores()).
+    void closeCNIDMapper() { cnidMapper_->close(); }
 };
 
 }

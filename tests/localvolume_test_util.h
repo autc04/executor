@@ -77,12 +77,13 @@ protected:
     std::string rootName_;
     fs::path rootPath_;
 
-    // Skip a test whose subject depends on host-inode identity when this
-    // volume's filesystem is classified as not providing it (Phase 11c).
-    static void requireInodeIdentity()
+    // Whether this volume's filesystem exposes stable host identities (Phase
+    // 11c). A test whose subject needs them must check this in its own body:
+    // GTEST_SKIP() only returns from the function it is written in, so a helper
+    // would skip nothing and the test would go on to fail.
+    static bool haveInodeIdentity()
     {
-        if(!statPath(ExecutorTestTempDir).identity.valid)
-            GTEST_SKIP() << "host filesystem for the test tree has no stable identities";
+        return statPath(ExecutorTestTempDir).identity.valid;
     }
 
     void SetUp() override

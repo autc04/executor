@@ -73,7 +73,12 @@ struct HostFolder
         : path(fs::current_path() / fs::unique_path("hostfolder-%%%%-%%%%"))
     {
         fs::create_directory(path);
-        letCacheExpire();
+        // The parent's stamp is what tells the volume to re-scan, and on Windows a
+        // directory's last-write time is reported from a cache: creating a child
+        // need not change it. Nudge it so the new entry is visible, as the
+        // LocalVolume tests do.
+        const fs::path parent = path.parent_path();
+        fs::last_write_time(parent, fs::last_write_time(parent) + 1);
         auto spec = nativePathToFSSpec(path);
         EXPECT_TRUE(spec.has_value());
         if(!spec)

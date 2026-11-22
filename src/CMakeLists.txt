@@ -54,9 +54,9 @@ else()
     target_compile_definitions(executor-tracy INTERFACE EXECUTOR_TRACY=0)
 endif()
 
-if(WIN32 AND MSVC)
-    # compiler uses msvc-style command line
-    # only clang supported at the moment
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # clang-cl uses the msvc-style command line, but needs -Xclang for
+    # frontend warnings. MSVC itself does not understand these flags.
     add_compile_options(
         -Xclang -Wall -Xclang -Wextra
 
@@ -677,6 +677,9 @@ if(WIN32 AND NOT MSVC)
     # Boost's 'superior' build system doesn't manage library dependencies correctly
     # but relies on MSVC's autolink feature, which doesn't exist on mingw.
     target_link_libraries(romlib bcrypt)
+    # Boost.Asio's Windows backend is Winsock (controlserver.cpp), and MinGW has
+    # no autolink pragmas.  mswsock provides AcceptEx.
+    target_link_libraries(romlib ws2_32 mswsock)
 endif()
 
 target_link_libraries(romlib resources)
