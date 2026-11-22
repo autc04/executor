@@ -79,6 +79,32 @@ bool Executor::operator==(const FileStamp& a, const FileStamp& b)
     return a.valid && b.valid && a.mtime == b.mtime && a.size == b.size;
 }
 
+#ifdef _WIN32
+namespace
+{
+// Fill a PathStat from the fields both the attribute query and a directory-index
+// lookup return.
+void fillStat(PathStat& s, const FILETIME& lastWrite, DWORD sizeHigh, DWORD sizeLow,
+    DWORD attributes)
+{
+    ULARGE_INTEGER t;
+    t.LowPart = lastWrite.dwLowDateTime;
+    t.HighPart = lastWrite.dwHighDateTime;
+    // FILETIME counts 100 ns ticks since 1601-01-01; rebase to Unix ns.
+    const std::uint64_t ticks1601To1970 = 116444736000000000ull;
+    if(t.QuadPart >= ticks1601To1970)
+        s.stamp.mtime = (t.QuadPart - ticks1601To1970) * 100ull;
+    s.stamp.size = ((std::uint64_t)sizeHigh << 32) | (std::uint64_t)sizeLow;
+    s.stamp.valid = true;
+    s.exists = true;
+    s.isDirectory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    s.isRegular = !s.isDirectory;
+    // Neither query exposes an inode; a handle-based variant
+    // (GetFileInformationByHandle) is needed for identity on Windows.
+}
+}
+#endif
+
 PathStat Executor::statPath(const fs::path& path)
 {
     PathStat s;
@@ -87,25 +113,36 @@ PathStat Executor::statPath(const fs::path& path)
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if(GetFileAttributesExW(path.wstring().c_str(), GetFileExInfoStandard, &fad))
     {
-        ULARGE_INTEGER t;
-        t.LowPart = fad.ftLastWriteTime.dwLowDateTime;
-        t.HighPart = fad.ftLastWriteTime.dwHighDateTime;
-        // FILETIME counts 100 ns ticks since 1601-01-01; rebase to Unix ns.
-        const std::uint64_t ticks1601To1970 = 116444736000000000ull;
-        if(t.QuadPart >= ticks1601To1970)
-            s.stamp.mtime = (t.QuadPart - ticks1601To1970) * 100ull;
-        s.stamp.size = ((std::uint64_t)fad.nFileSizeHigh << 32) | (std::uint64_t)fad.nFileSizeLow;
-        s.stamp.valid = true;
-        s.exists = true;
-        s.isDirectory = (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        s.isRegular = !s.isDirectory;
-        // GetFileAttributesEx exposes no inode; a handle-based variant
-        // (GetFileInformationByHandle) is needed for identity on Windows.
+        fillStat(s, fad.ftLastWriteTime, fad.nFileSizeHigh, fad.nFileSizeLow,
+            fad.dwFileAttributes);
     }
     else
     {
         const DWORD error = GetLastError();
-        if(error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+        if(error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED)
+        {
+            // A file that someone holds without sharing (pagefile.sys,
+            // DumpStack.log.tmp, ...) cannot be opened for an attribute query, but
+            // it is still in the directory index: FindFirstFile reads that index
+            // and needs no handle, so one such file does not make its whole
+            // directory unlistable. Not for patterns, where it would report an
+            // unrelated match.
+            WIN32_FIND_DATAW fd;
+            HANDLE found = INVALID_HANDLE_VALUE;
+            if(path.filename().wstring().find_first_of(L"*?") == std::wstring::npos)
+            {
+                found = FindFirstFileW(path.wstring().c_str(), &fd);
+                if(found != INVALID_HANDLE_VALUE)
+                    FindClose(found);
+            }
+
+            if(found != INVALID_HANDLE_VALUE)
+                fillStat(s, fd.ftLastWriteTime, fd.nFileSizeHigh, fd.nFileSizeLow,
+                    fd.dwFileAttributes);
+            else
+                s.error = std::error_code((int)error, std::system_category());
+        }
+        else if(error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
             s.error = std::error_code((int)error, std::system_category());
     }
 #else
